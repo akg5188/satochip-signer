@@ -1,0 +1,442 @@
+package io.arbitrum.wallet
+
+import android.app.Application
+import android.os.SystemClock
+import com.walletconnect.android.Core
+import com.walletconnect.android.CoreClient
+import com.walletconnect.android.relay.ConnectionType
+import com.walletconnect.web3.wallet.client.Wallet
+import com.walletconnect.web3.wallet.client.Web3Wallet
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+private const val WALLETCONNECT_PROJECT_ID = "e0a4a3aa69ef7aece654921b704debce"
+
+data class WalletConnectProposalUi(
+    val peerName: String,
+    val peerUrl: String,
+    val peerDescription: String,
+    val requiredChains: List<String>,
+    val requiredMethods: List<String>,
+    val optionalChains: List<String>,
+    val optionalMethods: List<String>,
+)
+
+data class WalletConnectPendingRequest(
+    val topic: String,
+    val requestId: Long,
+    val method: String,
+    val chainId: String?,
+    val params: String,
+    val peerName: String,
+    val peerUrl: String,
+)
+
+object WalletConnectBridge : Web3Wallet.WalletDelegate, CoreClient.CoreDelegate {
+    private var initializing = false
+    private var ready = false
+    private var appContext: Application? = null
+    private var pendingPairUri: String? = null
+    private var initStartedAtMs: Long = 0L
+    private var currentProposal: Wallet.Model.SessionProposal? = null
+    private var currentRequest: Wallet.Model.SessionRequest? = null
+
+    private val _status = MutableStateFlow("WalletConnect 未连接")
+    val status: StateFlow<String> = _status.asStateFlow()
+
+    private val _proposal = MutableStateFlow<WalletConnectProposalUi?>(null)
+    val proposal: StateFlow<WalletConnectProposalUi?> = _proposal.asStateFlow()
+
+    private val _request = MutableStateFlow<WalletConnectPendingRequest?>(null)
+    val request: StateFlow<WalletConnectPendingRequest?> = _request.asStateFlow()
+
+    fun ensureInitialized(application: Application) {
+        appContext = application
+        val now = SystemClock.elapsedRealtime()
+        if (ready) return
+        if (initializing && now - initStartedAtMs < 15_000L) return
+        if (initializing && now - initStartedAtMs >= 15_000L) {
+            _status.value = "WalletConnect 初始化超时，正在重试"
+            initializing = false
+            ready = false
+        }
+        initializing = true
+        initStartedAtMs = now
+
+        val appMetaData = Core.Model.AppMetaData(
+            name = "Arbitrum Wallet",
+            description = "Arbitrum One QR relay wallet",
+            url = "https://github.com/akg5188/tp-satochip-signer",
+            icons = listOf("https://raw.githubusercontent.com/WalletConnect/walletconnect-assets/master/Icon/Gradient/Icon.png"),
+            redirect = "arbitrumwallet://wc",
+            appLink = null,
+            linkMode = false,
+        )
+
+        runCatching {
+            CoreClient.initialize(
+                application = application,
+                projectId = WALLETCONNECT_PROJECT_ID,
+                metaData = appMetaData,
+                connectionType = ConnectionType.AUTOMATIC,
+                onError = { error ->
+                    _status.value = "WalletConnect 初始化失败: ${error.throwable.message ?: "未知错误"}"
+                    initializing = false
+                    ready = false
+                }
+            )
+
+            CoreClient.setDelegate(this)
+            Web3Wallet.initialize(
+                Wallet.Params.Init(core = CoreClient),
+                onSuccess = {
+                    runCatching {
+                        // Important: delegate must be set after Web3Wallet.initialize,
+                        // otherwise SignClient may throw "needs to be initialized first".
+                        Web3Wallet.setWalletDelegate(this)
+                    }.onFailure { delegateError ->
+                        _status.value = "WalletConnect 委托注册失败: ${delegateError.message ?: "未知错误"}"
+                        initializing = false
+                        ready = false
+                        return@initialize
+                    }
+                    initializing = false
+                    ready = true
+                    _status.value = "WalletConnect 已就绪"
+                    drainPendingPairIfAny()
+                },
+                onError = { error ->
+                    _status.value = "WalletConnect 启动失败: ${error.throwable.message ?: "未知错误"}"
+                    initializing = false
+                    ready = false
+                }
+            )
+        }.onFailure { error ->
+            initializing = false
+            ready = false
+            _status.value = "WalletConnect 初始化异常: ${error.message ?: "未知错误"}"
+            throw error
+        }
+    }
+
+    fun pair(uri: String) {
+        val normalized = uri.trim()
+        if (normalized.isBlank()) {
+            _status.value = "WalletConnect 配对失败: 空链接"
+            return
+        }
+
+        if (!ready) {
+            val app = appContext
+            if (app != null && !initializing) {
+                runCatching { ensureInitialized(app) }
+            }
+            pendingPairUri = normalized
+            _status.value = if (initializing) {
+                "WalletConnect 初始化中，完成后将自动配对"
+            } else {
+                "WalletConnect 正在重试初始化，完成后将自动配对"
+            }
+            return
+        }
+
+        performPair(normalized)
+    }
+
+    private fun performPair(uri: String) {
+        runCatching {
+            Web3Wallet.pair(
+                Wallet.Params.Pair(uri),
+                onSuccess = {
+                    _status.value = "WalletConnect 配对链接已接收，等待 DApp 发起会话提案"
+                },
+                onError = { error ->
+                    _status.value = "WalletConnect 配对失败: ${error.throwable.message ?: "未知错误"}"
+                }
+            )
+        }.onFailure { error ->
+            _status.value = "WalletConnect 配对异常: ${error.message ?: "未知错误"}"
+            if (error.message?.contains("coreClient", ignoreCase = true) == true) {
+                ready = false
+                initializing = false
+                pendingPairUri = uri
+                appContext?.let { runCatching { ensureInitialized(it) } }
+            }
+        }
+    }
+
+    private fun drainPendingPairIfAny() {
+        val uri = pendingPairUri ?: return
+        pendingPairUri = null
+        performPair(uri)
+    }
+
+    fun approveCurrentProposal(address: String, onResult: (Result<Unit>) -> Unit = {}) {
+        val proposal = currentProposal
+        if (proposal == null) {
+            onResult(Result.failure(IllegalStateException("当前没有待处理的 WalletConnect 会话提案")))
+            return
+        }
+        runCatching {
+            val namespaces = Web3Wallet.generateApprovedNamespaces(
+                sessionProposal = proposal,
+                supportedNamespaces = supportedNamespaces(address)
+            )
+            Web3Wallet.approveSession(
+                Wallet.Params.SessionApprove(
+                    proposerPublicKey = proposal.proposerPublicKey,
+                    namespaces = namespaces,
+                ),
+                onSuccess = {
+                    clearProposal()
+                    _status.value = "WalletConnect 会话已连接"
+                    onResult(Result.success(Unit))
+                },
+                onError = { error ->
+                    val throwable = error.throwable
+                    _status.value = "WalletConnect 批准失败: ${throwable.message ?: "未知错误"}"
+                    onResult(Result.failure(throwable))
+                }
+            )
+        }.onFailure { error ->
+            _status.value = "WalletConnect 批准失败: ${error.message ?: "未知错误"}"
+            onResult(Result.failure(error))
+        }
+    }
+
+    fun rejectCurrentProposal(reason: String = "User rejected connection", onResult: (Result<Unit>) -> Unit = {}) {
+        val proposal = currentProposal
+        if (proposal == null) {
+            onResult(Result.failure(IllegalStateException("当前没有待处理的 WalletConnect 会话提案")))
+            return
+        }
+        Web3Wallet.rejectSession(
+            Wallet.Params.SessionReject(
+                proposerPublicKey = proposal.proposerPublicKey,
+                reason = reason,
+            ),
+            onSuccess = {
+                clearProposal()
+                _status.value = "WalletConnect 会话已拒绝"
+                onResult(Result.success(Unit))
+            },
+            onError = { error ->
+                val throwable = error.throwable
+                _status.value = "WalletConnect 拒绝失败: ${throwable.message ?: "未知错误"}"
+                onResult(Result.failure(throwable))
+            }
+        )
+    }
+
+    fun respondCurrentRequestResult(result: String?, onResult: (Result<Unit>) -> Unit = {}) {
+        val request = currentRequest
+        if (request == null) {
+            onResult(Result.failure(IllegalStateException("当前没有待处理的 WalletConnect 请求")))
+            return
+        }
+        Web3Wallet.respondSessionRequest(
+            Wallet.Params.SessionRequestResponse(
+                sessionTopic = request.topic,
+                jsonRpcResponse = Wallet.Model.JsonRpcResponse.JsonRpcResult(
+                    id = request.request.id,
+                    // WalletConnect SDK now expects a non-null JSON value string.
+                    result = result ?: "null",
+                )
+            ),
+            onSuccess = {
+                _status.value = "WalletConnect 请求已完成"
+                clearRequest()
+                onResult(Result.success(Unit))
+            },
+            onError = { error ->
+                val throwable = error.throwable
+                _status.value = "WalletConnect 返回结果失败: ${throwable.message ?: "未知错误"}"
+                onResult(Result.failure(throwable))
+            }
+        )
+    }
+
+    fun respondCurrentRequestError(
+        message: String,
+        code: Int = 5000,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        val request = currentRequest
+        if (request == null) {
+            onResult(Result.failure(IllegalStateException("当前没有待处理的 WalletConnect 请求")))
+            return
+        }
+        Web3Wallet.respondSessionRequest(
+            Wallet.Params.SessionRequestResponse(
+                sessionTopic = request.topic,
+                jsonRpcResponse = Wallet.Model.JsonRpcResponse.JsonRpcError(
+                    id = request.request.id,
+                    code = code,
+                    message = message,
+                )
+            ),
+            onSuccess = {
+                _status.value = "WalletConnect 请求已拒绝"
+                clearRequest()
+                onResult(Result.success(Unit))
+            },
+            onError = { error ->
+                val throwable = error.throwable
+                _status.value = "WalletConnect 返回错误失败: ${throwable.message ?: "未知错误"}"
+                onResult(Result.failure(throwable))
+            }
+        )
+    }
+
+    override fun onSessionProposal(sessionProposal: Wallet.Model.SessionProposal, verifyContext: Wallet.Model.VerifyContext) {
+        currentProposal = sessionProposal
+        _proposal.value = WalletConnectProposalUi(
+            peerName = sessionProposal.name,
+            peerUrl = sessionProposal.url,
+            peerDescription = sessionProposal.description,
+            requiredChains = flattenChains(sessionProposal.requiredNamespaces),
+            requiredMethods = flattenMethods(sessionProposal.requiredNamespaces),
+            optionalChains = flattenOptionalChains(sessionProposal.optionalNamespaces),
+            optionalMethods = flattenOptionalMethods(sessionProposal.optionalNamespaces),
+        )
+        _status.value = when {
+            verifyContext.isScam == true -> "收到可疑 DApp 会话提案，请谨慎确认"
+            verifyContext.validation == Wallet.Model.Validation.VALID -> "收到 WalletConnect 会话提案"
+            else -> "收到 WalletConnect 会话提案（域名未验证）"
+        }
+    }
+
+    override fun onSessionRequest(sessionRequest: Wallet.Model.SessionRequest, verifyContext: Wallet.Model.VerifyContext) {
+        currentRequest = sessionRequest
+        _request.value = WalletConnectPendingRequest(
+            topic = sessionRequest.topic,
+            requestId = sessionRequest.request.id,
+            method = sessionRequest.request.method,
+            chainId = sessionRequest.chainId,
+            params = sessionRequest.request.params,
+            peerName = sessionRequest.peerMetaData?.name.orEmpty(),
+            peerUrl = sessionRequest.peerMetaData?.url.orEmpty(),
+        )
+        _status.value = "收到 WalletConnect 请求: ${sessionRequest.request.method}"
+    }
+
+    override fun onAuthRequest(authRequest: Wallet.Model.AuthRequest, verifyContext: Wallet.Model.VerifyContext) {
+        _status.value = when {
+            verifyContext.isScam == true -> "收到可疑 WalletConnect Auth 请求，已忽略"
+            else -> "收到 WalletConnect Auth 请求（当前版本暂不处理）"
+        }
+    }
+
+    override fun onSessionDelete(sessionDelete: Wallet.Model.SessionDelete) {
+        clearRequest()
+        clearProposal()
+        _status.value = when (sessionDelete) {
+            is Wallet.Model.SessionDelete.Success -> "WalletConnect 会话已断开"
+            is Wallet.Model.SessionDelete.Error -> "WalletConnect 断开异常: ${sessionDelete.error.message ?: "未知错误"}"
+        }
+    }
+
+    override fun onSessionExtend(session: Wallet.Model.Session) {
+        _status.value = "WalletConnect 会话已续期"
+    }
+
+    override fun onSessionSettleResponse(settleSessionResponse: Wallet.Model.SettledSessionResponse) {
+        _status.value = when (settleSessionResponse) {
+            is Wallet.Model.SettledSessionResponse.Result -> "WalletConnect 会话已建立"
+            is Wallet.Model.SettledSessionResponse.Error -> "WalletConnect 会话建立失败: ${settleSessionResponse.errorMessage}"
+        }
+    }
+
+    override fun onSessionUpdateResponse(sessionUpdateResponse: Wallet.Model.SessionUpdateResponse) {
+        _status.value = when (sessionUpdateResponse) {
+            is Wallet.Model.SessionUpdateResponse.Result -> "WalletConnect 会话已更新"
+            is Wallet.Model.SessionUpdateResponse.Error -> "WalletConnect 会话更新失败: ${sessionUpdateResponse.errorMessage}"
+        }
+    }
+
+    override fun onProposalExpired(proposal: Wallet.Model.ExpiredProposal) {
+        clearProposal()
+        _status.value = "WalletConnect 会话提案已过期，请重新扫码"
+    }
+
+    override fun onRequestExpired(request: Wallet.Model.ExpiredRequest) {
+        clearRequest()
+        _status.value = "WalletConnect 请求已过期，请重新发起"
+    }
+
+    override fun onConnectionStateChange(state: Wallet.Model.ConnectionState) {
+        _status.value = if (state.isAvailable) {
+            if (_status.value.contains("已")) _status.value else "WalletConnect 已连接到 relay"
+        } else {
+            val reason = when (val current = state.reason) {
+                is Wallet.Model.ConnectionState.Reason.ConnectionClosed -> current.message
+                is Wallet.Model.ConnectionState.Reason.ConnectionFailed -> current.throwable.message
+                null -> null
+            }
+            "WalletConnect relay 未连接${reason?.let { ": $it" } ?: ""}"
+        }
+    }
+
+    override fun onError(error: Wallet.Model.Error) {
+        _status.value = "WalletConnect 错误: ${error.throwable.message ?: "未知错误"}"
+    }
+
+    override fun onPairingDelete(deletedPairing: Core.Model.DeletedPairing) = Unit
+
+    override fun onPairingExpired(expiredPairing: Core.Model.ExpiredPairing) = Unit
+
+    override fun onPairingState(pairingState: Core.Model.PairingState) {
+        if (pairingState.isPairingState) {
+            _status.value = "WalletConnect 正在建立配对"
+        }
+    }
+
+    private fun clearProposal() {
+        currentProposal = null
+        _proposal.value = null
+    }
+
+    private fun clearRequest() {
+        currentRequest = null
+        _request.value = null
+    }
+
+    private fun flattenChains(namespaces: Map<String, Wallet.Model.Namespace.Proposal>): List<String> {
+        return namespaces.values.flatMap { it.chains.orEmpty() }.distinct()
+    }
+
+    private fun flattenMethods(namespaces: Map<String, Wallet.Model.Namespace.Proposal>): List<String> {
+        return namespaces.values.flatMap { it.methods }.distinct()
+    }
+
+    private fun flattenOptionalChains(namespaces: Map<String, Wallet.Model.Namespace.Proposal>?): List<String> {
+        return namespaces?.let(::flattenChains).orEmpty()
+    }
+
+    private fun flattenOptionalMethods(namespaces: Map<String, Wallet.Model.Namespace.Proposal>?): List<String> {
+        return namespaces?.let(::flattenMethods).orEmpty()
+    }
+
+    private fun supportedNamespaces(address: String): Map<String, Wallet.Model.Namespace.Session> {
+        val account = "eip155:${ArbitrumConfig.CHAIN_ID}:$address"
+        return mapOf(
+            "eip155" to Wallet.Model.Namespace.Session(
+                chains = listOf("eip155:${ArbitrumConfig.CHAIN_ID}"),
+                accounts = listOf(account),
+                methods = listOf(
+                    "eth_sendTransaction",
+                    "personal_sign",
+                    "eth_accounts",
+                    "eth_requestAccounts",
+                    "eth_chainId",
+                    "eth_signTypedData",
+                    "eth_signTypedData_v4",
+                    "wallet_switchEthereumChain",
+                    "wallet_addEthereumChain",
+                ),
+                events = listOf("accountsChanged", "chainChanged")
+            )
+        )
+    }
+}

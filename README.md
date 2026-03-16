@@ -5,9 +5,14 @@
 当前仓库里已经包含：
 
 - 安卓中转 App 源码与最新 APK
+- `wallet` 目录里的独立安卓钱包工程备份
 - 树莓派离线签名固件源码
 - 树莓派最新固件分片
 - 重打镜像、重组固件、后续维护用脚本
+
+## 入口
+
+- [wallet](/home/ak/树莓派/tp-satochip-signer/wallet): 单独备份出来的安卓钱包工程，打开仓库首页就能看到
 
 ## 最新可直接使用的文件
 
@@ -29,6 +34,7 @@
 ## 仓库结构
 
 - [app](/home/ak/树莓派/tp-satochip-signer/app): 安卓中转 App
+- [wallet](/home/ak/树莓派/tp-satochip-signer/wallet): 独立安卓钱包工程备份与维护文档
 - [pi-signer-py](/home/ak/树莓派/tp-satochip-signer/pi-signer-py): Python CLI 签名器
 - [pi-signer](/home/ak/树莓派/tp-satochip-signer/pi-signer): Kotlin CLI 签名器
 - [pi-appliance](/home/ak/树莓派/tp-satochip-signer/pi-appliance): 树莓派独立 UI 组件
