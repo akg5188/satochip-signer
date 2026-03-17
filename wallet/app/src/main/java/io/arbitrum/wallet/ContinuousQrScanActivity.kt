@@ -10,7 +10,6 @@ import android.view.KeyEvent
 import android.view.View
 import android.widget.Button
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -23,7 +22,7 @@ import com.journeyapps.barcodescanner.camera.CameraSettings
 import com.journeyapps.barcodescanner.camera.CenterCropStrategy
 import kotlinx.coroutines.launch
 
-class ContinuousQrScanActivity : ComponentActivity() {
+class ContinuousQrScanActivity : BiometricGateActivity() {
     companion object {
         const val EXTRA_QR_RESULT = "qr_result"
         const val EXTRA_SCAN_MODE = "scan_mode"
