@@ -8,7 +8,6 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.widget.Button
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -17,7 +16,7 @@ import com.journeyapps.barcodescanner.DecoratedBarcodeView
 import com.journeyapps.barcodescanner.DefaultDecoderFactory
 import kotlinx.coroutines.launch
 
-class QrScanActivity : ComponentActivity() {
+class QrScanActivity : BiometricGateActivity() {
     companion object {
         const val EXTRA_QR_RESULT = "qr_result"
         const val EXTRA_STATUS_TEXT = "status_text"
