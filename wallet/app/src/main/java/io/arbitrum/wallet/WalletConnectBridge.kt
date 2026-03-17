@@ -65,11 +65,11 @@ object WalletConnectBridge : Web3Wallet.WalletDelegate, CoreClient.CoreDelegate 
         initStartedAtMs = now
 
         val appMetaData = Core.Model.AppMetaData(
-            name = "Arbitrum Wallet",
-            description = "Arbitrum One QR relay wallet",
+            name = "Satochip Wallet",
+            description = "Multi-chain QR relay wallet",
             url = "https://github.com/akg5188/tp-satochip-signer",
             icons = listOf("https://raw.githubusercontent.com/WalletConnect/walletconnect-assets/master/Icon/Gradient/Icon.png"),
-            redirect = "arbitrumwallet://wc",
+            redirect = "satochipwallet://wc",
             appLink = null,
             linkMode = false,
         )
@@ -419,11 +419,12 @@ object WalletConnectBridge : Web3Wallet.WalletDelegate, CoreClient.CoreDelegate 
     }
 
     private fun supportedNamespaces(address: String): Map<String, Wallet.Model.Namespace.Session> {
-        val account = "eip155:${ArbitrumConfig.CHAIN_ID}:$address"
+        val chains = WalletChains.supportedWalletConnectChains()
+        val accounts = chains.map { "$it:$address" }
         return mapOf(
             "eip155" to Wallet.Model.Namespace.Session(
-                chains = listOf("eip155:${ArbitrumConfig.CHAIN_ID}"),
-                accounts = listOf(account),
+                chains = chains,
+                accounts = accounts,
                 methods = listOf(
                     "eth_sendTransaction",
                     "personal_sign",
