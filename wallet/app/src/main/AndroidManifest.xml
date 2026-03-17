@@ -25,6 +25,11 @@
             android:screenOrientation="portrait"
             android:theme="@android:style/Theme.Material.Light.NoActionBar" />
         <activity
+            android:name=".HyperliquidActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <activity
             android:name=".ContinuousQrScanActivity"
             android:exported="false"
             android:screenOrientation="portrait"
