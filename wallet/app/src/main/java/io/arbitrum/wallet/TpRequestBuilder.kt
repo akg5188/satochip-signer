@@ -13,7 +13,6 @@ object TpRequestBuilder {
     private const val NAMESPACE = "tp"
     private const val VERSION = "1.0"
     private const val PROTOCOL = "ArbitrumWallet"
-    private const val NETWORK = "arbitrum"
     // Compatibility for older Pi signer builds:
     // use signTypeDataV4 (single 'd' after Type) instead of signTypedDataV4.
     private const val TYPED_DATA_ACTION = "signTypeDataV4"
@@ -21,6 +20,7 @@ object TpRequestBuilder {
     fun buildSignTransactionRequest(
         fromAddress: String,
         txData: TxData,
+        chain: WalletChain = WalletChains.DEFAULT,
         requestId: String = java.util.UUID.randomUUID().toString(),
     ): String {
         val txJson = JSONObject().apply {
@@ -29,7 +29,7 @@ object TpRequestBuilder {
             put("value", txData.value.toString())
             put("data", txData.data)
             put("gasLimit", txData.gasLimit.toString())
-            put("chainId", ArbitrumConfig.CHAIN_ID_HEX)
+            put("chainId", chain.chainIdHex)
             txData.gasPrice?.let { put("gasPrice", it.toString()) }
             txData.maxFeePerGas?.let { put("maxFeePerGas", it.toString()) }
             txData.maxPriorityFeePerGas?.let { put("maxPriorityFeePerGas", it.toString()) }
@@ -43,8 +43,8 @@ object TpRequestBuilder {
         val query = buildQuery(
             "version" to VERSION,
             "protocol" to PROTOCOL,
-            "network" to NETWORK,
-            "chain_id" to ArbitrumConfig.CHAIN_ID.toString(),
+            "network" to chain.slug,
+            "chain_id" to chain.chainId.toString(),
             "requestId" to requestId,
             "data" to dataJson.toString(),
         )
@@ -54,6 +54,7 @@ object TpRequestBuilder {
     fun buildPersonalSignRequest(
         address: String,
         message: String,
+        chain: WalletChain = WalletChains.DEFAULT,
         requestId: String = java.util.UUID.randomUUID().toString(),
     ): String {
         val dataJson = JSONObject().apply {
@@ -63,8 +64,8 @@ object TpRequestBuilder {
         val query = buildQuery(
             "version" to VERSION,
             "protocol" to PROTOCOL,
-            "network" to NETWORK,
-            "chain_id" to ArbitrumConfig.CHAIN_ID.toString(),
+            "network" to chain.slug,
+            "chain_id" to chain.chainId.toString(),
             "requestId" to requestId,
             "data" to dataJson.toString(),
         )
@@ -74,20 +75,30 @@ object TpRequestBuilder {
     fun buildSignTypedDataRequest(
         address: String,
         typedDataJson: String,
+        chain: WalletChain = WalletChains.DEFAULT,
         requestId: String = java.util.UUID.randomUUID().toString(),
+        dappName: String? = null,
+        dappUrl: String? = null,
+        dappSource: String? = null,
     ): String {
         val messageObj = JSONObject(typedDataJson)
         val dataJson = JSONObject().apply {
             put("address", address)
             put("message", messageObj)
+            dappName?.takeIf { it.isNotBlank() }?.let { put("dappName", it) }
+            dappUrl?.takeIf { it.isNotBlank() }?.let { put("dappUrl", it) }
+            dappSource?.takeIf { it.isNotBlank() }?.let { put("source", it) }
         }
         val dataStr = dataJson.toString()
         val query = buildQuery(
             "version" to VERSION,
             "protocol" to PROTOCOL,
-            "network" to NETWORK,
-            "chain_id" to ArbitrumConfig.CHAIN_ID.toString(),
+            "network" to chain.slug,
+            "chain_id" to chain.chainId.toString(),
             "requestId" to requestId,
+            "dappName" to dappName.orEmpty(),
+            "dappUrl" to dappUrl.orEmpty(),
+            "source" to dappSource.orEmpty(),
             "data" to dataStr,
         )
         return "$NAMESPACE:$TYPED_DATA_ACTION-$query"
