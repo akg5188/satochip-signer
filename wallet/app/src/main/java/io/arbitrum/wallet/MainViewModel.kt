@@ -5,19 +5,23 @@ import android.content.Context
 import android.graphics.Bitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.zxing.EncodeHintType
 import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import com.journeyapps.barcodescanner.BarcodeEncoder
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.math.RoundingMode
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -25,66 +29,30 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import org.json.JSONArray
 
 private val typedDataJson = Json { ignoreUnknownKeys = true; isLenient = true }
 
-enum class WalletTab {
-    ASSETS,
-    SIGN
-}
-
-enum class PendingResponseType {
-    BROADCAST_TX,
-    SHOW_SIGNATURE
-}
-
-data class WalletUiState(
-    val activeTab: WalletTab = WalletTab.ASSETS,
-    val newAddressInput: String = "",
-    val addresses: List<String> = emptyList(),
-    val selectedAddress: String = "",
-    val balances: Map<String, String> = emptyMap(),
-    val loading: Boolean = false,
-    val error: String = "",
-    val info: String = "",
-    val transferTo: String = "",
-    val transferAmount: String = "",
-    val transferToken: String = "USDC",
-    val requestInput: String = "",
-    val personalMessageInput: String = "",
-    val typedDataInput: String = "",
-    val requestTitle: String = "",
-    val requestSummary: String = "",
-    val transferInfo: String = "",
-    val dappInfo: String = "",
-    val relayHint: String = "",
-    val walletConnectStatus: String = "",
-    val walletConnectProposal: WalletConnectProposalUi? = null,
-    val walletConnectPendingRequest: WalletConnectPendingRequest? = null,
-    val signQrPages: List<String> = emptyList(),
-    val signQrPageIndex: Int = 0,
-    val signQrBitmap: Bitmap? = null,
-    val pendingResponseType: PendingResponseType? = null,
-    val txHash: String = "",
-    val lastSignature: String = "",
-    val lastSignatureAddress: String = "",
-)
-
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
-        private const val PREFS_NAME = "arb_watch_wallet"
-        private const val KEY_ADDRESSES = "addresses"
-        private const val KEY_SELECTED = "selected"
+        private const val PREFS_NAME = "satochip_multi_wallet"
         private const val AUTO_APPROVE_WALLETCONNECT = true
     }
 
     private val prefs = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val _uiState = MutableStateFlow(WalletUiState())
     val uiState: StateFlow<WalletUiState> = _uiState.asStateFlow()
+    private val _browserCommands = MutableSharedFlow<InjectedBrowserCommand>(extraBufferCapacity = 32)
+    val browserCommands: SharedFlow<InjectedBrowserCommand> = _browserCommands.asSharedFlow()
+
+    private val localActivityItems = mutableListOf<WalletActivityItem>()
+    private val syncedActivityByChain = linkedMapOf<Long, List<WalletActivityItem>>()
+    private val hyperliquidAgentsByAccount = linkedMapOf<String, HyperliquidAgentRecord>()
+    private val hyperliquidMarketMeta = linkedMapOf<String, HyperliquidMarketMeta>()
+    private var pendingHyperliquidApproval: HyperliquidApprovalRequest? = null
+    private var pendingInjectedBrowserRequest: InjectedBrowserPendingRequest? = null
 
     init {
-        restoreAddresses()
+        restorePersistedState()
         runCatching {
             WalletConnectBridge.ensureInitialized(application)
         }.onFailure { error ->
@@ -92,6 +60,888 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(walletConnectStatus = "WalletConnect 初始化异常: ${error.message ?: "未知错误"}")
             }
         }
+        bindWalletConnectState()
+    }
+
+    fun setActiveTab(tab: WalletTab) = _uiState.update { it.copy(activeTab = tab) }
+    fun setNewAddressInput(value: String) = _uiState.update { it.copy(newAddressInput = value) }
+    fun setTransferTo(value: String) = _uiState.update { it.copy(transferTo = value) }
+    fun setTransferAmount(value: String) = _uiState.update { it.copy(transferAmount = value) }
+    fun setTransferToken(value: String) = _uiState.update { it.copy(transferToken = value) }
+    fun setRequestInput(value: String) = _uiState.update { it.copy(requestInput = value) }
+    fun setContactNameInput(value: String) = _uiState.update { it.copy(contactNameInput = value) }
+    fun setContactAddressInput(value: String) = _uiState.update { it.copy(contactAddressInput = value) }
+    fun setContactNoteInput(value: String) = _uiState.update { it.copy(contactNoteInput = value) }
+    fun setHyperliquidSelectedMarket(value: String) {
+        val market = value.trim().uppercase()
+        if (market.isBlank()) return
+        val marketMeta = hyperliquidMarketMeta[market]
+        _uiState.update {
+            it.copy(
+                hyperliquidSelectedMarket = market,
+                hyperliquidOrderPriceInput = if (
+                    it.hyperliquidOrderMode == HyperliquidOrderMode.LIMIT &&
+                    marketMeta != null &&
+                    it.hyperliquidOrderPriceInput.isBlank()
+                ) {
+                    marketMeta.midPrice
+                } else {
+                    it.hyperliquidOrderPriceInput
+                },
+            )
+        }
+    }
+    fun setHyperliquidOrderMode(mode: HyperliquidOrderMode) {
+        val marketMeta = hyperliquidMarketMeta[_uiState.value.hyperliquidSelectedMarket.uppercase()]
+        _uiState.update {
+            it.copy(
+                hyperliquidOrderMode = mode,
+                hyperliquidOrderPriceInput = if (
+                    mode == HyperliquidOrderMode.LIMIT &&
+                    marketMeta != null &&
+                    it.hyperliquidOrderPriceInput.isBlank()
+                ) {
+                    marketMeta.midPrice
+                } else {
+                    it.hyperliquidOrderPriceInput
+                },
+            )
+        }
+    }
+    fun setHyperliquidOrderSide(isBuy: Boolean) = _uiState.update { it.copy(hyperliquidOrderSideBuy = isBuy) }
+    fun setHyperliquidOrderSizeInput(value: String) = _uiState.update { it.copy(hyperliquidOrderSizeInput = value) }
+    fun setHyperliquidOrderPriceInput(value: String) = _uiState.update { it.copy(hyperliquidOrderPriceInput = value) }
+    fun toggleHyperliquidReduceOnly() = _uiState.update { it.copy(hyperliquidReduceOnly = !it.hyperliquidReduceOnly) }
+    fun clearError() = _uiState.update { it.copy(error = "") }
+    fun clearInfo() = _uiState.update { it.copy(info = "") }
+    fun clearTxHash() = _uiState.update { it.copy(txHash = "", txHashChainId = null) }
+    fun clearSignature() = _uiState.update { it.copy(lastSignature = "", lastSignatureAddress = "") }
+
+    fun syncInjectedBrowserContext() {
+        emitBrowserAccountsChanged()
+        emitBrowserChainChanged()
+    }
+
+    fun handleInjectedBrowserRequest(
+        requestId: String,
+        method: String,
+        paramsJson: String,
+        origin: String,
+    ) {
+        val normalizedMethod = method.trim()
+        if (normalizedMethod.isBlank()) {
+            emitBrowserReject(requestId, 4001, "缺少方法名")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                when (normalizedMethod.lowercase()) {
+                    "eth_accounts" -> {
+                        emitBrowserResolve(requestId, org.json.JSONArray(currentAuthorizedBrowserAccounts()).toString())
+                    }
+
+                    "eth_requestaccounts" -> {
+                        val address = _uiState.value.selectedAddress
+                        if (address.isBlank()) {
+                            emitBrowserReject(requestId, 4001, "请先选择观察地址")
+                        } else {
+                            authorizeInjectedBrowser()
+                            emitBrowserResolve(requestId, org.json.JSONArray(listOf(address)).toString())
+                            emitBrowserAccountsChanged()
+                        }
+                    }
+
+                    "wallet_getpermissions" -> {
+                        emitBrowserResolve(requestId, currentBrowserPermissionsJson(origin))
+                    }
+
+                    "wallet_requestpermissions", "wallet_grantpermissions" -> {
+                        val address = _uiState.value.selectedAddress
+                        if (address.isBlank()) {
+                            emitBrowserReject(requestId, 4001, "请先选择观察地址")
+                        } else {
+                            authorizeInjectedBrowser()
+                            emitBrowserResolve(requestId, currentBrowserRequestPermissionsJson())
+                            emitBrowserAccountsChanged()
+                        }
+                    }
+
+                    "wallet_revokepermissions" -> {
+                        revokeInjectedBrowserAuthorization()
+                        emitBrowserResolve(requestId, "null")
+                    }
+
+                    "eth_chainid" -> emitBrowserChainChanged(requestId)
+                    "net_version" -> emitBrowserResolve(requestId, org.json.JSONObject.quote(_uiState.value.selectedChainId.toString()))
+                    "wallet_registeronboarding" -> emitBrowserResolve(requestId, "false")
+                    "wallet_watchasset" -> emitBrowserResolve(requestId, "true")
+                    "wallet_getcapabilities" -> emitBrowserResolve(requestId, currentBrowserCapabilitiesJson())
+                    "eth_coinbase" -> {
+                        val address = currentAuthorizedBrowserAccounts().firstOrNull().orEmpty()
+                        emitBrowserResolve(
+                            requestId,
+                            if (address.isBlank()) "null" else org.json.JSONObject.quote(address),
+                        )
+                    }
+
+                    else -> {
+                        if (pendingInjectedBrowserRequest != null) {
+                            emitBrowserReject(requestId, -32002, "已有待处理签名请求")
+                            return@launch
+                        }
+
+                        val address = _uiState.value.selectedAddress
+                        if (address.isBlank()) {
+                            emitBrowserReject(requestId, 4001, "请先选择观察地址")
+                            return@launch
+                        }
+
+                        val request = WalletConnectPendingRequest(
+                            topic = "hyperliquid-webview",
+                            requestId = System.currentTimeMillis(),
+                            method = normalizedMethod,
+                            chainId = "eip155:${_uiState.value.selectedChainId}",
+                            params = paramsJson.ifBlank { "[]" },
+                            peerName = "Hyperliquid",
+                            peerUrl = origin,
+                        )
+                        when (
+                            val prepared = WalletConnectRequestCodec.prepare(
+                                request = request,
+                                selectedAddress = address,
+                                activeChainId = _uiState.value.selectedChainId,
+                            )
+                        ) {
+                            is WalletConnectPreparedRequest.ImmediateResult -> {
+                                prepared.switchToChainId?.let { targetChainId ->
+                                    WalletChains.byId(targetChainId)?.let { chain ->
+                                        selectChainInternal(
+                                            chain = chain,
+                                            persist = true,
+                                            triggerReload = true,
+                                            message = "已切换到 ${chain.shortName}",
+                                        )
+                                    }
+                                }
+                                emitBrowserResolve(requestId, prepared.result ?: "null")
+                            }
+
+                            is WalletConnectPreparedRequest.RelayToPi -> {
+                                val ok = prepareRelayRequestNow(
+                                    payload = prepared.payload,
+                                    explicitResponseType = prepared.responseType,
+                                    explicitTitle = prepared.title,
+                                    focusTab = WalletTab.DISCOVER,
+                                )
+                                if (!ok) {
+                                    emitBrowserReject(requestId, 4001, "未能生成树莓派签名二维码")
+                                } else {
+                                    pendingInjectedBrowserRequest = InjectedBrowserPendingRequest(
+                                        browserRequestId = requestId,
+                                        method = normalizedMethod,
+                                        origin = origin,
+                                    )
+                                    recordLocalActivity(
+                                        WalletActivityItem(
+                                            id = "browser-relay-${request.requestId}",
+                                            chainId = prepared.chainId,
+                                            kind = WalletActivityKind.DAPP,
+                                            title = "Hyperliquid 页面发起 ${normalizedMethod}",
+                                            subtitle = origin.ifBlank { "app.hyperliquid.xyz" },
+                                            detail = WalletChains.require(prepared.chainId).displayName,
+                                            statusLabel = "待树莓派签名",
+                                            timestamp = System.currentTimeMillis(),
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                emitBrowserReject(requestId, 4001, e.message ?: "请求处理失败")
+                setError("Hyperliquid 页面请求失败: ${e.message}")
+            }
+        }
+    }
+
+    fun selectChain(chainId: Long) {
+        val chain = WalletChains.byId(chainId) ?: return
+        selectChainInternal(chain, persist = true, triggerReload = true, message = "")
+    }
+
+    fun addAddressFromInput() {
+        addAddress(_uiState.value.newAddressInput)
+    }
+
+    fun addAddress(addr: String) {
+        val normalized = normalizeAddress(addr)
+            ?: return setError("地址格式错误")
+
+        _uiState.update {
+            if (it.addresses.contains(normalized)) {
+                it.copy(
+                    selectedAddress = normalized,
+                    newAddressInput = "",
+                    error = "",
+                    info = "已切换到该观察地址",
+                )
+            } else {
+                it.copy(
+                    addresses = it.addresses + normalized,
+                    selectedAddress = normalized,
+                    newAddressInput = "",
+                    error = "",
+                    info = "已添加观察地址",
+                )
+            }
+        }
+        persistAddresses()
+        loadBalances()
+        refreshHyperliquid(silent = true)
+        emitBrowserAccountsChanged()
+    }
+
+    fun selectAddress(address: String) {
+        _uiState.update { it.copy(selectedAddress = address, error = "", info = "") }
+        persistAddresses()
+        loadBalances()
+        refreshHyperliquid(silent = true)
+        emitBrowserAccountsChanged()
+    }
+
+    fun removeAddress(address: String) {
+        _uiState.update { state ->
+            val updated = state.addresses.filterNot { it.equals(address, ignoreCase = true) }
+            val selected = when {
+                updated.isEmpty() -> ""
+                state.selectedAddress.equals(address, ignoreCase = true) -> updated.first()
+                else -> state.selectedAddress
+            }
+            state.copy(
+                addresses = updated,
+                selectedAddress = selected,
+                chainPortfolios = if (selected.isBlank()) emptyMap() else state.chainPortfolios,
+                info = "已删除观察地址",
+                error = "",
+            )
+        }
+        persistAddresses()
+        if (_uiState.value.selectedAddress.isNotBlank()) {
+            loadBalances()
+            refreshHyperliquid(silent = true)
+        } else {
+            clearHyperliquidState()
+        }
+        emitBrowserAccountsChanged()
+    }
+
+    fun loadBalances(
+        chainId: Long = _uiState.value.selectedChainId,
+        address: String = _uiState.value.selectedAddress,
+        silent: Boolean = false,
+    ) {
+        if (address.isBlank()) return
+        val chain = WalletChains.require(chainId)
+        viewModelScope.launch {
+            if (!silent) {
+                _uiState.update { it.copy(loadingBalances = true, error = "") }
+            }
+            try {
+                val balances = mutableListOf<AssetBalanceUi>()
+                val nativeToken = chain.tokens.first()
+                val nativeBalance = EvmRpc.getBalance(chain, address)
+                balances += AssetBalanceUi(
+                    symbol = nativeToken.symbol,
+                    name = nativeToken.name,
+                    amount = formatUnits(nativeBalance, nativeToken.decimals),
+                    isNative = true,
+                )
+                chain.tokens.filter { it.address != null }.forEach { token ->
+                    val amount = EvmRpc.getTokenBalance(chain, token.address!!, address)
+                    balances += AssetBalanceUi(
+                        symbol = token.symbol,
+                        name = token.name,
+                        amount = formatUnits(amount, token.decimals),
+                        contractAddress = token.address,
+                    )
+                }
+                _uiState.update { state ->
+                    state.copy(
+                        loadingBalances = false,
+                        chainPortfolios = state.chainPortfolios + (
+                            chain.chainId to ChainPortfolioUi(
+                                chainId = chain.chainId,
+                                assets = balances,
+                                lastUpdatedAt = System.currentTimeMillis(),
+                                status = "已同步 ${chain.shortName}",
+                            )
+                        ),
+                        error = "",
+                    )
+                }
+                syncRecentActivity(chain, address)
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        loadingBalances = false,
+                        error = "加载 ${chain.shortName} 资产失败: ${e.message}",
+                    )
+                }
+            }
+        }
+    }
+
+    fun refreshSelectedActivity() {
+        val state = _uiState.value
+        if (state.selectedAddress.isBlank()) return
+        loadBalances(state.selectedChainId, state.selectedAddress)
+    }
+
+    fun refreshHyperliquid(silent: Boolean = false) {
+        val address = _uiState.value.selectedAddress
+        if (address.isBlank()) return
+        viewModelScope.launch {
+            if (!silent) {
+                _uiState.update {
+                    it.copy(
+                        hyperliquidLoading = true,
+                        hyperliquidStatus = "正在同步 Hyperliquid...",
+                        error = "",
+                    )
+                }
+            }
+            try {
+                val storedAgent = currentHyperliquidAgent(address)
+                val snapshot = HyperliquidApi.loadSnapshot(address, storedAgent)
+                hyperliquidMarketMeta.clear()
+                hyperliquidMarketMeta.putAll(snapshot.marketMeta)
+
+                val updatedAgent = storedAgent?.copy(validUntil = snapshot.storedAgentValidUntil)
+                if (updatedAgent != null) {
+                    hyperliquidAgentsByAccount[updatedAgent.accountAddress.lowercase()] = updatedAgent
+                    persistHyperliquidAgents()
+                }
+
+                val selectedMarket = when {
+                    snapshot.marketMeta.containsKey(_uiState.value.hyperliquidSelectedMarket.uppercase()) ->
+                        _uiState.value.hyperliquidSelectedMarket.uppercase()
+                    snapshot.markets.isNotEmpty() -> snapshot.markets.first().name.uppercase()
+                    else -> _uiState.value.hyperliquidSelectedMarket
+                }
+                val defaultPrice = snapshot.marketMeta[selectedMarket]?.midPrice.orEmpty()
+                _uiState.update { state ->
+                    state.copy(
+                        hyperliquidLoading = false,
+                        hyperliquidStatus = snapshot.status,
+                        hyperliquidAccount = snapshot.account,
+                        hyperliquidMarkets = snapshot.markets,
+                        hyperliquidOpenOrders = snapshot.openOrders,
+                        hyperliquidFills = snapshot.fills,
+                        hyperliquidAgent = updatedAgent?.toUi(),
+                        hyperliquidSelectedMarket = selectedMarket,
+                        hyperliquidOrderPriceInput = if (
+                            state.hyperliquidOrderMode == HyperliquidOrderMode.LIMIT &&
+                            state.hyperliquidOrderPriceInput.isBlank()
+                        ) {
+                            defaultPrice
+                        } else {
+                            state.hyperliquidOrderPriceInput
+                        },
+                        error = if (silent) state.error else "",
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        hyperliquidLoading = false,
+                        hyperliquidStatus = "Hyperliquid 同步失败",
+                    )
+                }
+                if (!silent) {
+                    setError("Hyperliquid 同步失败: ${e.message}")
+                }
+            }
+        }
+    }
+
+    fun beginHyperliquidAgentApproval() {
+        val address = _uiState.value.selectedAddress
+        if (address.isBlank()) return setError("请先添加或选择观察地址")
+        val approval = runCatching { HyperliquidApi.buildApprovalRequest(address) }
+            .getOrElse { return setError("生成 Hyperliquid 代理失败: ${it.message}") }
+        pendingHyperliquidApproval = approval
+        val payload = TpRequestBuilder.buildSignTypedDataRequest(
+            address = address,
+            typedDataJson = approval.typedDataJson,
+            chain = WalletChains.ARBITRUM,
+            requestId = "hyperliquid-approve-${approval.nonce}",
+            dappName = "Hyperliquid",
+            dappUrl = "https://app.hyperliquid.xyz",
+            dappSource = "Hyperliquid native trade panel",
+        )
+        prepareRelayRequest(
+            payload = payload,
+            explicitResponseType = PendingResponseType.SHOW_SIGNATURE,
+            explicitTitle = "Hyperliquid 启用交易",
+            focusTab = WalletTab.DISCOVER,
+        )
+        _uiState.update {
+            it.copy(
+                hyperliquidPendingApproval = true,
+                hyperliquidStatus = "请让树莓派签名 Hyperliquid 授权请求",
+                activeTab = WalletTab.DISCOVER,
+                error = "",
+                info = "代理钱包 ${shortAddress(approval.agent.agentAddress)} 已生成，签名后即可在 app 内直接下单。",
+            )
+        }
+        recordLocalActivity(
+            WalletActivityItem(
+                id = "hyperliquid-approve-${approval.nonce}",
+                chainId = WalletChains.ARBITRUM.chainId,
+                kind = WalletActivityKind.DAPP,
+                title = "Hyperliquid 请求授权代理",
+                subtitle = shortAddress(approval.agent.agentAddress),
+                detail = approval.agent.agentName,
+                statusLabel = "待树莓派签名",
+                timestamp = System.currentTimeMillis(),
+            )
+        )
+    }
+
+    fun placeHyperliquidOrder() {
+        val state = _uiState.value
+        val address = state.selectedAddress
+        if (address.isBlank()) return setError("请先选择观察地址")
+        val agent = currentHyperliquidAgent(address)
+            ?: return setError("请先授权 Hyperliquid 代理钱包")
+        val market = hyperliquidMarketMeta[state.hyperliquidSelectedMarket.uppercase()]
+            ?: return setError("当前市场不可用，请先刷新 Hyperliquid")
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(hyperliquidLoading = true, error = "") }
+            try {
+                val result = HyperliquidApi.placeOrder(
+                    agent = agent,
+                    market = market,
+                    isBuy = state.hyperliquidOrderSideBuy,
+                    sizeText = state.hyperliquidOrderSizeInput,
+                    orderMode = state.hyperliquidOrderMode,
+                    priceText = state.hyperliquidOrderPriceInput,
+                    reduceOnly = state.hyperliquidReduceOnly,
+                )
+                ensureHyperliquidSuccess(result, "下单")
+                recordLocalActivity(
+                    WalletActivityItem(
+                        id = "hyperliquid-order-${System.currentTimeMillis()}",
+                        chainId = WalletChains.ARBITRUM.chainId,
+                        kind = WalletActivityKind.DAPP,
+                        title = "Hyperliquid ${if (state.hyperliquidOrderSideBuy) "买入" else "卖出"} ${market.name}",
+                        subtitle = "${state.hyperliquidOrderSizeInput} @ ${if (state.hyperliquidOrderMode == HyperliquidOrderMode.MARKET) "市价" else state.hyperliquidOrderPriceInput}",
+                        detail = result.toString(),
+                        statusLabel = "已提交",
+                        timestamp = System.currentTimeMillis(),
+                    )
+                )
+                _uiState.update {
+                    it.copy(
+                        hyperliquidLoading = false,
+                        info = "Hyperliquid 订单已提交",
+                        hyperliquidStatus = "订单已提交，正在刷新",
+                    )
+                }
+                refreshHyperliquid(silent = true)
+            } catch (e: Exception) {
+                _uiState.update { it.copy(hyperliquidLoading = false) }
+                setError("Hyperliquid 下单失败: ${e.message}")
+            }
+        }
+    }
+
+    fun cancelHyperliquidOrder(coin: String, oid: Long) {
+        val address = _uiState.value.selectedAddress
+        if (address.isBlank()) return setError("请先选择观察地址")
+        val agent = currentHyperliquidAgent(address)
+            ?: return setError("请先授权 Hyperliquid 代理钱包")
+        val market = hyperliquidMarketMeta[coin.uppercase()]
+            ?: return setError("未找到 $coin 的市场元数据")
+        viewModelScope.launch {
+            _uiState.update { it.copy(hyperliquidLoading = true, error = "") }
+            try {
+                val result = HyperliquidApi.cancelOrder(agent, market, oid)
+                ensureHyperliquidSuccess(result, "撤单")
+                recordLocalActivity(
+                    WalletActivityItem(
+                        id = "hyperliquid-cancel-$oid",
+                        chainId = WalletChains.ARBITRUM.chainId,
+                        kind = WalletActivityKind.DAPP,
+                        title = "Hyperliquid 已撤单",
+                        subtitle = "$coin / OID $oid",
+                        detail = result.toString(),
+                        statusLabel = "已提交",
+                        timestamp = System.currentTimeMillis(),
+                    )
+                )
+                _uiState.update {
+                    it.copy(
+                        hyperliquidLoading = false,
+                        info = "Hyperliquid 撤单已提交",
+                        hyperliquidStatus = "撤单已提交，正在刷新",
+                    )
+                }
+                refreshHyperliquid(silent = true)
+            } catch (e: Exception) {
+                _uiState.update { it.copy(hyperliquidLoading = false) }
+                setError("Hyperliquid 撤单失败: ${e.message}")
+            }
+        }
+    }
+
+    fun prepareTransfer() {
+        val state = _uiState.value
+        val chain = WalletChains.require(state.selectedChainId)
+        val from = state.selectedAddress
+        val to = normalizeAddress(state.transferTo)
+        val amount = state.transferAmount.trim()
+        val token = chain.tokens.firstOrNull { it.symbol.equals(state.transferToken, ignoreCase = true) }
+            ?: return setError("当前链不支持 ${state.transferToken}")
+
+        if (from.isBlank()) return setError("请先添加观察地址")
+        if (to == null) return setError("接收地址格式错误")
+        if (amount.isBlank()) return setError("请输入数量")
+
+        viewModelScope.launch {
+            try {
+                val request = if (token.address == null) {
+                    buildNativeTransferRequest(chain, from, to, amount)
+                } else {
+                    buildTokenTransferRequest(chain, from, to, amount, token)
+                }
+                prepareRelayRequest(
+                    payload = request,
+                    explicitResponseType = PendingResponseType.BROADCAST_TX,
+                    explicitTitle = "${chain.shortName} ${token.symbol} 转账",
+                )
+                _uiState.update {
+                    it.copy(
+                        info = "${chain.shortName} ${token.symbol} 转账请求已生成",
+                        error = "",
+                    )
+                }
+            } catch (e: Exception) {
+                setError("构建交易失败: ${e.message}")
+            }
+        }
+    }
+
+    fun prepareTransferEth() {
+        val chain = WalletChains.require(_uiState.value.selectedChainId)
+        _uiState.update { it.copy(transferToken = chain.nativeSymbol) }
+        prepareTransfer()
+    }
+
+    fun prepareTransferToken() {
+        prepareTransfer()
+    }
+
+    fun addContact() {
+        val state = _uiState.value
+        val name = state.contactNameInput.trim()
+        val address = normalizeAddress(state.contactAddressInput)
+            ?: return setError("联系人地址格式错误")
+        if (name.isBlank()) return setError("请输入联系人名称")
+
+        val existing = state.contacts.firstOrNull { it.address.equals(address, ignoreCase = true) }
+        if (existing != null) {
+            _uiState.update {
+                it.copy(
+                    transferTo = existing.address,
+                    contactNameInput = "",
+                    contactAddressInput = "",
+                    contactNoteInput = "",
+                    info = "联系人已存在，已填入转账地址",
+                    error = "",
+                )
+            }
+            return
+        }
+
+        val contact = TransferContact(
+            id = UUID.randomUUID().toString(),
+            name = name,
+            address = address,
+            note = state.contactNoteInput.trim(),
+            chainId = state.selectedChainId,
+        )
+        _uiState.update {
+            it.copy(
+                contacts = listOf(contact) + it.contacts,
+                transferTo = address,
+                contactNameInput = "",
+                contactAddressInput = "",
+                contactNoteInput = "",
+                info = "联系人已保存",
+                error = "",
+            )
+        }
+        persistContacts()
+    }
+
+    fun useContact(contactId: String) {
+        val contact = _uiState.value.contacts.firstOrNull { it.id == contactId } ?: return
+        _uiState.update { it.copy(transferTo = contact.address, error = "", info = "已填入联系人地址") }
+        contact.chainId?.let { chainId ->
+            WalletChains.byId(chainId)?.let { selectChainInternal(it, persist = true, triggerReload = true, message = "") }
+        }
+    }
+
+    fun removeContact(contactId: String) {
+        _uiState.update {
+            it.copy(
+                contacts = it.contacts.filterNot { contact -> contact.id == contactId },
+                info = "联系人已删除",
+                error = "",
+            )
+        }
+        persistContacts()
+    }
+
+    fun approveWalletConnectProposal() {
+        val address = _uiState.value.selectedAddress
+        if (address.isBlank()) return setError("请先选择观察地址，再批准 WalletConnect 会话")
+        WalletConnectBridge.approveCurrentProposal(address) { result ->
+            result.onFailure { setError("WalletConnect 批准失败: ${it.message}") }
+        }
+    }
+
+    fun rejectWalletConnectProposal() {
+        WalletConnectBridge.rejectCurrentProposal { result ->
+            result.onFailure { setError("WalletConnect 拒绝失败: ${it.message}") }
+        }
+    }
+
+    fun importRawRequest() {
+        val payload = _uiState.value.requestInput.trim()
+        if (payload.isBlank()) return setError("请输入或扫码 DApp 请求")
+        handleIncomingPayload(payload, WalletTab.HOME)
+    }
+
+    fun onRequestScanResult(payload: String) {
+        _uiState.update { it.copy(requestInput = payload, activeTab = WalletTab.HOME, error = "") }
+        handleIncomingPayload(payload, WalletTab.HOME)
+    }
+
+    fun onResponseScanResult(payload: String) {
+        val parsed = TpResponseParser.parse(payload)
+        if (parsed.isError || (parsed.rawTransaction == null && parsed.signature == null)) {
+            return setError("无法解析树莓派结果")
+        }
+
+        viewModelScope.launch {
+            when {
+                parsed.rawTransaction != null -> {
+                    val browserRequest = pendingInjectedBrowserRequest
+                    if (browserRequest != null && browserRequest.method.equals("eth_signTransaction", ignoreCase = true)) {
+                        emitBrowserResolve(
+                            browserRequest.browserRequestId,
+                            org.json.JSONObject.quote(parsed.rawTransaction),
+                        )
+                        pendingInjectedBrowserRequest = null
+                        recordLocalActivity(
+                            WalletActivityItem(
+                                id = "browser-signed-tx-${System.currentTimeMillis()}",
+                                chainId = _uiState.value.preparedRequestChainId ?: _uiState.value.selectedChainId,
+                                kind = WalletActivityKind.DAPP,
+                                title = "Hyperliquid 页面已拿到签名交易",
+                                subtitle = browserRequest.origin.ifBlank { "app.hyperliquid.xyz" },
+                                detail = _uiState.value.requestSummary,
+                                statusLabel = "已回传页面",
+                                timestamp = System.currentTimeMillis(),
+                            )
+                        )
+                        _uiState.update {
+                            it.copy(
+                                signQrBitmap = null,
+                                signQrPages = emptyList(),
+                                signQrPageIndex = 0,
+                                pendingResponseType = null,
+                                preparedRequestChainId = null,
+                                requestTitle = "",
+                                requestSummary = "",
+                                transferInfo = "",
+                                dappInfo = "",
+                                relayHint = "",
+                                error = "",
+                                info = "签名交易已返回给 Hyperliquid 页面",
+                                requestInput = "",
+                            )
+                        }
+                        return@launch
+                    }
+
+                    val chain = WalletChains.require(_uiState.value.preparedRequestChainId ?: _uiState.value.selectedChainId)
+                    try {
+                        val hash = EvmRpc.sendRawTransaction(chain, parsed.rawTransaction)
+                        val pendingRequest = _uiState.value.walletConnectPendingRequest
+                        val browserRequest = pendingInjectedBrowserRequest
+                        if (pendingRequest != null) {
+                            WalletConnectBridge.respondCurrentRequestResult("0x$hash") { result ->
+                                result.onFailure { setError("WalletConnect 返回交易哈希失败: ${it.message}") }
+                            }
+                        }
+                        if (browserRequest != null) {
+                            emitBrowserResolve(
+                                browserRequest.browserRequestId,
+                                org.json.JSONObject.quote("0x$hash"),
+                            )
+                            pendingInjectedBrowserRequest = null
+                        }
+                        val explorerUrl = chain.txUrl(hash)
+                        recordLocalActivity(
+                            WalletActivityItem(
+                                id = "tx-$hash",
+                                chainId = chain.chainId,
+                                kind = WalletActivityKind.OUTGOING_TX,
+                                title = "${chain.shortName} 交易已广播",
+                                subtitle = _uiState.value.transferInfo.lineSequence().firstOrNull().orEmpty(),
+                                detail = _uiState.value.requestSummary,
+                                amountLabel = extractAmountLabel(_uiState.value.transferInfo),
+                                statusLabel = when {
+                                    pendingRequest != null -> "已返回 DApp"
+                                    browserRequest != null -> "已返回页面"
+                                    else -> "已广播"
+                                },
+                                timestamp = System.currentTimeMillis(),
+                                txHash = "0x$hash",
+                                externalUrl = explorerUrl,
+                            )
+                        )
+                        _uiState.update {
+                            it.copy(
+                                txHash = hash,
+                                txHashChainId = chain.chainId,
+                                signQrBitmap = null,
+                                signQrPages = emptyList(),
+                                signQrPageIndex = 0,
+                                pendingResponseType = null,
+                                preparedRequestChainId = null,
+                                requestTitle = "",
+                                requestSummary = "",
+                                transferInfo = "",
+                                dappInfo = "",
+                                relayHint = "",
+                                error = "",
+                                info = when {
+                                    pendingRequest != null -> "交易已广播，并已返回给 WalletConnect"
+                                    browserRequest != null -> "交易已广播，并已返回给 Hyperliquid 页面"
+                                    else -> "交易已广播"
+                                },
+                                requestInput = "",
+                            )
+                        }
+                        loadBalances(chain.chainId, _uiState.value.selectedAddress, silent = true)
+                    } catch (e: Exception) {
+                        setError("广播失败: ${e.message}")
+                    }
+                }
+
+                parsed.signature != null -> {
+                    if (pendingHyperliquidApproval != null) {
+                        handleHyperliquidApprovalResult(parsed.signature)
+                        return@launch
+                    }
+                    val browserRequest = pendingInjectedBrowserRequest
+                    if (browserRequest != null) {
+                        emitBrowserResolve(
+                            browserRequest.browserRequestId,
+                            org.json.JSONObject.quote(parsed.signature),
+                        )
+                        pendingInjectedBrowserRequest = null
+                    }
+                    val chainId = _uiState.value.preparedRequestChainId ?: _uiState.value.selectedChainId
+                    val pendingRequest = _uiState.value.walletConnectPendingRequest
+                    if (pendingRequest != null) {
+                        WalletConnectBridge.respondCurrentRequestResult(parsed.signature) { result ->
+                            result.onFailure { setError("WalletConnect 返回签名失败: ${it.message}") }
+                        }
+                    }
+                    recordLocalActivity(
+                        WalletActivityItem(
+                            id = "sig-${System.currentTimeMillis()}",
+                            chainId = chainId,
+                            kind = WalletActivityKind.SIGNATURE,
+                            title = "签名结果已返回",
+                            subtitle = parsed.address.orEmpty().ifBlank { _uiState.value.selectedAddress },
+                            detail = _uiState.value.requestSummary,
+                            statusLabel = when {
+                                pendingRequest != null -> "已回传 DApp"
+                                browserRequest != null -> "已回传页面"
+                                else -> "待复制"
+                            },
+                            timestamp = System.currentTimeMillis(),
+                        )
+                    )
+                    _uiState.update {
+                        it.copy(
+                            lastSignature = if (browserRequest != null) "" else parsed.signature,
+                            lastSignatureAddress = if (browserRequest != null) "" else parsed.address.orEmpty(),
+                            signQrBitmap = null,
+                            signQrPages = emptyList(),
+                            signQrPageIndex = 0,
+                            pendingResponseType = null,
+                            preparedRequestChainId = null,
+                            error = "",
+                            info = when {
+                                pendingRequest != null -> "签名结果已返回给 WalletConnect"
+                                browserRequest != null -> "签名结果已返回给 Hyperliquid 页面"
+                                else -> "签名结果已返回"
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun nextSignQrPage() {
+        val pages = _uiState.value.signQrPages
+        if (pages.size <= 1) return
+        updateQrPage((_uiState.value.signQrPageIndex + 1) % pages.size)
+    }
+
+    fun prevSignQrPage() {
+        val pages = _uiState.value.signQrPages
+        if (pages.size <= 1) return
+        updateQrPage(if (_uiState.value.signQrPageIndex <= 0) pages.lastIndex else _uiState.value.signQrPageIndex - 1)
+    }
+
+    fun clearPreparedRequest() {
+        pendingInjectedBrowserRequest?.let {
+            emitBrowserReject(it.browserRequestId, 4001, "用户取消了签名请求")
+        }
+        pendingInjectedBrowserRequest = null
+        pendingHyperliquidApproval = null
+        _uiState.update {
+            it.copy(
+                requestTitle = "",
+                requestSummary = "",
+                transferInfo = "",
+                dappInfo = "",
+                relayHint = "",
+                preparedRequestChainId = null,
+                signQrPages = emptyList(),
+                signQrPageIndex = 0,
+                signQrBitmap = null,
+                pendingResponseType = null,
+                hyperliquidPendingApproval = false,
+                error = "",
+                info = "",
+            )
+        }
+    }
+
+    private fun bindWalletConnectState() {
         viewModelScope.launch {
             WalletConnectBridge.status.collectLatest { status ->
                 _uiState.update { it.copy(walletConnectStatus = status) }
@@ -107,9 +957,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         WalletConnectBridge.approveCurrentProposal(currentAddress) { result ->
                             result.onSuccess {
+                                recordLocalActivity(
+                                    WalletActivityItem(
+                                        id = "dapp-proposal-${System.currentTimeMillis()}",
+                                        chainId = _uiState.value.selectedChainId,
+                                        kind = WalletActivityKind.DAPP,
+                                        title = "WalletConnect 已连接",
+                                        subtitle = proposal.peerName.ifBlank { proposal.peerUrl.ifBlank { "未知 DApp" } },
+                                        detail = proposal.requiredChains.joinToString(),
+                                        statusLabel = "会话已批准",
+                                        timestamp = System.currentTimeMillis(),
+                                    )
+                                )
                                 _uiState.update {
                                     it.copy(
-                                        info = "WalletConnect 会话已自动批准，可在 DApp 继续下一步操作",
+                                        info = "WalletConnect 会话已自动批准，可继续在 DApp 中操作",
                                         error = "",
                                     )
                                 }
@@ -132,369 +994,240 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setActiveTab(tab: WalletTab) = _uiState.update { it.copy(activeTab = tab) }
-    fun setNewAddressInput(v: String) = _uiState.update { it.copy(newAddressInput = v) }
-    fun setTransferTo(v: String) = _uiState.update { it.copy(transferTo = v) }
-    fun setTransferAmount(v: String) = _uiState.update { it.copy(transferAmount = v) }
-    fun setTransferToken(v: String) = _uiState.update { it.copy(transferToken = v) }
-    fun setRequestInput(v: String) = _uiState.update { it.copy(requestInput = v) }
-    fun setPersonalMessageInput(v: String) = _uiState.update { it.copy(personalMessageInput = v) }
-    fun setTypedDataInput(v: String) = _uiState.update { it.copy(typedDataInput = v) }
-    fun clearError() = _uiState.update { it.copy(error = "") }
-    fun clearInfo() = _uiState.update { it.copy(info = "") }
-    fun clearTxHash() = _uiState.update { it.copy(txHash = "") }
-    fun clearSignature() = _uiState.update { it.copy(lastSignature = "", lastSignatureAddress = "") }
-
-    fun approveWalletConnectProposal() {
-        val address = _uiState.value.selectedAddress
-        if (address.isBlank()) return setError("请先选择观察地址，再批准 WalletConnect 会话")
-        WalletConnectBridge.approveCurrentProposal(address) { result ->
-            result.onFailure { setError("WalletConnect 批准失败: ${it.message}") }
+    private fun restorePersistedState() {
+        val addresses = WalletStorage.readAddresses(prefs, ::normalizeAddress)
+        val selected = WalletStorage.readSelectedAddress(prefs, ::normalizeAddress)
+        val effectiveSelected = when {
+            selected.isNotBlank() && addresses.contains(selected) -> selected
+            addresses.isNotEmpty() -> addresses.first()
+            else -> ""
         }
-    }
-
-    fun rejectWalletConnectProposal() {
-        WalletConnectBridge.rejectCurrentProposal { result ->
-            result.onFailure { setError("WalletConnect 拒绝失败: ${it.message}") }
+        val selectedChain = WalletChains.byId(WalletStorage.readSelectedChainId(prefs))?.chainId
+            ?: WalletChains.DEFAULT.chainId
+        val contacts = WalletStorage.readContacts(prefs, ::normalizeAddress)
+        hyperliquidAgentsByAccount.clear()
+        WalletStorage.readHyperliquidAgents(prefs, ::normalizeAddress).forEach { agent ->
+            hyperliquidAgentsByAccount[agent.accountAddress.lowercase()] = agent
         }
-    }
-
-    fun addAddressFromInput() {
-        val input = _uiState.value.newAddressInput
-        addAddress(input)
-    }
-
-    fun addAddress(addr: String) {
-        val normalized = normalizeAddress(addr)
-            ?: run {
-                _uiState.update { it.copy(error = "地址格式错误") }
-                return
-            }
-        _uiState.update {
-            if (it.addresses.contains(normalized)) {
-                it.copy(selectedAddress = normalized, newAddressInput = "", error = "")
-            } else {
-                it.copy(
-                    addresses = it.addresses + normalized,
-                    selectedAddress = normalized,
-                    newAddressInput = "",
-                    error = "",
-                    info = "已添加观察地址"
-                )
-            }
-        }
-        persistAddresses()
-        loadBalances(normalized)
-    }
-
-    fun selectAddress(address: String) {
-        _uiState.update { it.copy(selectedAddress = address, error = "") }
-        persistAddresses()
-        loadBalances(address)
-    }
-
-    fun removeAddress(address: String) {
-        _uiState.update { state ->
-            val updated = state.addresses.filterNot { it.equals(address, ignoreCase = true) }
-            state.copy(
-                addresses = updated,
-                selectedAddress = when {
-                    updated.isEmpty() -> ""
-                    state.selectedAddress.equals(address, ignoreCase = true) -> updated.first()
-                    else -> state.selectedAddress
-                },
-                balances = if (updated.isEmpty()) emptyMap() else state.balances,
-                info = "已删除观察地址",
-                error = ""
-            )
-        }
-        persistAddresses()
-        _uiState.value.selectedAddress.takeIf { it.isNotBlank() }?.let(::loadBalances)
-    }
-
-    fun loadBalances(address: String = _uiState.value.selectedAddress) {
-        if (address.isBlank()) return
-        viewModelScope.launch {
-            _uiState.update { it.copy(loading = true, error = "") }
-            try {
-                val ethBal = ArbitrumRpc.getBalance(address)
-                val usdc = ArbitrumConfig.TOKENS["USDC"]!!.address?.let { ArbitrumRpc.getTokenBalance(it, address) } ?: BigInteger.ZERO
-                val usdt = ArbitrumConfig.TOKENS["USDT"]!!.address?.let { ArbitrumRpc.getTokenBalance(it, address) } ?: BigInteger.ZERO
-                _uiState.update {
-                    it.copy(
-                        loading = false,
-                        balances = linkedMapOf(
-                            "ETH" to formatUnits(ethBal, 18),
-                            "USDC" to formatUnits(usdc, 6),
-                            "USDT" to formatUnits(usdt, 6),
-                        ),
-                        error = ""
-                    )
-                }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(loading = false, error = "加载余额失败: ${e.message}") }
-            }
-        }
-    }
-
-    fun prepareTransferEth() {
-        val from = _uiState.value.selectedAddress
-        val to = normalizeAddress(_uiState.value.transferTo)
-        val amount = _uiState.value.transferAmount.trim()
-        if (from.isBlank()) return setError("请先添加观察地址")
-        if (to == null) return setError("接收地址格式错误")
-        if (amount.isBlank()) return setError("请输入 ETH 数量")
-
-        viewModelScope.launch {
-            try {
-                val (maxPriority, maxFee) = ArbitrumRpc.getBlockGasParams()
-                val nonce = ArbitrumRpc.getNonce(from)
-                val valueWei = amountToWei(amount, 18)
-                val gasLimit = ArbitrumRpc.estimateGas(
-                    mapOf(
-                        "from" to from,
-                        "to" to to,
-                        "value" to "0x${valueWei.toString(16)}",
-                        "data" to "0x",
-                    )
-                )
-                val request = TpRequestBuilder.buildSignTransactionRequest(
-                    fromAddress = from,
-                    txData = TxData(
-                        from = from,
-                        to = to,
-                        value = valueWei,
-                        data = "0x",
-                        gasLimit = gasLimit,
-                        nonce = nonce,
-                        maxFeePerGas = maxFee,
-                        maxPriorityFeePerGas = maxPriority,
-                        type = 2,
-                    )
-                )
-                prepareRelayRequest(request, PendingResponseType.BROADCAST_TX, "ETH 转账")
-            } catch (e: Exception) {
-                setError("构建交易失败: ${e.message}")
-            }
-        }
-    }
-
-    fun prepareTransferToken() {
-        val from = _uiState.value.selectedAddress
-        val to = normalizeAddress(_uiState.value.transferTo)
-        val amount = _uiState.value.transferAmount.trim()
-        val tokenKey = _uiState.value.transferToken
-        if (from.isBlank()) return setError("请先添加观察地址")
-        if (to == null) return setError("接收地址格式错误")
-        if (amount.isBlank()) return setError("请输入数量")
-
-        val token = ArbitrumConfig.TOKENS[tokenKey] ?: return setError("不支持的代币")
-        val tokenAddress = token.address ?: return setError("该资产不是 ERC20")
-
-        viewModelScope.launch {
-            try {
-                val (maxPriority, maxFee) = ArbitrumRpc.getBlockGasParams()
-                val nonce = ArbitrumRpc.getNonce(from)
-                val amountWei = amountToWei(amount, token.decimals)
-                val data = "a9059cbb" +
-                    "0".repeat(24) + to.removePrefix("0x").lowercase() +
-                    amountWei.toString(16).padStart(64, '0')
-                val gasLimit = ArbitrumRpc.estimateGas(
-                    mapOf(
-                        "from" to from,
-                        "to" to tokenAddress,
-                        "data" to "0x$data",
-                    )
-                )
-                val request = TpRequestBuilder.buildSignTransactionRequest(
-                    fromAddress = from,
-                    txData = TxData(
-                        from = from,
-                        to = tokenAddress,
-                        value = BigInteger.ZERO,
-                        data = "0x$data",
-                        gasLimit = gasLimit,
-                        nonce = nonce,
-                        maxFeePerGas = maxFee,
-                        maxPriorityFeePerGas = maxPriority,
-                        type = 2,
-                    )
-                )
-                prepareRelayRequest(request, PendingResponseType.BROADCAST_TX, "$tokenKey 转账")
-            } catch (e: Exception) {
-                setError("构建交易失败: ${e.message}")
-            }
-        }
-    }
-
-    fun preparePersonalSign() {
-        val address = _uiState.value.selectedAddress
-        val message = _uiState.value.personalMessageInput.trim()
-        if (address.isBlank()) return setError("请先选择观察地址")
-        if (message.isBlank()) return setError("请输入要签名的消息")
-        val request = TpRequestBuilder.buildPersonalSignRequest(address, message)
-        prepareRelayRequest(request, PendingResponseType.SHOW_SIGNATURE, "personal_sign")
-    }
-
-    fun prepareTypedDataSign() {
-        val address = _uiState.value.selectedAddress
-        val typedData = _uiState.value.typedDataInput.trim()
-        if (address.isBlank()) return setError("请先选择观察地址")
-        if (typedData.isBlank()) return setError("请输入 TypedData JSON")
-        try {
-            typedDataJson.parseToJsonElement(typedData)
-        } catch (e: Exception) {
-            return setError("TypedData JSON 不合法: ${e.message}")
-        }
-        val request = TpRequestBuilder.buildSignTypedDataRequest(address, typedData)
-        prepareRelayRequest(request, PendingResponseType.SHOW_SIGNATURE, "signTypedDataV4")
-    }
-
-    fun importRawRequest() {
-        val payload = _uiState.value.requestInput.trim()
-        if (payload.isBlank()) return setError("请输入或扫码 DApp 请求")
-        handleIncomingPayload(payload)
-    }
-
-    fun onRequestScanResult(payload: String) {
-        _uiState.update { it.copy(requestInput = payload, activeTab = WalletTab.SIGN, error = "") }
-        handleIncomingPayload(payload)
-    }
-
-    fun onResponseScanResult(payload: String) {
-        val parsed = TpResponseParser.parse(payload)
-        if (parsed.isError || (parsed.rawTransaction == null && parsed.signature == null)) {
-            return setError("无法解析树莓派结果")
-        }
-
-        viewModelScope.launch {
-            when {
-                parsed.rawTransaction != null -> {
-                    try {
-                        val hash = ArbitrumRpc.sendRawTransaction(parsed.rawTransaction)
-                        val pendingRequest = _uiState.value.walletConnectPendingRequest
-                        if (pendingRequest != null) {
-                            WalletConnectBridge.respondCurrentRequestResult("0x$hash") { result ->
-                                result.onFailure { setError("WalletConnect 返回交易哈希失败: ${it.message}") }
-                            }
-                        }
-                        _uiState.update {
-                            it.copy(
-                                txHash = hash,
-                                signQrBitmap = null,
-                                signQrPages = emptyList(),
-                                signQrPageIndex = 0,
-                                pendingResponseType = null,
-                                requestTitle = "",
-                                requestSummary = "",
-                                transferInfo = "",
-                                dappInfo = "",
-                                relayHint = "",
-                                error = "",
-                                info = if (pendingRequest != null) "交易已广播，并已返回给 WalletConnect" else "交易已广播",
-                                requestInput = "",
-                            )
-                        }
-                    } catch (e: Exception) {
-                        setError("广播失败: ${e.message}")
-                    }
-                }
-                parsed.signature != null -> {
-                    val pendingRequest = _uiState.value.walletConnectPendingRequest
-                    if (pendingRequest != null) {
-                        WalletConnectBridge.respondCurrentRequestResult(parsed.signature) { result ->
-                            result.onFailure { setError("WalletConnect 返回签名失败: ${it.message}") }
-                        }
-                    }
-                    _uiState.update {
-                        it.copy(
-                            lastSignature = parsed.signature,
-                            lastSignatureAddress = parsed.address.orEmpty(),
-                            signQrBitmap = null,
-                            signQrPages = emptyList(),
-                            signQrPageIndex = 0,
-                            pendingResponseType = null,
-                            error = "",
-                            info = if (pendingRequest != null) "签名结果已返回给 WalletConnect" else "签名结果已返回",
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    fun nextSignQrPage() {
-        val pages = _uiState.value.signQrPages
-        if (pages.size <= 1) return
-        val nextIndex = (_uiState.value.signQrPageIndex + 1) % pages.size
-        updateQrPage(nextIndex)
-    }
-
-    fun prevSignQrPage() {
-        val pages = _uiState.value.signQrPages
-        if (pages.size <= 1) return
-        val nextIndex = if (_uiState.value.signQrPageIndex <= 0) pages.lastIndex else _uiState.value.signQrPageIndex - 1
-        updateQrPage(nextIndex)
-    }
-
-    fun clearPreparedRequest() {
+        localActivityItems.clear()
+        localActivityItems += WalletStorage.readActivity(prefs)
         _uiState.update {
             it.copy(
-                requestTitle = "",
-                requestSummary = "",
-                transferInfo = "",
-                dappInfo = "",
-                relayHint = "",
-                signQrPages = emptyList(),
-                signQrPageIndex = 0,
-                signQrBitmap = null,
-                pendingResponseType = null,
-                error = "",
-                info = "",
+                addresses = addresses,
+                selectedAddress = effectiveSelected,
+                selectedChainId = selectedChain,
+                transferToken = WalletChains.require(selectedChain).preferredTransferSymbol(),
+                contacts = contacts,
+                hyperliquidAgent = currentHyperliquidAgent(effectiveSelected)?.toUi(),
+                hyperliquidStatus = if (effectiveSelected.isBlank()) {
+                    "先添加观察地址，再启用 Hyperliquid"
+                } else {
+                    "正在同步 Hyperliquid..."
+                },
             )
         }
+        emitBrowserAccountsChanged()
+        emitBrowserChainChanged()
+        publishActivity()
+        if (effectiveSelected.isNotBlank()) {
+            loadBalances(selectedChain, effectiveSelected)
+            refreshHyperliquid(silent = true)
+        }
+    }
+
+    private fun persistAddresses() {
+        val state = _uiState.value
+        WalletStorage.writeAddresses(prefs, state.addresses, state.selectedAddress)
+    }
+
+    private fun persistContacts() {
+        WalletStorage.writeContacts(prefs, _uiState.value.contacts)
+    }
+
+    private fun persistActivity() {
+        WalletStorage.writeActivity(prefs, localActivityItems)
+    }
+
+    private fun persistHyperliquidAgents() {
+        WalletStorage.writeHyperliquidAgents(prefs, hyperliquidAgentsByAccount.values)
+    }
+
+    private fun syncRecentActivity(chain: WalletChain, address: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(syncingActivity = true) }
+            runCatching {
+                EvmRpc.getRecentTokenTransfers(chain, address).map { transfer ->
+                    val counterparty = if (transfer.incoming) transfer.from else transfer.to
+                    WalletActivityItem(
+                        id = "onchain-${transfer.txHash}-${transfer.token.symbol}-${transfer.incoming}",
+                        chainId = chain.chainId,
+                        kind = WalletActivityKind.ONCHAIN,
+                        title = if (transfer.incoming) "收到 ${transfer.token.symbol}" else "转出 ${transfer.token.symbol}",
+                        subtitle = counterparty.ifBlank { "链上账户" },
+                        detail = "${shortAddress(transfer.from)} -> ${shortAddress(transfer.to)}",
+                        amountLabel = "${if (transfer.incoming) "+" else "-"}${formatUnits(transfer.amount, transfer.token.decimals)} ${transfer.token.symbol}",
+                        statusLabel = "链上记录",
+                        timestamp = transfer.timestamp,
+                        txHash = transfer.txHash,
+                        externalUrl = chain.txUrl(transfer.txHash),
+                    )
+                }
+            }.onSuccess { items ->
+                syncedActivityByChain[chain.chainId] = items
+                publishActivity()
+            }.onFailure {
+                syncedActivityByChain.remove(chain.chainId)
+                publishActivity()
+            }
+            _uiState.update { it.copy(syncingActivity = false) }
+        }
+    }
+
+    private suspend fun buildNativeTransferRequest(
+        chain: WalletChain,
+        from: String,
+        to: String,
+        amount: String,
+    ): String {
+        val (maxPriority, maxFee) = EvmRpc.getBlockGasParams(chain)
+        val nonce = EvmRpc.getNonce(chain, from)
+        val valueWei = amountToWei(amount, chain.tokens.first().decimals)
+        val gasLimit = EvmRpc.estimateGas(
+            chain,
+            mapOf(
+                "from" to from,
+                "to" to to,
+                "value" to "0x${valueWei.toString(16)}",
+                "data" to "0x",
+            )
+        )
+        return TpRequestBuilder.buildSignTransactionRequest(
+            fromAddress = from,
+            txData = TxData(
+                from = from,
+                to = to,
+                value = valueWei,
+                data = "0x",
+                gasLimit = gasLimit,
+                nonce = nonce,
+                maxFeePerGas = maxFee,
+                maxPriorityFeePerGas = maxPriority,
+                type = 2,
+            ),
+            chain = chain,
+        )
+    }
+
+    private suspend fun buildTokenTransferRequest(
+        chain: WalletChain,
+        from: String,
+        to: String,
+        amount: String,
+        token: TokenInfo,
+    ): String {
+        val tokenAddress = token.address ?: error("该资产不是 ERC20")
+        val (maxPriority, maxFee) = EvmRpc.getBlockGasParams(chain)
+        val nonce = EvmRpc.getNonce(chain, from)
+        val amountWei = amountToWei(amount, token.decimals)
+        val data = "a9059cbb" +
+            "0".repeat(24) + to.removePrefix("0x").lowercase() +
+            amountWei.toString(16).padStart(64, '0')
+        val gasLimit = EvmRpc.estimateGas(
+            chain,
+            mapOf(
+                "from" to from,
+                "to" to tokenAddress,
+                "data" to "0x$data",
+            )
+        )
+        return TpRequestBuilder.buildSignTransactionRequest(
+            fromAddress = from,
+            txData = TxData(
+                from = from,
+                to = tokenAddress,
+                value = BigInteger.ZERO,
+                data = "0x$data",
+                gasLimit = gasLimit,
+                nonce = nonce,
+                maxFeePerGas = maxFee,
+                maxPriorityFeePerGas = maxPriority,
+                type = 2,
+            ),
+            chain = chain,
+        )
+    }
+
+    private fun selectChainInternal(
+        chain: WalletChain,
+        persist: Boolean,
+        triggerReload: Boolean,
+        message: String,
+    ) {
+        _uiState.update {
+            it.copy(
+                selectedChainId = chain.chainId,
+                transferToken = if (chain.supportsSymbol(it.transferToken)) it.transferToken else chain.preferredTransferSymbol(),
+                info = if (message.isBlank()) it.info else message,
+                error = "",
+            )
+        }
+        if (persist) {
+            WalletStorage.writeSelectedChainId(prefs, chain.chainId)
+        }
+        if (triggerReload && _uiState.value.selectedAddress.isNotBlank()) {
+            loadBalances(chain.chainId, _uiState.value.selectedAddress)
+        }
+        emitBrowserChainChanged()
     }
 
     private fun prepareRelayRequest(
         payload: String,
         explicitResponseType: PendingResponseType?,
-        explicitTitle: String?
+        explicitTitle: String?,
+        focusTab: WalletTab = WalletTab.HOME,
     ) {
         viewModelScope.launch {
-            prepareRelayRequestNow(payload, explicitResponseType, explicitTitle)
+            prepareRelayRequestNow(payload, explicitResponseType, explicitTitle, focusTab)
         }
     }
 
     private suspend fun prepareRelayRequestNow(
         payload: String,
         explicitResponseType: PendingResponseType?,
-        explicitTitle: String?
+        explicitTitle: String?,
+        focusTab: WalletTab = WalletTab.HOME,
     ): Boolean {
         return try {
             val request = TpQrCodec.parseSignRequest(payload)
+            val chain = WalletChains.byId(request.chainId)
+                ?: throw IllegalArgumentException("当前不支持链 ${request.chainId}")
             val bundle = RelayQrCodec.buildRelayPayloads(payload)
             val qr = generateQrBitmap(bundle.payloads.first())
-            _uiState.update {
-                it.copy(
-                    requestTitle = explicitTitle ?: requestTitle(request),
+            _uiState.update { state ->
+                state.copy(
+                    selectedChainId = chain.chainId,
+                    transferToken = if (chain.supportsSymbol(state.transferToken)) state.transferToken else chain.preferredTransferSymbol(),
+                    requestTitle = explicitTitle ?: "${chain.shortName} ${requestTitle(request)}",
                     requestSummary = buildRequestSummary(request),
                     transferInfo = buildTransferInfo(request),
                     dappInfo = buildDappInfo(request),
                     relayHint = if (bundle.payloads.size > 1) {
-                        "已生成 ${bundle.payloads.size} 张静态二维码，将自动循环切换。"
+                        "已生成 ${bundle.payloads.size} 张静态二维码，将自动轮播给离线签名器扫描。"
                     } else {
                         "已生成 1 张静态二维码，可直接给树莓派扫描。"
                     },
+                    preparedRequestChainId = chain.chainId,
                     signQrPages = bundle.payloads,
                     signQrPageIndex = 0,
                     signQrBitmap = qr,
                     pendingResponseType = explicitResponseType ?: inferResponseType(request),
                     error = "",
-                    info = "请求已准备好，下一步让树莓派扫描。",
-                    activeTab = WalletTab.SIGN,
-                    txHash = if ((explicitResponseType ?: inferResponseType(request)) == PendingResponseType.BROADCAST_TX) "" else it.txHash,
-                    lastSignature = if ((explicitResponseType ?: inferResponseType(request)) == PendingResponseType.SHOW_SIGNATURE) "" else it.lastSignature,
-                    lastSignatureAddress = if ((explicitResponseType ?: inferResponseType(request)) == PendingResponseType.SHOW_SIGNATURE) "" else it.lastSignatureAddress,
+                    info = "请求已准备好，请让树莓派扫描本页二维码。",
+                    activeTab = focusTab,
+                    txHash = if ((explicitResponseType ?: inferResponseType(request)) == PendingResponseType.BROADCAST_TX) "" else state.txHash,
+                    txHashChainId = if ((explicitResponseType ?: inferResponseType(request)) == PendingResponseType.BROADCAST_TX) null else state.txHashChainId,
+                    lastSignature = if ((explicitResponseType ?: inferResponseType(request)) == PendingResponseType.SHOW_SIGNATURE) "" else state.lastSignature,
+                    lastSignatureAddress = if ((explicitResponseType ?: inferResponseType(request)) == PendingResponseType.SHOW_SIGNATURE) "" else state.lastSignatureAddress,
                 )
             }
             true
@@ -504,16 +1237,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun handleIncomingPayload(payload: String) {
+    private fun handleIncomingPayload(payload: String, focusTab: WalletTab) {
         val normalizedPayload = WalletConnectUriParser.extract(payload) ?: payload.trim()
         if (normalizedPayload.startsWith("wc:", ignoreCase = true)) {
             try {
                 WalletConnectBridge.pair(normalizedPayload)
+                recordLocalActivity(
+                    WalletActivityItem(
+                        id = "wc-pair-${System.currentTimeMillis()}",
+                        chainId = _uiState.value.selectedChainId,
+                        kind = WalletActivityKind.DAPP,
+                        title = "收到 WalletConnect 配对链接",
+                        subtitle = "等待 DApp 发起会话提案",
+                        statusLabel = "连接中",
+                        timestamp = System.currentTimeMillis(),
+                    )
+                )
                 _uiState.update {
                     it.copy(
-                        info = "已接收 WalletConnect 配对链接。请回 DApp 点击连接/签名，收到请求后会自动生成给树莓派的二维码。",
+                        info = "已接收 WalletConnect 配对链接。请回 DApp 点击连接/签名。",
                         error = "",
-                        activeTab = WalletTab.SIGN,
+                        activeTab = focusTab,
                     )
                 }
             } catch (e: Exception) {
@@ -521,7 +1265,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        prepareRelayRequest(normalizedPayload, null, null)
+        prepareRelayRequest(normalizedPayload, null, null, focusTab)
     }
 
     private suspend fun handleWalletConnectRequest(request: WalletConnectPendingRequest) {
@@ -532,11 +1276,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         try {
-            when (val prepared = WalletConnectRequestCodec.prepare(request, address)) {
+            when (
+                val prepared = WalletConnectRequestCodec.prepare(
+                    request = request,
+                    selectedAddress = address,
+                    activeChainId = _uiState.value.selectedChainId,
+                )
+            ) {
                 is WalletConnectPreparedRequest.ImmediateResult -> {
+                    prepared.switchToChainId?.let { targetChainId ->
+                        WalletChains.byId(targetChainId)?.let { chain ->
+                            selectChainInternal(
+                                chain = chain,
+                                persist = true,
+                                triggerReload = true,
+                                message = "已切换到 ${chain.shortName}",
+                            )
+                        }
+                    }
                     WalletConnectBridge.respondCurrentRequestResult(prepared.result) { result ->
                         result.onFailure { setError("WalletConnect 返回结果失败: ${it.message}") }
                     }
+                    recordLocalActivity(
+                        WalletActivityItem(
+                            id = "wc-immediate-${request.requestId}",
+                            chainId = prepared.switchToChainId ?: _uiState.value.selectedChainId,
+                            kind = WalletActivityKind.DAPP,
+                            title = "DApp 请求已处理",
+                            subtitle = request.method,
+                            detail = request.peerName.ifBlank { request.peerUrl },
+                            statusLabel = "已即时返回",
+                            timestamp = System.currentTimeMillis(),
+                        )
+                    )
                     _uiState.update {
                         it.copy(
                             info = "WalletConnect 请求已直接返回: ${request.method}",
@@ -550,20 +1322,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         payload = prepared.payload,
                         explicitResponseType = prepared.responseType,
                         explicitTitle = prepared.title,
+                        focusTab = WalletTab.HOME,
+                    )
+                    recordLocalActivity(
+                        WalletActivityItem(
+                            id = "wc-relay-${request.requestId}",
+                            chainId = prepared.chainId,
+                            kind = WalletActivityKind.DAPP,
+                            title = "DApp 发起 ${request.method}",
+                            subtitle = request.peerName.ifBlank { request.peerUrl.ifBlank { "未知 DApp" } },
+                            detail = WalletChains.require(prepared.chainId).displayName,
+                            statusLabel = if (ok) "待树莓派签名" else "生成二维码失败",
+                            timestamp = System.currentTimeMillis(),
+                        )
                     )
                     if (!ok) {
                         _uiState.update {
                             it.copy(
-                                info = "已收到 WalletConnect 请求 ${request.method}，但当前未成功生成树莓派签名二维码，请检查错误提示后重试。",
-                                activeTab = WalletTab.SIGN,
+                                info = "已收到 WalletConnect 请求 ${request.method}，但未成功生成树莓派二维码。",
+                                activeTab = WalletTab.HOME,
                             )
                         }
                     } else {
                         _uiState.update {
                             it.copy(
-                                info = "已收到 WalletConnect 请求 ${request.method}，树莓派签名二维码已生成，请直接扫描页面上的“树莓派签名请求”卡片。",
+                                info = "已收到 WalletConnect 请求 ${request.method}，请直接扫描页面上的签名二维码。",
                                 error = "",
-                                activeTab = WalletTab.SIGN,
+                                activeTab = WalletTab.HOME,
                             )
                         }
                     }
@@ -583,11 +1368,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update { it.copy(signQrPageIndex = index, signQrBitmap = bitmap) }
             }
             .onFailure { error ->
-                // Keep current visible QR instead of clearing it when one page fails.
                 _uiState.update {
-                    it.copy(
-                        error = "中转二维码第 ${index + 1} 张生成失败: ${error.message}",
-                    )
+                    it.copy(error = "中转二维码第 ${index + 1} 张生成失败: ${error.message}")
                 }
             }
     }
@@ -633,13 +1415,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun buildTransferInfo(request: TpSignRequest): String {
         if (request !is TpSignTransactionRequest) return ""
+        val chain = WalletChains.require(request.chainId)
         val tx = request.txData
         val to = tx.string("to") ?: "-"
         val from = request.address ?: tx.string("from") ?: "-"
         val valueWei = parseQuantity(tx.string("value") ?: "0x0")
         val dataHex = tx.string("data") ?: tx.string("input") ?: "0x"
         val cleanData = cleanHex(dataHex)
-        val token = ArbitrumConfig.findTokenByAddress(to)
+        val token = chain.findTokenByAddress(to)
 
         if (cleanData.startsWith("a9059cbb") && cleanData.length >= 136 && token != null) {
             val recipient = "0x" + cleanData.substring(32, 72)
@@ -649,22 +1432,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 appendLine("token: ${token.symbol}")
                 appendLine("to: $recipient")
                 appendLine("amount: ${formatUnits(amount, token.decimals)}")
-                appendLine("chainId: ${request.chainId} (${chainName(request.chainId)})")
+                appendLine("chainId: ${request.chainId} (${chain.displayName})")
             }.trim()
         }
 
         return buildString {
             appendLine("from: $from")
             appendLine("to: $to")
-            appendLine("value: ${formatUnits(valueWei, 18)} ETH")
+            appendLine("value: ${formatUnits(valueWei, chain.tokens.first().decimals)} ${chain.nativeSymbol}")
             appendLine("contractCall: ${if (cleanData.isNotBlank()) "yes" else "no"}")
             if (cleanData.length >= 8) appendLine("methodId: 0x${cleanData.take(8)}")
-            appendLine("chainId: ${request.chainId} (${chainName(request.chainId)})")
+            appendLine("chainId: ${request.chainId} (${chain.displayName})")
         }.trim()
     }
 
     private fun buildDappInfo(request: TpSignRequest): String {
         return buildString {
+            appendLine("network: ${WalletChains.require(request.chainId).displayName}")
             appendLine("dappName: ${request.dappName ?: "-"}")
             appendLine("dappUrl: ${request.dappUrl ?: "-"}")
             appendLine("source/origin: ${request.dappSource ?: "-"}")
@@ -672,14 +1456,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun buildTransactionSummary(request: TpSignTransactionRequest): String {
-        val tx = request.txData
         return buildString {
             appendLine("action: ${request.action}")
-            appendLine("network: ${request.network}")
-            appendLine("address: ${request.address ?: tx.string("from") ?: "-"}")
-            appendLine("nonce: ${tx.string("nonce") ?: "-"}")
-            appendLine("gasLimit: ${tx.string("gasLimit") ?: tx.string("gas") ?: "-"}")
-            appendLine("type: ${tx.string("type") ?: "-"}")
+            appendLine("network: ${WalletChains.require(request.chainId).displayName}")
+            appendLine("address: ${request.address ?: request.txData.string("from") ?: "-"}")
+            appendLine("nonce: ${request.txData.string("nonce") ?: "-"}")
+            appendLine("gasLimit: ${request.txData.string("gasLimit") ?: request.txData.string("gas") ?: "-"}")
+            appendLine("type: ${request.txData.string("type") ?: "-"}")
             appendLine("requestId: ${request.requestId ?: "-"}")
         }.trim()
     }
@@ -687,7 +1470,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun buildPersonalSignSummary(request: TpSignPersonalMessageRequest): String {
         return buildString {
             appendLine("action: ${request.action}")
-            appendLine("network: ${request.network}")
+            appendLine("network: ${WalletChains.require(request.chainId).displayName}")
             appendLine("address: ${request.address ?: "-"}")
             appendLine("message: ${preview(request.message)}")
             appendLine("bytes: ${request.message.toByteArray().size}")
@@ -698,7 +1481,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun buildTypedDataSummary(request: TpSignTypedDataRequest): String {
         return buildString {
             appendLine("action: ${request.action}")
-            appendLine("network: ${request.network}")
+            appendLine("network: ${WalletChains.require(request.chainId).displayName}")
             appendLine("address: ${request.address ?: "-"}")
             appendLine("primaryType: ${request.primaryType ?: "-"}")
             appendLine("chainId: ${request.chainId} (${chainName(request.chainId)})")
@@ -707,40 +1490,251 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }.trim()
     }
 
-    private fun restoreAddresses() {
-        val raw = prefs.getString(KEY_ADDRESSES, null)
-        val addresses = mutableListOf<String>()
-        if (!raw.isNullOrBlank()) {
-            runCatching {
-                val array = JSONArray(raw)
-                for (i in 0 until array.length()) {
-                    val value = normalizeAddress(array.optString(i))
-                    if (value != null) addresses += value
-                }
-            }
-        }
-        val selected = normalizeAddress(prefs.getString(KEY_SELECTED, "") ?: "")
-        val effectiveSelected = when {
-            selected != null && addresses.contains(selected) -> selected
-            addresses.isNotEmpty() -> addresses.first()
-            else -> ""
-        }
-        _uiState.update { it.copy(addresses = addresses, selectedAddress = effectiveSelected) }
-        if (effectiveSelected.isNotBlank()) loadBalances(effectiveSelected)
+    private fun emitBrowserResolve(requestId: String, resultJsonLiteral: String) {
+        _browserCommands.tryEmit(
+            InjectedBrowserCommand.Resolve(
+                requestId = requestId,
+                resultJsonLiteral = resultJsonLiteral,
+            )
+        )
     }
 
-    private fun persistAddresses() {
+    private fun emitBrowserReject(requestId: String, code: Int, message: String) {
+        _browserCommands.tryEmit(
+            InjectedBrowserCommand.Reject(
+                requestId = requestId,
+                code = code,
+                message = message,
+            )
+        )
+    }
+
+    private fun emitBrowserAccountsChanged() {
+        val accounts = currentAuthorizedBrowserAccounts()
+        _browserCommands.tryEmit(
+            InjectedBrowserCommand.AccountsChanged(
+                accounts = accounts,
+            )
+        )
+    }
+
+    private fun emitBrowserChainChanged() {
+        _browserCommands.tryEmit(
+            InjectedBrowserCommand.ChainChanged(
+                chainIdHex = WalletChains.require(_uiState.value.selectedChainId).chainIdHex,
+            )
+        )
+    }
+
+    private fun emitBrowserChainChanged(requestId: String) {
+        emitBrowserResolve(
+            requestId = requestId,
+            resultJsonLiteral = org.json.JSONObject.quote(WalletChains.require(_uiState.value.selectedChainId).chainIdHex),
+        )
+        emitBrowserChainChanged()
+    }
+
+    private fun currentAuthorizedBrowserAccounts(): List<String> {
         val state = _uiState.value
-        val array = JSONArray()
-        state.addresses.forEach(array::put)
-        prefs.edit()
-            .putString(KEY_ADDRESSES, array.toString())
-            .putString(KEY_SELECTED, state.selectedAddress)
-            .apply()
+        return if (state.browserAuthorized && state.selectedAddress.isNotBlank()) {
+            listOf(state.selectedAddress)
+        } else {
+            emptyList()
+        }
     }
 
-    private fun normalizeAddress(raw: String): String? {
-        val value = raw.trim().removePrefix("ethereum:")
+    private fun currentBrowserPermissionsJson(origin: String): String {
+        val accounts = currentAuthorizedBrowserAccounts()
+        if (accounts.isEmpty()) return "[]"
+
+        val permission = org.json.JSONObject().apply {
+            put("id", "satochip_eth_accounts")
+            put("invoker", origin.ifBlank { "https://app.hyperliquid.xyz" })
+            put("parentCapability", "eth_accounts")
+            put("date", System.currentTimeMillis())
+            put(
+                "caveats",
+                org.json.JSONArray().put(
+                    org.json.JSONObject().apply {
+                        put("type", "restrictReturnedAccounts")
+                        put("value", org.json.JSONArray(accounts))
+                    }
+                ),
+            )
+        }
+        return org.json.JSONArray().put(permission).toString()
+    }
+
+    private fun currentBrowserRequestPermissionsJson(): String {
+        val accounts = currentAuthorizedBrowserAccounts()
+        if (accounts.isEmpty()) return "[]"
+
+        val granted = org.json.JSONObject().apply {
+            put("parentCapability", "eth_accounts")
+            put(
+                "caveats",
+                org.json.JSONArray().put(
+                    org.json.JSONObject().apply {
+                        put("type", "restrictReturnedAccounts")
+                        put("value", org.json.JSONArray(accounts))
+                    }
+                ),
+            )
+        }
+        return org.json.JSONArray().put(granted).toString()
+    }
+
+    private fun currentBrowserCapabilitiesJson(): String {
+        val chainIdHex = WalletChains.require(_uiState.value.selectedChainId).chainIdHex
+        return org.json.JSONObject().put(
+            chainIdHex,
+            org.json.JSONObject().put(
+                "atomic",
+                org.json.JSONObject().put("status", "unsupported"),
+            ),
+        ).toString()
+    }
+
+    private fun authorizeInjectedBrowser() {
+        if (_uiState.value.browserAuthorized) return
+        _uiState.update { it.copy(browserAuthorized = true, error = "") }
+    }
+
+    private fun revokeInjectedBrowserAuthorization() {
+        if (!_uiState.value.browserAuthorized) return
+        _uiState.update { it.copy(browserAuthorized = false, error = "") }
+        emitBrowserAccountsChanged()
+    }
+
+    fun reportBrowserRuntimeIssue(message: String) {
+        val normalized = message.trim()
+        if (normalized.isBlank()) return
+        if (shouldIgnoreBrowserRuntimeIssue(normalized)) {
+            return
+        }
+        _uiState.update { state ->
+            val next = "Hyperliquid 页面异常: ${preview(normalized, 220)}"
+            if (state.error == next) state else state.copy(error = next, info = "")
+        }
+    }
+
+    private fun shouldIgnoreBrowserRuntimeIssue(message: String): Boolean {
+        if (message.contains("ResizeObserver loop completed with undelivered notifications", ignoreCase = true)) {
+            return true
+        }
+        val isChartingLibraryNoise = message.contains("charting_library", ignoreCase = true) &&
+            (
+                message.contains("CommonDelegate:Error: Value is null", ignoreCase = true) ||
+                    message.contains("Value is null", ignoreCase = true)
+                )
+        val isCorsNoise = message.contains("blocked by CORS policy", ignoreCase = true) ||
+            (
+                message.contains("Access to fetch at", ignoreCase = true) &&
+                    message.contains("Response to preflight request", ignoreCase = true)
+                ) ||
+            (
+                message.contains("app.hyperliquid.xyz", ignoreCase = true) &&
+                    message.contains("preflight request", ignoreCase = true)
+                )
+        return isChartingLibraryNoise || isCorsNoise
+    }
+
+    private suspend fun handleHyperliquidApprovalResult(signatureHex: String) {
+        val approval = pendingHyperliquidApproval ?: return
+        try {
+            val result = HyperliquidApi.approveAgent(approval, signatureHex)
+            ensureHyperliquidSuccess(result, "代理授权")
+            val savedAgent = approval.agent
+            hyperliquidAgentsByAccount[savedAgent.accountAddress.lowercase()] = savedAgent
+            persistHyperliquidAgents()
+            pendingHyperliquidApproval = null
+            recordLocalActivity(
+                WalletActivityItem(
+                    id = "hyperliquid-approved-${approval.nonce}",
+                    chainId = WalletChains.ARBITRUM.chainId,
+                    kind = WalletActivityKind.DAPP,
+                    title = "Hyperliquid 代理已授权",
+                    subtitle = shortAddress(savedAgent.agentAddress),
+                    detail = savedAgent.agentName,
+                    statusLabel = "可直接交易",
+                    timestamp = System.currentTimeMillis(),
+                )
+            )
+            _uiState.update {
+                it.copy(
+                    hyperliquidPendingApproval = false,
+                    hyperliquidAgent = savedAgent.toUi(),
+                    hyperliquidStatus = "Hyperliquid 代理已授权",
+                    signQrBitmap = null,
+                    signQrPages = emptyList(),
+                    signQrPageIndex = 0,
+                    pendingResponseType = null,
+                    preparedRequestChainId = null,
+                    requestTitle = "",
+                    requestSummary = "",
+                    transferInfo = "",
+                    dappInfo = "",
+                    relayHint = "",
+                    requestInput = "",
+                    info = "Hyperliquid 代理授权成功，已经可以直接下单。",
+                    error = "",
+                )
+            }
+            refreshHyperliquid(silent = true)
+        } catch (e: Exception) {
+            setError("Hyperliquid 授权失败: ${e.message}")
+        }
+    }
+
+    private fun ensureHyperliquidSuccess(result: org.json.JSONObject, action: String) {
+        if (!result.optString("status").equals("ok", ignoreCase = true)) {
+            error("Hyperliquid $action 未成功: $result")
+        }
+    }
+
+    private fun currentHyperliquidAgent(address: String): HyperliquidAgentRecord? {
+        val normalized = normalizeAddress(address) ?: return null
+        return hyperliquidAgentsByAccount[normalized.lowercase()]
+    }
+
+    private fun clearHyperliquidState() {
+        pendingHyperliquidApproval = null
+        hyperliquidMarketMeta.clear()
+        _uiState.update {
+            it.copy(
+                hyperliquidStatus = "先添加观察地址，再启用 Hyperliquid",
+                hyperliquidLoading = false,
+                hyperliquidPendingApproval = false,
+                hyperliquidAgent = null,
+                hyperliquidAccount = null,
+                hyperliquidMarkets = emptyList(),
+                hyperliquidOpenOrders = emptyList(),
+                hyperliquidFills = emptyList(),
+            )
+        }
+    }
+
+    private fun recordLocalActivity(item: WalletActivityItem) {
+        localActivityItems.removeAll { it.id == item.id }
+        localActivityItems += item
+        localActivityItems.sortByDescending { it.timestamp }
+        persistActivity()
+        publishActivity()
+    }
+
+    private fun publishActivity() {
+        val merged = (localActivityItems + syncedActivityByChain.values.flatten())
+            .sortedByDescending { it.timestamp }
+            .distinctBy {
+                if (it.txHash.isNotBlank()) "${it.kind}-${it.chainId}-${it.txHash}-${it.amountLabel}"
+                else it.id
+            }
+        _uiState.update { it.copy(activityItems = merged) }
+    }
+
+    private fun normalizeAddress(raw: String?): String? {
+        val value = raw.orEmpty().trim().removePrefix("ethereum:")
+        if (value.isBlank()) return null
         val address = if (value.startsWith("0x")) value else "0x$value"
         if (address.length != 42) return null
         if (!address.removePrefix("0x").all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) return null
@@ -787,7 +1781,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun chainName(chainId: Long): String {
-        return if (chainId == ArbitrumConfig.CHAIN_ID) "Arbitrum One" else "Chain $chainId"
+        return WalletChains.byId(chainId)?.displayName ?: "Chain $chainId"
+    }
+
+    private fun shortAddress(address: String, head: Int = 6, tail: Int = 4): String {
+        val normalized = normalizeAddress(address) ?: return address
+        return "${normalized.take(head)}...${normalized.takeLast(tail)}"
+    }
+
+    private fun HyperliquidAgentRecord.toUi(): HyperliquidAgentUi {
+        return HyperliquidAgentUi(
+            agentAddress = agentAddress,
+            agentName = agentName,
+            approvedAt = approvedAt,
+            validUntil = validUntil,
+        )
+    }
+
+    private fun extractAmountLabel(transferInfo: String): String {
+        return transferInfo.lineSequence()
+            .firstOrNull { it.startsWith("amount:", ignoreCase = true) || it.startsWith("value:", ignoreCase = true) }
+            ?.substringAfter(':')
+            ?.trim()
+            .orEmpty()
     }
 }
 
