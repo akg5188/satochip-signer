@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Arbitrum 钱包</string>
+    <string name="app_name">Satochip 钱包</string>
     <string name="scan_status_request">请连续扫描 DApp 请求二维码</string>
     <string name="scan_status_response">请扫描树莓派结果二维码</string>
     <string name="scan_torch_on">打开补光灯</string>
