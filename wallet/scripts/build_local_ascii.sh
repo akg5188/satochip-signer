@@ -24,7 +24,7 @@ else
 fi
 
 cd "$BUILD_DIR"
-export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+export JAVA_HOME="${JAVA_HOME:-/home/ak/zero/.local-jdk/jdk-17.0.18+8}"
 export PATH="$JAVA_HOME/bin:$PATH"
 ./gradlew --no-daemon :app:assembleDebug --console=plain
 
