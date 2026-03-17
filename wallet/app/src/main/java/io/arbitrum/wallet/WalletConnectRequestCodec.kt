@@ -2,15 +2,22 @@ package io.arbitrum.wallet
 
 import java.math.BigInteger
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.json.JSONArray
 import org.json.JSONObject
 
 sealed interface WalletConnectPreparedRequest {
-    data class ImmediateResult(val result: String?) : WalletConnectPreparedRequest
+    data class ImmediateResult(
+        val result: String?,
+        val switchToChainId: Long? = null,
+    ) : WalletConnectPreparedRequest
+
     data class RelayToPi(
         val title: String,
         val payload: String,
         val responseType: PendingResponseType,
+        val chainId: Long,
     ) : WalletConnectPreparedRequest
 }
 
@@ -20,27 +27,46 @@ object WalletConnectRequestCodec {
     suspend fun prepare(
         request: WalletConnectPendingRequest,
         selectedAddress: String,
+        activeChainId: Long,
     ): WalletConnectPreparedRequest {
+        val activeChain = WalletChains.require(activeChainId)
         return when (request.method.lowercase()) {
             "eth_accounts", "eth_requestaccounts" -> {
                 WalletConnectPreparedRequest.ImmediateResult(JSONArray(listOf(selectedAddress)).toString())
             }
 
             "eth_chainid" -> {
-                WalletConnectPreparedRequest.ImmediateResult(ArbitrumConfig.CHAIN_ID_HEX)
+                WalletConnectPreparedRequest.ImmediateResult(activeChain.chainIdHex)
             }
 
             "wallet_switchethereumchain", "wallet_addethereumchain" -> {
                 val requestedChainId = parseRequestedChainId(request.params)
-                if (requestedChainId != null && requestedChainId != ArbitrumConfig.CHAIN_ID) {
-                    throw IllegalArgumentException("当前仅支持 Arbitrum One")
-                }
-                WalletConnectPreparedRequest.ImmediateResult(null)
+                    ?: throw IllegalArgumentException("未提供目标链 ID")
+                val chain = WalletChains.byId(requestedChainId)
+                    ?: throw IllegalArgumentException("当前不支持链 $requestedChainId")
+                WalletConnectPreparedRequest.ImmediateResult(
+                    result = null,
+                    switchToChainId = chain.chainId,
+                )
             }
 
-            "eth_sendtransaction" -> prepareSendTransaction(request, selectedAddress)
-            "personal_sign", "eth_sign" -> preparePersonalSign(request, selectedAddress)
-            "eth_signtypeddata", "eth_signtypeddata_v4" -> prepareTypedDataSign(request, selectedAddress)
+            "eth_sendtransaction" -> prepareSendTransaction(
+                request = request,
+                selectedAddress = selectedAddress,
+                activeChainId = activeChainId,
+                title = "WalletConnect 交易签名",
+                responseType = PendingResponseType.BROADCAST_TX,
+            )
+            "eth_signtransaction" -> prepareSendTransaction(
+                request = request,
+                selectedAddress = selectedAddress,
+                activeChainId = activeChainId,
+                title = "WalletConnect 交易签名",
+                responseType = PendingResponseType.RETURN_RAW_TRANSACTION,
+            )
+            "personal_sign", "eth_sign" -> preparePersonalSign(request, selectedAddress, activeChainId)
+            "eth_signtypeddata", "eth_signtypeddata_v3", "eth_signtypeddata_v4" ->
+                prepareTypedDataSign(request, selectedAddress, activeChainId)
             else -> throw IllegalArgumentException("暂不支持的 WalletConnect 方法: ${request.method}")
         }
     }
@@ -48,6 +74,9 @@ object WalletConnectRequestCodec {
     private suspend fun prepareSendTransaction(
         request: WalletConnectPendingRequest,
         selectedAddress: String,
+        activeChainId: Long,
+        title: String,
+        responseType: PendingResponseType,
     ): WalletConnectPreparedRequest.RelayToPi {
         val array = JSONArray(request.params)
         require(array.length() > 0) { "eth_sendTransaction 缺少参数" }
@@ -56,16 +85,16 @@ object WalletConnectRequestCodec {
         val from = normalizeAddress(tx.optString("from")).ifBlank { selectedAddress }
         require(from.equals(selectedAddress, ignoreCase = true)) { "请求地址与当前观察地址不一致" }
 
-        val requestedChainId = parseChainIdValue(tx.opt("chainId"))
-        if (requestedChainId != null && requestedChainId != ArbitrumConfig.CHAIN_ID) {
-            throw IllegalArgumentException("当前仅支持 Arbitrum One")
-        }
+        val chain = resolveChain(
+            parseChainIdValue(tx.opt("chainId")) ?: parseChainIdValue(request.chainId),
+            activeChainId,
+        )
 
         val to = tx.optString("to").takeIf { it.isNotBlank() }
             ?: throw IllegalArgumentException("eth_sendTransaction 缺少 to 地址")
         val value = parseBigInt(tx.opt("value"))
         val data = tx.optString("data").ifBlank { tx.optString("input").ifBlank { "0x" } }
-        val nonce = parseBigIntOrNull(tx.opt("nonce")) ?: ArbitrumRpc.getNonce(from)
+        val nonce = parseBigIntOrNull(tx.opt("nonce")) ?: EvmRpc.getNonce(chain, from)
 
         val estimateMap = linkedMapOf<String, String>()
         estimateMap["from"] = from
@@ -75,7 +104,7 @@ object WalletConnectRequestCodec {
 
         val gasLimit = parseBigIntOrNull(tx.opt("gas"))
             ?: parseBigIntOrNull(tx.opt("gasLimit"))
-            ?: ArbitrumRpc.estimateGas(estimateMap)
+            ?: EvmRpc.estimateGas(chain, estimateMap)
 
         val explicitType = tx.opt("type")
         val has1559 = tx.has("maxFeePerGas") || tx.has("maxPriorityFeePerGas")
@@ -86,13 +115,13 @@ object WalletConnectRequestCodec {
         }
 
         val gasPrice = if (type == 0) {
-            parseBigIntOrNull(tx.opt("gasPrice")) ?: ArbitrumRpc.getGasPrice()
+            parseBigIntOrNull(tx.opt("gasPrice")) ?: EvmRpc.getGasPrice(chain)
         } else {
             null
         }
 
         val (fallbackPriority, fallbackMaxFee) = if (type == 2) {
-            ArbitrumRpc.getBlockGasParams()
+            EvmRpc.getBlockGasParams(chain)
         } else {
             BigInteger.ZERO to BigInteger.ZERO
         }
@@ -122,18 +151,21 @@ object WalletConnectRequestCodec {
                 maxPriorityFeePerGas = maxPriority,
                 type = type,
             ),
+            chain = chain,
             requestId = request.requestId.toString(),
         )
         return WalletConnectPreparedRequest.RelayToPi(
-            title = "WalletConnect 交易签名",
+            title = title,
             payload = payload,
-            responseType = PendingResponseType.BROADCAST_TX,
+            responseType = responseType,
+            chainId = chain.chainId,
         )
     }
 
     private fun preparePersonalSign(
         request: WalletConnectPendingRequest,
         selectedAddress: String,
+        activeChainId: Long,
     ): WalletConnectPreparedRequest.RelayToPi {
         val array = JSONArray(request.params)
         require(array.length() > 0) { "消息签名参数为空" }
@@ -152,21 +184,25 @@ object WalletConnectRequestCodec {
             isLikelyEvmAddress(second) -> first
             else -> first
         }
+        val chain = resolveChain(parseChainIdValue(request.chainId), activeChainId)
         val payload = TpRequestBuilder.buildPersonalSignRequest(
             address = selectedAddress,
             message = message,
+            chain = chain,
             requestId = request.requestId.toString(),
         )
         return WalletConnectPreparedRequest.RelayToPi(
             title = "WalletConnect 消息签名",
             payload = payload,
             responseType = PendingResponseType.SHOW_SIGNATURE,
+            chainId = chain.chainId,
         )
     }
 
     private fun prepareTypedDataSign(
         request: WalletConnectPendingRequest,
         selectedAddress: String,
+        activeChainId: Long,
     ): WalletConnectPreparedRequest.RelayToPi {
         val array = JSONArray(request.params)
         require(array.length() >= 2) { "TypedData 参数不足" }
@@ -188,18 +224,32 @@ object WalletConnectRequestCodec {
             isLikelyEvmAddress(secondText) -> firstText
             else -> firstText
         }
-        typedJson.parseToJsonElement(typedData)
+        val parsed = typedJson.parseToJsonElement(typedData)
+        val typedChainId = runCatching {
+            parsed.jsonObject["domain"]?.jsonObject?.get("chainId")?.jsonPrimitive?.content
+        }.getOrNull()
+        val chain = resolveChain(
+            parseChainIdValue(request.chainId) ?: parseChainIdValue(typedChainId),
+            activeChainId,
+        )
 
         val payload = TpRequestBuilder.buildSignTypedDataRequest(
             address = selectedAddress,
             typedDataJson = typedData,
+            chain = chain,
             requestId = request.requestId.toString(),
         )
         return WalletConnectPreparedRequest.RelayToPi(
             title = "WalletConnect TypedData 签名",
             payload = payload,
             responseType = PendingResponseType.SHOW_SIGNATURE,
+            chainId = chain.chainId,
         )
+    }
+
+    private fun resolveChain(explicitChainId: Long?, activeChainId: Long): WalletChain {
+        val target = explicitChainId ?: activeChainId
+        return WalletChains.byId(target) ?: throw IllegalArgumentException("当前不支持链 $target")
     }
 
     private fun parseRequestedChainId(params: String): Long? {
@@ -216,6 +266,7 @@ object WalletConnectRequestCodec {
             is String -> {
                 val trimmed = value.trim()
                 when {
+                    trimmed.startsWith("eip155:", ignoreCase = true) -> trimmed.substringAfterLast(':').toLongOrNull()
                     trimmed.startsWith("0x", ignoreCase = true) -> trimmed.removePrefix("0x").removePrefix("0X").toLongOrNull(16)
                     else -> trimmed.toLongOrNull()
                 }
