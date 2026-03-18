@@ -22,6 +22,16 @@
 
 - `seedsigner-os` 就是“树莓派固件”
 
+如果你以后只是想：
+
+- 找固件下载位置
+- 校验镜像
+- 烧录 TF 卡
+
+直接看：
+
+- [固件下载与写入指南](../docs/固件下载与写入指南.zh-CN.md)
+
 如果你要继续研究原始构建方式：
 
 - 先看 [README.md](README.md)
@@ -32,3 +42,4 @@
 - `seedsigner-os` = 树莓派固件
 - `wallet` = 独立钱包安卓 APK
 - `app` = 给 TokenPocket 用的“智能卡”安卓软件
+- `backups/satochip-utils` = `J3R180` 卡初始化工具备份

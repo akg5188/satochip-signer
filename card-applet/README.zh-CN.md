@@ -23,6 +23,7 @@
 
 - [CAP_BUILD_AND_INSTALL.zh-CN.md](CAP_BUILD_AND_INSTALL.zh-CN.md)
 - [prebuilt/README.md](prebuilt/README.md)
+- [../docs/固件下载与写入指南.zh-CN.md](../docs/固件下载与写入指南.zh-CN.md)
 
 如果你要：
 

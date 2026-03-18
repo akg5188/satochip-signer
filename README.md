@@ -91,3 +91,4 @@
 
 - [docs/仓库结构说明.zh-CN.md](docs/仓库结构说明.zh-CN.md)
 - [docs/两个安卓APK说明.zh-CN.md](docs/两个安卓APK说明.zh-CN.md)
+- [docs/固件下载与写入指南.zh-CN.md](docs/固件下载与写入指南.zh-CN.md)
