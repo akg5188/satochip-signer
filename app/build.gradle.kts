@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.smartcard.signer"
     compileSdk = 34
+    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "com.smartcard.signer"

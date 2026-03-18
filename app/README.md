@@ -15,6 +15,32 @@
 - [TP 签名中转 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260316)
 - [TP 签名中转 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260316/tp-qr-relay-android-latest.apk)
 
+## 重新编译
+
+1. 在仓库根目录复制配置文件
+
+```bash
+cp local.properties.example local.properties
+```
+
+2. 把 `local.properties` 里的 `sdk.dir` 改成你机器上的 Android SDK 路径
+
+3. 构建 release APK
+
+```bash
+./gradlew :app:assembleRelease --console=plain
+```
+
+输出路径：
+
+```text
+app/build/outputs/apk/release/app-release.apk
+```
+
+如果以后只是忘了整个项目怎么维护，直接看：
+
+- [../docs/长期维护总入口.zh-CN.md](../docs/长期维护总入口.zh-CN.md)
+
 ## 不要混用
 
 如果你要找的是：
