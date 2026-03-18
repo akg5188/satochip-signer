@@ -1,56 +1,76 @@
 # TP Satochip Signer
 
-这个仓库里现在有两个不同用途的安卓 APK，请不要混用。
+这个仓库现在一共分成四个核心部分，后面维护时请按用途区分，不要混用。
 
-## 两个安卓 APK 的区别
-
-### 1. TP 签名中转 APK
+## 1. `card-applet`
 
 用途：
 
-- 专门给 `TokenPocket` 商业钱包做二维码中转签名
-- 手机先扫 TP 的动态码
-- 再把静态中转码给树莓派扫描
-- 不负责独立钱包资产管理
+- `J3R180` 智能卡固件
+- 负责卡片里的签名相关逻辑
 
-下载入口：
+入口：
 
-- [TP 签名中转 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260316)
-- [TP 签名中转 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260316/tp-qr-relay-android-latest.apk)
-- [TP 签名中转 APK sha256](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260316/tp-qr-relay-android-latest.apk.sha256)
+- [card-applet/](card-applet/)
 
-对应源码入口：
-
-- [`app/`](app)
-
-### 2. 独立钱包 APK
+## 2. `seedsigner-os`
 
 用途：
 
+- 树莓派固件
+- 负责树莓派设备侧系统、界面和运行环境
+
+入口：
+
+- [seedsigner-os/](seedsigner-os/)
+
+## 3. `wallet`
+
+用途：
+
+- 独立钱包安卓 APK
 - `Arbitrum One` 观察钱包
 - 资产查看
 - 转账二维码签名
-- 内置 `Hyperliquid` 官方网页
-- 指纹解锁启动
+- 内置 `Hyperliquid`
+
+源码入口：
+
+- [wallet/](wallet/README.md)
 
 下载入口：
 
 - [独立钱包 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/wallet-android-20260318-1717)
 - [独立钱包 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/wallet-android-20260318-1717/satochip-wallet-release.apk)
-- [独立钱包 APK sha256](https://github.com/akg5188/tp-satochip-signer/releases/download/wallet-android-20260318-1717/satochip-wallet-release.apk.sha256)
 
-对应源码入口：
+## 4. `app`
 
-- [`wallet/`](wallet/README.md)
+用途：
 
-## 其他目录
+- 安卓软件，中文名就是“智能卡”
+- 专门配合 `TokenPocket` 商业钱包使用
+- 手机扫 TP 动态二维码，再中转给树莓派签名
+- 不是独立钱包
 
-- [智能卡 / JavaCard 相关](card-applet/)
-- [树莓派 UI 相关](pi-appliance/)
-- [树莓派签名器相关](pi-signer/), [pi-signer-py/](pi-signer-py/)
-- [固件与镜像相关](seedsigner-os/)
+源码入口：
 
-## 建议
+- [app/](app/README.md)
 
-如果你以后只是要维护你现在这个独立钱包，直接从 [`wallet/`](wallet/README.md) 开始。  
-如果你以后要继续给 TP 商业钱包做扫码签名中转，再看根目录下的 `app/` 和 `dist/tp-qr-relay-android-latest.apk`。
+下载入口：
+
+- [TP 签名中转 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260316)
+- [TP 签名中转 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260316/tp-qr-relay-android-latest.apk)
+
+## 总结
+
+以后只要记住这四个角色就不会乱：
+
+- `card-applet` = 智能卡固件
+- `seedsigner-os` = 树莓派固件
+- `wallet` = 独立钱包安卓 APK
+- `app` = 给 TokenPocket 用的“智能卡”安卓软件
+
+详细说明：
+
+- [docs/仓库结构说明.zh-CN.md](docs/仓库结构说明.zh-CN.md)
+- [docs/两个安卓APK说明.zh-CN.md](docs/两个安卓APK说明.zh-CN.md)
