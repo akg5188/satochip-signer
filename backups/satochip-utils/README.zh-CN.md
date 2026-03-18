@@ -23,6 +23,32 @@
 - [Tails-离线使用教程.zh-CN.md](Tails-离线使用教程.zh-CN.md)
   在 `Tails OS` 里安装依赖、设置 100% 显示缩放、运行工具、设置 `PIN` 和助记词的完整教程
 
+## 你实际使用时建议准备的离线套件
+
+如果你是像现在这样在 `Tails OS` 离线电脑上直接操作，建议单独准备一个文件夹，例如：
+
+```text
+~/下载/tails智能卡设置/
+├── Satochip-Utils-linux-x86_64-0.3.0-beta
+├── libccid_1.6.2-1_amd64.deb
+├── libpcsclite1_2.3.3-1_amd64.deb
+├── pcscd_2.3.3-1_amd64.deb
+└── 教程
+```
+
+这套东西里：
+
+- `Satochip-Utils-linux-x86_64-0.3.0-beta`
+  是直接运行的 Linux 可执行程序
+- `libpcsclite1_2.3.3-1_amd64.deb`
+  是 `PC/SC` 库
+- `libccid_1.6.2-1_amd64.deb`
+  是读卡器驱动
+- `pcscd_2.3.3-1_amd64.deb`
+  是智能卡服务
+
+也就是说，你平时离线使用最重要的是这 4 个文件；本目录里的 `bundle` 更偏向源码备份和以后维护恢复。
+
 ## 上游与备份来源
 
 - 上游项目：`Toporin/Satochip-Utils`

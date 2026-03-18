@@ -8,6 +8,32 @@
 - 工具：`Satochip-Utils`
 - 目标：在尽量离线的环境里设置卡的 `PIN`，并导入或生成助记词
 
+## 0. 你当前实际使用的是哪一套文件
+
+按你现在保存的方式，建议在 U 盘或 `Tails` 电脑里保留这样一个目录：
+
+```text
+~/下载/tails智能卡设置/
+├── Satochip-Utils-linux-x86_64-0.3.0-beta
+├── libccid_1.6.2-1_amd64.deb
+├── libpcsclite1_2.3.3-1_amd64.deb
+├── pcscd_2.3.3-1_amd64.deb
+└── 教程
+```
+
+这些文件分别是：
+
+- `Satochip-Utils-linux-x86_64-0.3.0-beta`
+  直接运行的软件本体
+- `libccid_1.6.2-1_amd64.deb`
+  USB 智能卡读卡器驱动
+- `libpcsclite1_2.3.3-1_amd64.deb`
+  `PC/SC` 动态库
+- `pcscd_2.3.3-1_amd64.deb`
+  智能卡服务
+
+这说明你现在更适合走“离线包直接运行”的方案，不是“源码 + pip 安装”的主路线。
+
 ## 1. 先看清楚这个工具是做什么的
 
 `Satochip-Utils` 是桌面端卡管理工具，不是固件。
@@ -54,7 +80,7 @@
 
 如果不是 `100%`，窗口有可能显示不完整，按钮被裁掉，看起来像软件坏了。
 
-操作方法：
+操作方法一：图形界面
 
 1. 打开 `Settings`
 2. 进入 `Displays`
@@ -62,9 +88,82 @@
 4. 选择 `100%`
 5. 应用后，重新打开 `Satochip-Utils`
 
+操作方法二：命令行
+
+```bash
+gsettings set org.gnome.desktop.interface scaling-factor 1
+```
+
 如果改成 `100%` 后仍然觉得界面挤，可以再把分辨率调高一点，但优先保证缩放是 `100%`。
 
-## 4. Tails OS 需要的系统依赖
+## 4. 推荐的实操流程
+
+以后你忘了怎么弄，可以直接按下面这一段做。
+
+### 3.1 进入离线套件目录
+
+```bash
+cd ~/下载/tails智能卡设置
+```
+
+### 3.2 先把显示缩放设为 100%
+
+```bash
+gsettings set org.gnome.desktop.interface scaling-factor 1
+```
+
+### 3.3 安装 3 个离线依赖包
+
+推荐按这个顺序：
+
+```bash
+sudo dpkg -i ./libpcsclite1_2.3.3-1_amd64.deb
+sudo dpkg -i ./libccid_1.6.2-1_amd64.deb
+sudo dpkg -i ./pcscd_2.3.3-1_amd64.deb
+```
+
+也可以一次装完：
+
+```bash
+sudo dpkg -i ./libpcsclite1_2.3.3-1_amd64.deb ./libccid_1.6.2-1_amd64.deb ./pcscd_2.3.3-1_amd64.deb
+```
+
+### 3.4 启动或重启智能卡服务
+
+```bash
+sudo systemctl restart pcscd
+```
+
+### 3.5 检查读卡器和卡
+
+如果系统里有 `pcsc_scan`：
+
+```bash
+pcsc_scan
+```
+
+看到读卡器和插卡状态就说明正常。
+
+如果没有 `pcsc_scan`，也没关系，直接继续下一步。
+
+### 3.6 运行 Satochip-Utils
+
+```bash
+chmod +x ./Satochip-Utils-linux-x86_64-0.3.0-beta
+./Satochip-Utils-linux-x86_64-0.3.0-beta
+```
+
+### 3.7 在程序里设置 PIN 和助记词
+
+1. 插入读卡器和卡
+2. 打开 `Setup my card`
+3. 设置 `PIN`
+4. 再进入 `Setup Seed`
+5. 导入已有助记词，或者生成新助记词
+
+## 5. Tails OS 需要的系统依赖
+
+如果你以后不是用现成离线二进制，而是想从源码恢复运行，可以参考这一节。
 
 下面这些依赖来自上游项目的 `requirements.txt`、`setup.py` 和 Linux 构建脚本。
 
@@ -101,7 +200,7 @@ pcsc_scan
 
 看到读卡器型号和 `Card inserted` 一类信息，说明基础环境正常。
 
-## 5. 从 bundle 恢复源码
+## 6. 从 bundle 恢复源码
 
 假设你当前就在 `backups/satochip-utils/` 目录：
 
@@ -112,7 +211,7 @@ cd Satochip-Utils-restore
 
 如果你的 `Tails` 里没有 `git`，那就需要提前在别的 Linux 机器上恢复好源码，再把整个目录拷过来。
 
-## 6. 安装 Python 依赖
+## 7. 安装 Python 依赖
 
 上游 `requirements.txt` 里当前列出的核心依赖是：
 
@@ -139,7 +238,7 @@ python -m pip install -r requirements.txt
 - Python wheel 缓存
 - 或者在另一台 Linux 机器上先把整个 `.venv` / 可运行环境准备好，再拷到 `Tails`
 
-## 7. 启动工具
+## 8. 启动工具
 
 在源码目录里运行：
 
@@ -154,7 +253,13 @@ python satochip_utils.py
 - `pcscd` 已启动
 - 读卡器已被系统识别
 
-## 8. 设置 PIN
+对你当前这套离线包来说，通常直接运行的是：
+
+```bash
+./Satochip-Utils-linux-x86_64-0.3.0-beta
+```
+
+## 9. 设置 PIN
 
 插入读卡器和卡之后：
 
@@ -169,7 +274,7 @@ python satochip_utils.py
 - `PIN` 长度保持在工具允许范围内
 - 设置一个你能稳定记住、但不容易被猜到的值
 
-## 9. 导入或生成助记词
+## 10. 导入或生成助记词
 
 设置完 `PIN` 后，再进入种子相关页面。
 
@@ -203,7 +308,7 @@ python satochip_utils.py
 - 助记词和可选 `passphrase` 一定要单独、安全地备份
 - 不要把助记词拍照、截图、联网传输
 
-## 10. 完成后检查
+## 11. 完成后检查
 
 完成以后建议检查三件事：
 
@@ -211,13 +316,18 @@ python satochip_utils.py
 2. 重新插卡后能正常识别
 3. 你的安卓端或后续流程能正常读出地址并完成签名
 
-## 11. 常见问题
+## 12. 常见问题
 
 ### 11.1 窗口显示不完整
 
 先检查：
 
 - `Settings -> Displays -> Scale` 是否已经是 `100%`
+- 或者是否已经执行：
+
+```bash
+gsettings set org.gnome.desktop.interface scaling-factor 1
+```
 
 这是最常见原因。
 
@@ -225,10 +335,20 @@ python satochip_utils.py
 
 优先检查：
 
-- `python3-tk` 是否已安装
-- `python3-pyscard` 是否已安装
+- 你是不是直接运行了：
+
+```bash
+./Satochip-Utils-linux-x86_64-0.3.0-beta
+```
+
+- 文件有没有执行权限：
+
+```bash
+chmod +x ./Satochip-Utils-linux-x86_64-0.3.0-beta
+```
+
 - `pcscd` 是否已启动
-- `pip` 依赖是否已装全
+- 那 3 个 `.deb` 包是否已安装成功
 
 ### 11.3 读卡器有反应但软件识别不到卡
 
@@ -237,6 +357,7 @@ python satochip_utils.py
 - 读卡器是否被 `pcsc_scan` 识别
 - 卡是否已正确插入
 - `pcscd` 是否运行中
+- `libccid` 是否已装好
 
 ### 11.4 完全离线时装不上依赖
 
@@ -249,13 +370,39 @@ python satochip_utils.py
 
 解决办法是提前准备好离线依赖，或者先在一次临时联网的会话里装好。
 
-## 12. 相关入口
+## 13. 建议保存的最短命令清单
+
+以后如果你懒得看全文，只记住下面这些也够用：
+
+```bash
+cd ~/下载/tails智能卡设置
+gsettings set org.gnome.desktop.interface scaling-factor 1
+sudo dpkg -i ./libpcsclite1_2.3.3-1_amd64.deb ./libccid_1.6.2-1_amd64.deb ./pcscd_2.3.3-1_amd64.deb
+sudo systemctl restart pcscd
+chmod +x ./Satochip-Utils-linux-x86_64-0.3.0-beta
+./Satochip-Utils-linux-x86_64-0.3.0-beta
+```
+
+## 14. 你当前这套离线包的校验值
+
+如果你以后想确认文件有没有被改坏，可以对照：
+
+- `Satochip-Utils-linux-x86_64-0.3.0-beta`
+  `42b666c22e9cc30bef00284981c4246c015da17b679a53aaef57e84ab5987554`
+- `libccid_1.6.2-1_amd64.deb`
+  `87b206d47799c85babab794c7053009a2c757307be66884ec164f97db87ab0a4`
+- `libpcsclite1_2.3.3-1_amd64.deb`
+  `fff18837e736502c0acf8b823d86d76f1a976f90f4ff61b3212c4fbfe7c9fda1`
+- `pcscd_2.3.3-1_amd64.deb`
+  `2a9bbab15d062e186d00035106904ad70409a1e662dc9615495b367930a35db6`
+
+## 15. 相关入口
 
 - [README.zh-CN.md](README.zh-CN.md)
 - [README-BUNDLE.md](README-BUNDLE.md)
 - [../../card-applet/README.zh-CN.md](../../card-applet/README.zh-CN.md)
 
-## 13. 本教程依据
+## 16. 本教程依据
 
 这份教程整理时主要参考了上游项目这些文件：
 
