@@ -2,6 +2,11 @@
 
 这个仓库现在一共分成五个核心部分，后面维护时请按用途区分，不要混用。
 
+如果你以后只想最快找到“该下载什么、该进哪个目录、该怎么重新编译”，先看：
+
+- [docs/一页式总导航.zh-CN.md](docs/一页式总导航.zh-CN.md)
+- [docs/长期维护总入口.zh-CN.md](docs/长期维护总入口.zh-CN.md)
+
 ## 1. `card-applet`
 
 用途：
@@ -92,6 +97,7 @@
 
 详细说明：
 
+- [docs/一页式总导航.zh-CN.md](docs/一页式总导航.zh-CN.md)
 - [docs/仓库结构说明.zh-CN.md](docs/仓库结构说明.zh-CN.md)
 - [docs/两个安卓APK说明.zh-CN.md](docs/两个安卓APK说明.zh-CN.md)
 - [docs/固件下载与写入指南.zh-CN.md](docs/固件下载与写入指南.zh-CN.md)
