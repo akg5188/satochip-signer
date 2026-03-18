@@ -22,6 +22,8 @@
   bundle 恢复命令
 - [Tails-离线使用教程.zh-CN.md](Tails-离线使用教程.zh-CN.md)
   在 `Tails OS` 里安装依赖、设置 100% 显示缩放、运行工具、设置 `PIN` 和助记词的完整教程
+- [offline-kit-template/README.zh-CN.md](offline-kit-template/README.zh-CN.md)
+  用来重新整理离线工具包目录的模板和脚本
 
 ## 你实际使用时建议准备的离线套件
 

@@ -100,19 +100,19 @@ gsettings set org.gnome.desktop.interface scaling-factor 1
 
 以后你忘了怎么弄，可以直接按下面这一段做。
 
-### 3.1 进入离线套件目录
+### 4.1 进入离线套件目录
 
 ```bash
 cd ~/下载/tails智能卡设置
 ```
 
-### 3.2 先把显示缩放设为 100%
+### 4.2 先把显示缩放设为 100%
 
 ```bash
 gsettings set org.gnome.desktop.interface scaling-factor 1
 ```
 
-### 3.3 安装 3 个离线依赖包
+### 4.3 安装 3 个离线依赖包
 
 推荐按这个顺序：
 
@@ -128,13 +128,13 @@ sudo dpkg -i ./pcscd_2.3.3-1_amd64.deb
 sudo dpkg -i ./libpcsclite1_2.3.3-1_amd64.deb ./libccid_1.6.2-1_amd64.deb ./pcscd_2.3.3-1_amd64.deb
 ```
 
-### 3.4 启动或重启智能卡服务
+### 4.4 启动或重启智能卡服务
 
 ```bash
 sudo systemctl restart pcscd
 ```
 
-### 3.5 检查读卡器和卡
+### 4.5 检查读卡器和卡
 
 如果系统里有 `pcsc_scan`：
 
@@ -146,14 +146,23 @@ pcsc_scan
 
 如果没有 `pcsc_scan`，也没关系，直接继续下一步。
 
-### 3.6 运行 Satochip-Utils
+### 4.6 运行 Satochip-Utils
 
 ```bash
 chmod +x ./Satochip-Utils-linux-x86_64-0.3.0-beta
 ./Satochip-Utils-linux-x86_64-0.3.0-beta
 ```
 
-### 3.7 在程序里设置 PIN 和助记词
+如果你把辅助脚本也放在同一个目录里，推荐直接这样运行：
+
+```bash
+bash 04-check-sha256.sh
+bash 01-set-scale-100.sh
+bash 02-install-smartcard-debs.sh
+bash 03-run-satochip-utils.sh
+```
+
+### 4.7 在程序里设置 PIN 和助记词
 
 1. 插入读卡器和卡
 2. 打开 `Setup my card`
@@ -400,6 +409,7 @@ chmod +x ./Satochip-Utils-linux-x86_64-0.3.0-beta
 
 - [README.zh-CN.md](README.zh-CN.md)
 - [README-BUNDLE.md](README-BUNDLE.md)
+- [offline-kit-template/README.zh-CN.md](offline-kit-template/README.zh-CN.md)
 - [../../card-applet/README.zh-CN.md](../../card-applet/README.zh-CN.md)
 
 ## 16. 本教程依据
