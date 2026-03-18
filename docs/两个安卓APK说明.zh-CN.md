@@ -7,6 +7,9 @@
 文件：
 
 - `dist/tp-qr-relay-android-latest.apk`
+- GitHub Release：`tp-relay-android-20260318-1956`
+- 源码目录：`app/`
+- 本地重新编译输出：`app/build/outputs/apk/release/app-release.apk`
 
 用途：
 
@@ -20,6 +23,9 @@
 文件：
 
 - GitHub Release 里的 `satochip-wallet-release.apk`
+- GitHub Release：`wallet-android-20260318-1717`
+- 源码目录：`wallet/`
+- 本地重新编译输出：`wallet/app/build/outputs/apk/release/app-release.apk`
 
 用途：
 
@@ -42,6 +48,7 @@
 就用：
 
 - `tp-qr-relay-android-latest.apk`
+- `app/`
 
 如果你要：
 
@@ -53,3 +60,4 @@
 就用：
 
 - `satochip-wallet-release.apk`
+- `wallet/`

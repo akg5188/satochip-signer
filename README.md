@@ -62,8 +62,9 @@
 
 下载入口：
 
-- [TP 签名中转 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260316)
-- [TP 签名中转 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260316/tp-qr-relay-android-latest.apk)
+- [TP 签名中转 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260318-1956)
+- [TP 签名中转 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260318-1956/tp-qr-relay-android-latest.apk)
+- 仓库内稳定文件名：`dist/tp-qr-relay-android-latest.apk`
 
 ## 5. `backups/satochip-utils`
 

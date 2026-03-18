@@ -12,8 +12,9 @@
 
 ## 对应 APK
 
-- [TP 签名中转 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260316)
-- [TP 签名中转 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260316/tp-qr-relay-android-latest.apk)
+- [TP 签名中转 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260318-1956)
+- [TP 签名中转 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260318-1956/tp-qr-relay-android-latest.apk)
+- 仓库内稳定文件名：`dist/tp-qr-relay-android-latest.apk`
 
 ## 重新编译
 
@@ -36,6 +37,8 @@ cp local.properties.example local.properties
 ```text
 app/build/outputs/apk/release/app-release.apk
 ```
+
+如果你只是下载现成包，不需要自己编译，优先去上面的 GitHub Release 页面。
 
 如果以后只是忘了整个项目怎么维护，直接看：
 
