@@ -5,7 +5,7 @@
 如果你当前主要关心安卓钱包，直接看下面两个入口：
 
 - [安卓钱包源码](wallet/README.md)
-- [可直接安装的 APK](wallet/releases/satochip-wallet-release.apk)
+- [可直接安装的 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/wallet-android-20260318-1717/satochip-wallet-release.apk)
 
 安卓钱包当前定位：
 

@@ -26,8 +26,8 @@
 
 ## 直接下载 APK
 
-- [release APK](releases/satochip-wallet-release.apk)
-- [release APK sha256](releases/satochip-wallet-release.apk.sha256)
+- [release APK](https://github.com/akg5188/tp-satochip-signer/releases/download/wallet-android-20260318-1717/satochip-wallet-release.apk)
+- [release APK sha256](https://github.com/akg5188/tp-satochip-signer/releases/download/wallet-android-20260318-1717/satochip-wallet-release.apk.sha256)
 
 ## 直接编译
 
