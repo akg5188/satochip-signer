@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -13,7 +14,8 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="portrait">
+            android:screenOrientation="portrait"
+            tools:ignore="LockedOrientationActivity,DiscouragedApi">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -23,16 +25,19 @@
             android:name=".QrScanActivity"
             android:exported="false"
             android:screenOrientation="portrait"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+            android:theme="@style/Theme.Satochip.Scanner"
+            tools:ignore="LockedOrientationActivity,DiscouragedApi" />
         <activity
             android:name=".HyperliquidActivity"
             android:exported="false"
             android:screenOrientation="portrait"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+            android:theme="@android:style/Theme.Material.Light.NoActionBar"
+            tools:ignore="LockedOrientationActivity,DiscouragedApi" />
         <activity
             android:name=".ContinuousQrScanActivity"
             android:exported="false"
             android:screenOrientation="portrait"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+            android:theme="@style/Theme.Satochip.Scanner"
+            tools:ignore="LockedOrientationActivity,DiscouragedApi" />
     </application>
 </manifest>

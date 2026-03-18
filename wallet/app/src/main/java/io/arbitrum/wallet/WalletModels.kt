@@ -33,6 +33,8 @@ data class AssetBalanceUi(
     val amount: String,
     val contractAddress: String? = null,
     val isNative: Boolean = false,
+    val priceUsd: Double? = null,
+    val usdAmount: Double? = null,
 )
 
 data class ChainPortfolioUi(

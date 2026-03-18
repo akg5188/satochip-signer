@@ -9,6 +9,7 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
 import android.widget.Button
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -32,6 +33,8 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
 
     private lateinit var barcodeView: DecoratedBarcodeView
     private lateinit var torchButton: Button
+    private lateinit var titleView: TextView
+    private lateinit var statusView: TextView
     private val assembler = MultiFragmentAssembler()
     private var hasReturned = false
     private var lastText = ""
@@ -46,7 +49,7 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
         lifecycleScope.launch {
             val decoded = QrImageDecoder.decodeFromUri(this@ContinuousQrScanActivity, uri)
             if (decoded.isNullOrBlank()) {
-                barcodeView.setStatusText("相册图片未识别到二维码，请重试")
+                updateStatus("相册图片未识别到二维码，请重试")
                 Toast.makeText(this@ContinuousQrScanActivity, "相册图片未识别到二维码", Toast.LENGTH_SHORT).show()
                 return@launch
             }
@@ -75,6 +78,8 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
 
         barcodeView = findViewById(R.id.barcode_scanner)
         torchButton = findViewById(R.id.btn_toggle_torch)
+        titleView = findViewById(R.id.tv_scan_title)
+        statusView = findViewById(R.id.tv_scan_status)
         configureScanner()
         barcodeView.setTorchListener(object : DecoratedBarcodeView.TorchListener {
             override fun onTorchOn() {
@@ -178,11 +183,11 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
                     is ParseResult.Fragment -> {
                         when (val assembly = assembler.accept(parsed.fragment)) {
                             is AssemblyResult.Progress -> {
-                                barcodeView.setStatusText("已接收分片 ${assembly.received}/${assembly.total}，请继续扫描")
+                                updateStatus("已接收分片 ${assembly.received}/${assembly.total}，请继续扫描")
                             }
                             is AssemblyResult.Complete -> returnPayload(assembly.payload)
                             is AssemblyResult.Error -> {
-                                barcodeView.setStatusText("${assembly.reason}，请继续扫描")
+                                updateStatus("${assembly.reason}，请继续扫描")
                             }
                         }
                     }
@@ -190,7 +195,7 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
             }
             .onFailure { error ->
                 val reason = error.message ?: "二维码解析失败"
-                barcodeView.setStatusText("$reason，请继续扫描")
+                updateStatus("$reason，请继续扫描")
             }
     }
 
@@ -224,7 +229,12 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
         )
         barcodeView.barcodeView.setPreviewScalingStrategy(CenterCropStrategy())
         barcodeView.barcodeView.setMarginFraction(0.08)
-        barcodeView.setStatusText(
+        titleView.text = if (scanMode == MODE_RESPONSE) {
+            getString(R.string.scan_title_response)
+        } else {
+            getString(R.string.scan_title_request)
+        }
+        updateStatus(
             if (scanMode == MODE_RESPONSE) getString(R.string.scan_status_response)
             else getString(R.string.scan_status_request)
         )
@@ -249,5 +259,10 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
             if (torchEnabled) R.string.scan_torch_off
             else R.string.scan_torch_on
         )
+    }
+
+    private fun updateStatus(text: String) {
+        statusView.text = text
+        barcodeView.setStatusText("")
     }
 }

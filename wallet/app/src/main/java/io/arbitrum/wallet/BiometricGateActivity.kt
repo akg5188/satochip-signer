@@ -25,7 +25,7 @@ private object AppLockState : DefaultLifecycleObserver {
     private var installed = false
     private var unlocked = false
 
-    fun install(application: Application) {
+    fun install(@Suppress("UNUSED_PARAMETER") application: Application) {
         if (installed) return
         installed = true
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
@@ -187,7 +187,7 @@ abstract class BiometricGateActivity : FragmentActivity() {
                 setPadding(dp(24), dp(24), dp(24), dp(24))
             }
             card.addView(TextView(context).apply {
-                text = "Satochip"
+                text = context.getString(R.string.brand_name)
                 setTextColor(0xFFFFFFFF.toInt())
                 textSize = 28f
                 typeface = Typeface.DEFAULT_BOLD

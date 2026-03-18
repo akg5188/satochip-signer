@@ -85,7 +85,7 @@ object EvmRpc {
             ?.let { parseHex(it) }
             ?: fallbackGasPrice
         val maxPriority = baseFee.divide(BigInteger.TEN).coerceAtLeast(fallbackGasPrice)
-        val maxFee = baseFee.multiply(BigInteger.valueOf(2)).coerceAtLeast(fallbackGasPrice.multiply(BigInteger.TWO))
+        val maxFee = baseFee.multiply(BigInteger.valueOf(2)).coerceAtLeast(fallbackGasPrice.multiply(BigInteger.valueOf(2)))
         maxPriority to maxFee
     }
 
@@ -233,6 +233,63 @@ object EvmRpc {
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) throw RuntimeException("RPC failed: ${response.code}")
         return response.body?.string() ?: throw RuntimeException("Empty response")
+    }
+
+    private val coingeckoSymbolMap = mapOf(
+        "ETH" to "ethereum",
+        "USDC" to "usd-coin",
+        "USDT" to "tether",
+    )
+
+    suspend fun getUsdPrice(chain: WalletChain, tokenAddress: String?): Double? = withContext(Dispatchers.IO) {
+        val normalized = tokenAddress
+            ?.removePrefix("0x")
+            ?.lowercase()
+            ?.let { if (it.isBlank()) "0" else it }
+            ?: "0"
+        val addr = "0x$normalized"
+        val slug = "${chain.slug}:$addr"
+        val url = "https://coins.llama.fi/prices/current/$slug"
+        return@withContext try {
+            val response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            val body = response.body?.string().orEmpty()
+            val coins = JSONObject(body).optJSONObject("coins") ?: return@withContext null
+            val coin = coins.optJSONObject(slug) ?: return@withContext null
+            val price = coin.optDouble("price", Double.NaN)
+            if (!price.isNaN()) price else fetchCoingeckoPrice(chain)
+        } catch (_: Throwable) {
+            fetchCoingeckoPrice(chain)
+        }
+    }
+
+    private suspend fun fetchCoingeckoPrice(chain: WalletChain): Double? = withContext(Dispatchers.IO) {
+        val id = chain.coingeckoId ?: return@withContext null
+        val encoded = java.net.URLEncoder.encode(id, "UTF-8")
+        val url = "https://api.coingecko.com/api/v3/simple/price?ids=$encoded&vs_currencies=usd"
+        return@withContext try {
+            val response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            val body = response.body?.string().orEmpty()
+            val obj = JSONObject(body).optJSONObject(id) ?: return@withContext null
+            val price = obj.optDouble("usd", Double.NaN)
+            if (price.isNaN()) null else price
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    suspend fun fetchCoingeckoPriceForSymbol(symbol: String): Double? = withContext(Dispatchers.IO) {
+        val id = coingeckoSymbolMap[symbol.uppercase()] ?: return@withContext null
+        val encoded = java.net.URLEncoder.encode(id, "UTF-8")
+        val url = "https://api.coingecko.com/api/v3/simple/price?ids=$encoded&vs_currencies=usd"
+        return@withContext try {
+            val response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            val body = response.body?.string().orEmpty()
+            val obj = JSONObject(body).optJSONObject(id) ?: return@withContext null
+            val price = obj.optDouble("usd", Double.NaN)
+            if (price.isNaN()) null else price
+        } catch (_: Throwable) {
+            null
+        }
     }
 }
 

@@ -68,6 +68,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setTransferTo(value: String) = _uiState.update { it.copy(transferTo = value) }
     fun setTransferAmount(value: String) = _uiState.update { it.copy(transferAmount = value) }
     fun setTransferToken(value: String) = _uiState.update { it.copy(transferToken = value) }
+
+    fun transferAllTokens() {
+        val state = _uiState.value
+        val amount = state.chainPortfolios[state.selectedChainId]?.assets
+            ?.firstOrNull { it.symbol.equals(state.transferToken, ignoreCase = true) }
+            ?.amount ?: return
+        _uiState.update { it.copy(transferAmount = amount) }
+    }
     fun setRequestInput(value: String) = _uiState.update { it.copy(requestInput = value) }
     fun setContactNameInput(value: String) = _uiState.update { it.copy(contactNameInput = value) }
     fun setContactAddressInput(value: String) = _uiState.update { it.copy(contactAddressInput = value) }
@@ -147,8 +155,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             emitBrowserReject(requestId, 4001, "请先选择观察地址")
                         } else {
                             authorizeInjectedBrowser()
-                            emitBrowserResolve(requestId, org.json.JSONArray(listOf(address)).toString())
                             emitBrowserAccountsChanged()
+                            emitBrowserChainChanged()
+                            emitBrowserResolve(requestId, org.json.JSONArray(listOf(address)).toString())
                         }
                     }
 
@@ -162,8 +171,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             emitBrowserReject(requestId, 4001, "请先选择观察地址")
                         } else {
                             authorizeInjectedBrowser()
-                            emitBrowserResolve(requestId, currentBrowserRequestPermissionsJson())
                             emitBrowserAccountsChanged()
+                            emitBrowserChainChanged()
+                            emitBrowserResolve(requestId, currentBrowserRequestPermissionsJson())
                         }
                     }
 
@@ -352,28 +362,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val balances = mutableListOf<AssetBalanceUi>()
                 val nativeToken = chain.tokens.first()
                 val nativeBalance = EvmRpc.getBalance(chain, address)
+                val nativeAmount = formatUnits(nativeBalance, nativeToken.decimals)
+                val nativePrice = EvmRpc.getUsdPrice(chain, null)
                 balances += AssetBalanceUi(
                     symbol = nativeToken.symbol,
                     name = nativeToken.name,
-                    amount = formatUnits(nativeBalance, nativeToken.decimals),
+                    amount = nativeAmount,
                     isNative = true,
+                    priceUsd = nativePrice,
+                    usdAmount = calculateUsd(nativeAmount, nativePrice),
                 )
                 chain.tokens.filter { it.address != null }.forEach { token ->
                     val amount = EvmRpc.getTokenBalance(chain, token.address!!, address)
-                    balances += AssetBalanceUi(
-                        symbol = token.symbol,
-                        name = token.name,
-                        amount = formatUnits(amount, token.decimals),
-                        contractAddress = token.address,
-                    )
-                }
+                    val formatted = formatUnits(amount, token.decimals)
+                    val price = EvmRpc.getUsdPrice(chain, token.address)
+                balances += AssetBalanceUi(
+                    symbol = token.symbol,
+                    name = token.name,
+                    amount = formatted,
+                    contractAddress = token.address,
+                    priceUsd = price,
+                    usdAmount = calculateUsd(formatted, price),
+                )
+            }
+                val finalBalances = enrichMissingPrices(balances)
                 _uiState.update { state ->
                     state.copy(
                         loadingBalances = false,
                         chainPortfolios = state.chainPortfolios + (
                             chain.chainId to ChainPortfolioUi(
                                 chainId = chain.chainId,
-                                assets = balances,
+                                assets = finalBalances,
                                 lastUpdatedAt = System.currentTimeMillis(),
                                 status = "已同步 ${chain.shortName}",
                             )
@@ -784,15 +803,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     try {
                         val hash = EvmRpc.sendRawTransaction(chain, parsed.rawTransaction)
                         val pendingRequest = _uiState.value.walletConnectPendingRequest
-                        val browserRequest = pendingInjectedBrowserRequest
+                        val pendingBrowserRequest = pendingInjectedBrowserRequest
                         if (pendingRequest != null) {
                             WalletConnectBridge.respondCurrentRequestResult("0x$hash") { result ->
                                 result.onFailure { setError("WalletConnect 返回交易哈希失败: ${it.message}") }
                             }
                         }
-                        if (browserRequest != null) {
+                        if (pendingBrowserRequest != null) {
                             emitBrowserResolve(
-                                browserRequest.browserRequestId,
+                                pendingBrowserRequest.browserRequestId,
                                 org.json.JSONObject.quote("0x$hash"),
                             )
                             pendingInjectedBrowserRequest = null
@@ -1622,6 +1641,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (message.contains("ResizeObserver loop completed with undelivered notifications", ignoreCase = true)) {
             return true
         }
+        if (message.contains("Uncaught (in promise) #<Object>", ignoreCase = true)) {
+            return true
+        }
+        if (
+            message.contains("static/js/main", ignoreCase = true) &&
+            message.contains("#<Object>", ignoreCase = true)
+        ) {
+            return true
+        }
         val isChartingLibraryNoise = message.contains("charting_library", ignoreCase = true) &&
             (
                 message.contains("CommonDelegate:Error: Value is null", ignoreCase = true) ||
@@ -1636,7 +1664,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 message.contains("app.hyperliquid.xyz", ignoreCase = true) &&
                     message.contains("preflight request", ignoreCase = true)
                 )
-        return isChartingLibraryNoise || isCorsNoise
+        val isStubNoise = message.contains("__satochipWalletSet", ignoreCase = true)
+        return isChartingLibraryNoise || isCorsNoise || isStubNoise
     }
 
     private suspend fun handleHyperliquidApprovalResult(signatureHex: String) {
@@ -1769,6 +1798,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .divide(divisor, decimals.coerceAtMost(8), RoundingMode.DOWN)
             .stripTrailingZeros()
             .toPlainString()
+    }
+
+    private fun calculateUsd(amount: String, priceUsd: Double?): Double? {
+        val decimal = amount.toBigDecimalOrNull() ?: return null
+        return priceUsd?.let { decimal.multiply(BigDecimal.valueOf(it)).toDouble() }
+    }
+
+    private suspend fun enrichMissingPrices(balances: List<AssetBalanceUi>): List<AssetBalanceUi> {
+        val needed = balances.filter { it.priceUsd == null }
+        if (needed.isEmpty()) return balances
+        val symbols = needed.map { it.symbol.uppercase() }.distinct()
+        val priceMap = mutableMapOf<String, Double>()
+        symbols.forEach { symbol ->
+            val price = EvmRpc.fetchCoingeckoPriceForSymbol(symbol)
+            if (price != null) priceMap[symbol] = price
+        }
+        return balances.map { asset ->
+            val symbolKey = asset.symbol.uppercase()
+            val price = asset.priceUsd ?: priceMap[symbolKey]
+            if (price == null) asset else asset.copy(priceUsd = price, usdAmount = calculateUsd(asset.amount, price))
+        }
     }
 
     private fun amountToWei(amount: String, decimals: Int): BigInteger {

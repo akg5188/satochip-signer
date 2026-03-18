@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.SystemClock
 import android.widget.Button
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -23,6 +24,8 @@ class QrScanActivity : BiometricGateActivity() {
     }
 
     private lateinit var barcodeView: DecoratedBarcodeView
+    private lateinit var titleView: TextView
+    private lateinit var statusView: TextView
     private var hasReturned = false
     private var lastText = ""
     private var lastReadAt = 0L
@@ -32,7 +35,7 @@ class QrScanActivity : BiometricGateActivity() {
         lifecycleScope.launch {
             val decoded = QrImageDecoder.decodeFromUri(this@QrScanActivity, uri)
             if (decoded.isNullOrBlank()) {
-                barcodeView.setStatusText("相册图片未识别到二维码，请重试")
+                updateStatus("相册图片未识别到二维码，请重试")
                 Toast.makeText(this@QrScanActivity, "相册图片未识别到二维码", Toast.LENGTH_SHORT).show()
                 return@launch
             }
@@ -52,10 +55,17 @@ class QrScanActivity : BiometricGateActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_qr_scan)
         barcodeView = findViewById(R.id.barcode_scanner)
+        titleView = findViewById(R.id.tv_scan_title)
+        statusView = findViewById(R.id.tv_scan_status)
         barcodeView.decoderFactory = DefaultDecoderFactory(listOf(BarcodeFormat.QR_CODE))
-        barcodeView.setStatusText(intent.getStringExtra(EXTRA_STATUS_TEXT) ?: "请扫描二维码")
+        titleView.text = getString(R.string.scan_title_response)
+        updateStatus(intent.getStringExtra(EXTRA_STATUS_TEXT) ?: getString(R.string.scan_status_response))
         findViewById<Button>(R.id.btn_pick_qr_from_gallery).setOnClickListener {
             galleryLauncher.launch("image/*")
+        }
+        findViewById<Button>(R.id.btn_toggle_torch).apply {
+            isEnabled = false
+            alpha = 0.45f
         }
         findViewById<Button>(R.id.btn_cancel_scan).setOnClickListener {
             setResult(Activity.RESULT_CANCELED)
@@ -89,6 +99,11 @@ class QrScanActivity : BiometricGateActivity() {
             returnResult(text)
         }
         barcodeView.resume()
+    }
+
+    private fun updateStatus(text: String) {
+        statusView.text = text
+        barcodeView.setStatusText("")
     }
 
     private fun returnResult(payload: String) {

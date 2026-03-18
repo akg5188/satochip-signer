@@ -437,7 +437,10 @@ object HyperliquidApi {
             is Long -> packer.packLong(value)
             is Float -> packer.packDouble(value.toDouble())
             is Double -> packer.packDouble(value)
-            is BigInteger -> packer.packLong(value.longValueExact())
+            is BigInteger -> {
+                require(value.bitLength() <= 63) { "BigInteger 超出 long 编码范围: $value" }
+                packer.packLong(value.toLong())
+            }
             is String -> packer.packString(value)
             is ByteArray -> {
                 packer.packBinaryHeader(value.size)

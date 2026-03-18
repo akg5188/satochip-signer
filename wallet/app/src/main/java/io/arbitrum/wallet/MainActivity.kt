@@ -49,7 +49,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -96,6 +98,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import java.math.BigDecimal
+import java.text.NumberFormat
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
@@ -103,9 +110,17 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 private interface InjectedBrowserHost {
-    fun createInjectedWalletBridge(): Any
+    fun createInjectedWalletBridge(): InjectedWalletBridge
     fun injectWalletProviderInto(webView: WebView)
     fun reportBrowserRuntimeIssue(message: String)
+}
+
+abstract class InjectedWalletBridge {
+    @JavascriptInterface
+    abstract fun request(requestId: String, method: String, paramsJson: String?, origin: String?)
+
+    @JavascriptInterface
+    abstract fun reportIssue(level: String?, message: String?, source: String?, line: Int)
 }
 
 class MainActivity : BiometricGateActivity(), InjectedBrowserHost {
@@ -169,6 +184,7 @@ class MainActivity : BiometricGateActivity(), InjectedBrowserHost {
                     onTransferToChange = viewModel::setTransferTo,
                     onTransferAmountChange = viewModel::setTransferAmount,
                     onTransferTokenChange = viewModel::setTransferToken,
+                    onTransferAmountAll = viewModel::transferAllTokens,
                     onPrepareTransfer = viewModel::prepareTransfer,
                     onRequestInputChange = viewModel::setRequestInput,
                     onImportRawRequest = viewModel::importRawRequest,
@@ -250,9 +266,9 @@ class MainActivity : BiometricGateActivity(), InjectedBrowserHost {
         }
     }
 
-    private inner class InjectedWalletJavascriptBridge {
+    private inner class InjectedWalletJavascriptBridge : InjectedWalletBridge() {
         @JavascriptInterface
-        fun request(requestId: String, method: String, paramsJson: String?, origin: String?) {
+        override fun request(requestId: String, method: String, paramsJson: String?, origin: String?) {
             viewModel.handleInjectedBrowserRequest(
                 requestId = requestId,
                 method = method,
@@ -262,7 +278,7 @@ class MainActivity : BiometricGateActivity(), InjectedBrowserHost {
         }
 
         @JavascriptInterface
-        fun reportIssue(level: String?, message: String?, source: String?, line: Int) {
+        override fun reportIssue(level: String?, message: String?, source: String?, line: Int) {
             val parts = buildList {
                 add(level.orEmpty().ifBlank { "js" })
                 source?.takeIf { it.isNotBlank() }?.let { add(it) }
@@ -273,7 +289,7 @@ class MainActivity : BiometricGateActivity(), InjectedBrowserHost {
         }
     }
 
-    override fun createInjectedWalletBridge(): Any = InjectedWalletJavascriptBridge()
+    override fun createInjectedWalletBridge(): InjectedWalletBridge = InjectedWalletJavascriptBridge()
     override fun injectWalletProviderInto(webView: WebView) = injectWalletProvider(webView)
     override fun reportBrowserRuntimeIssue(message: String) = viewModel.reportBrowserRuntimeIssue(message)
 
@@ -437,9 +453,9 @@ class HyperliquidActivity : BiometricGateActivity(), InjectedBrowserHost {
         }
     }
 
-    private inner class InjectedWalletJavascriptBridge {
+    private inner class InjectedWalletJavascriptBridge : InjectedWalletBridge() {
         @JavascriptInterface
-        fun request(requestId: String, method: String, paramsJson: String?, origin: String?) {
+        override fun request(requestId: String, method: String, paramsJson: String?, origin: String?) {
             viewModel.handleInjectedBrowserRequest(
                 requestId = requestId,
                 method = method,
@@ -449,7 +465,7 @@ class HyperliquidActivity : BiometricGateActivity(), InjectedBrowserHost {
         }
 
         @JavascriptInterface
-        fun reportIssue(level: String?, message: String?, source: String?, line: Int) {
+        override fun reportIssue(level: String?, message: String?, source: String?, line: Int) {
             val parts = buildList {
                 add(level.orEmpty().ifBlank { "js" })
                 source?.takeIf { it.isNotBlank() }?.let { add(it) }
@@ -460,7 +476,7 @@ class HyperliquidActivity : BiometricGateActivity(), InjectedBrowserHost {
         }
     }
 
-    override fun createInjectedWalletBridge(): Any = InjectedWalletJavascriptBridge()
+    override fun createInjectedWalletBridge(): InjectedWalletBridge = InjectedWalletJavascriptBridge()
 
     override fun injectWalletProviderInto(webView: WebView) {
         webView.post {
@@ -507,7 +523,7 @@ class HyperliquidActivity : BiometricGateActivity(), InjectedBrowserHost {
             setTextColor(0xFFE2E8F0.toInt())
         }
         val titleView = TextView(this).apply {
-            text = "Hyperliquid"
+            text = getString(R.string.hyperliquid_name)
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 19f
             gravity = Gravity.CENTER
@@ -554,10 +570,10 @@ class HyperliquidActivity : BiometricGateActivity(), InjectedBrowserHost {
                 onBrowserIssue = { message -> reportBrowserRuntimeIssue(message) },
             )
             addJavascriptInterface(createInjectedWalletBridge(), "SatochipAndroid")
-            val supportsDocumentStart = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
-            if (supportsDocumentStart) {
-                WebViewCompat.addDocumentStartJavaScript(this, buildInjectedEthereumProviderScript(), setOf("https://app.hyperliquid.xyz"))
-            }
+            val supportsDocumentStart = registerDocumentStartScriptIfAvailable(
+                this,
+                buildInjectedEthereumProviderScript(),
+            )
             webViewClient = HyperliquidInjectedWebViewClient(
                 injectOnPageFinished = !supportsDocumentStart,
                 onInjectProvider = ::injectWalletProviderInto,
@@ -1009,6 +1025,7 @@ private fun WalletScreen(
     onTransferToChange: (String) -> Unit,
     onTransferAmountChange: (String) -> Unit,
     onTransferTokenChange: (String) -> Unit,
+    onTransferAmountAll: () -> Unit,
     onPrepareTransfer: () -> Unit,
     onRequestInputChange: (String) -> Unit,
     onImportRawRequest: () -> Unit,
@@ -1141,6 +1158,10 @@ private fun WalletScreen(
                     state = state,
                     chain = chain,
                     onRefreshBalances = onRefreshBalances,
+                    onNewAddressChange = onNewAddressChange,
+                    onAddAddress = onAddAddress,
+                    onSelectAddress = onSelectAddress,
+                    onRemoveAddress = onRemoveAddress,
                 )
                 if (WalletChains.ALL.size > 1) {
                     ChainSelectorSection(
@@ -1148,13 +1169,6 @@ private fun WalletScreen(
                         onSelectChain = onSelectChain,
                     )
                 }
-                AddressSection(
-                    state = state,
-                    onNewAddressChange = onNewAddressChange,
-                    onAddAddress = onAddAddress,
-                    onSelectAddress = onSelectAddress,
-                    onRemoveAddress = onRemoveAddress,
-                )
                 PortfolioSection(
                     chain = chain,
                     portfolio = portfolio,
@@ -1166,6 +1180,7 @@ private fun WalletScreen(
                     onTransferToChange = onTransferToChange,
                     onTransferAmountChange = onTransferAmountChange,
                     onTransferTokenChange = onTransferTokenChange,
+                    onTransferAmountAll = onTransferAmountAll,
                     onPrepareTransfer = onPrepareTransfer,
                 )
                 DappToolsSection(
@@ -1236,8 +1251,8 @@ private fun HyperliquidBrowserScreen(
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     window.isNavigationBarContrastEnforced = true
                 }
-                if (previousLightStatus != null) controller?.isAppearanceLightStatusBars = previousLightStatus
-                if (previousLightNav != null) controller?.isAppearanceLightNavigationBars = previousLightNav
+                if (previousLightStatus != null) controller.isAppearanceLightStatusBars = previousLightStatus
+                if (previousLightNav != null) controller.isAppearanceLightNavigationBars = previousLightNav
             }
         }
     }
@@ -1396,7 +1411,7 @@ private fun HyperliquidBrowserSection(
     modifier: Modifier = Modifier,
 ) {
     val browserHost = LocalContext.current as? InjectedBrowserHost
-    val injectedBridge = remember(browserHost) { browserHost?.createInjectedWalletBridge() }
+    val injectedBridge: InjectedWalletBridge? = remember(browserHost) { browserHost?.createInjectedWalletBridge() }
     val providerScript = remember { buildInjectedEthereumProviderScript() }
 
     Box(
@@ -1435,13 +1450,8 @@ private fun HyperliquidBrowserSection(
                         },
                         onBrowserIssue = browserHost?.let { { message -> it.reportBrowserRuntimeIssue(message) } },
                     )
-                    if (injectedBridge != null) {
-                        addJavascriptInterface(injectedBridge, "SatochipAndroid")
-                    }
-                    val supportsDocumentStart = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
-                    if (supportsDocumentStart) {
-                        WebViewCompat.addDocumentStartJavaScript(this, providerScript, setOf("https://app.hyperliquid.xyz"))
-                    }
+                    injectedBridge?.let { addWalletJavascriptInterface(this, it) }
+                    val supportsDocumentStart = registerDocumentStartScriptIfAvailable(this, providerScript)
                     webViewClient = HyperliquidInjectedWebViewClient(
                         injectOnPageFinished = !supportsDocumentStart,
                         onInjectProvider = { view -> browserHost?.injectWalletProviderInto(view) },
@@ -1476,13 +1486,14 @@ private class HyperliquidWebChromeClient(
 ) : WebChromeClient() {
     override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
         val message = consoleMessage ?: return super.onConsoleMessage(null)
-        if (message.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+        val rawMessage = message.message().orEmpty()
+        if (message.messageLevel() == ConsoleMessage.MessageLevel.ERROR && shouldReportHyperliquidConsoleError(rawMessage)) {
             onBrowserIssue?.invoke(
                 buildString {
                     append("console error")
                     message.sourceId()?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
                     if (message.lineNumber() > 0) append(" · line ").append(message.lineNumber())
-                    message.message()?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
+                    rawMessage.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
                 },
             )
         }
@@ -1520,6 +1531,14 @@ private class HyperliquidWebChromeClient(
     }
 }
 
+private fun shouldReportHyperliquidConsoleError(message: String): Boolean {
+    val normalized = message.trim()
+    if (normalized.isBlank()) return false
+    if (normalized.contains("Uncaught (in promise) #<Object>", ignoreCase = true)) return false
+    if (normalized.contains("ResizeObserver loop completed with undelivered notifications", ignoreCase = true)) return false
+    return true
+}
+
 private class HyperliquidInjectedWebViewClient(
     private val injectOnPageFinished: Boolean,
     private val onInjectProvider: (WebView) -> Unit,
@@ -1527,6 +1546,11 @@ private class HyperliquidInjectedWebViewClient(
     private val onBrowserIssue: ((String) -> Unit)?,
     private val onPageReady: (WebView?) -> Unit,
 ) : WebViewClient() {
+    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+        super.onPageStarted(view, url, favicon)
+        view?.let { ensureProviderStubs(it) }
+    }
+
     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
         val url = request?.url ?: return false
         if (!request.isForMainFrame) return false
@@ -1573,6 +1597,40 @@ private class HyperliquidInjectedWebViewClient(
         }
         onPageReady(view)
     }
+}
+
+@SuppressLint("RequiresFeature")
+private fun registerDocumentStartScriptIfAvailable(webView: WebView, script: String): Boolean {
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return false
+    WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("https://app.hyperliquid.xyz"))
+    return true
+}
+
+private fun addWalletJavascriptInterface(webView: WebView, bridge: InjectedWalletBridge) {
+    webView.addJavascriptInterface(bridge, "SatochipAndroid")
+}
+
+private fun ensureProviderStubs(webView: WebView) {
+    val stubScript = """
+        (function() {
+          if (!window.__SATOCHIP_PROVIDER_STUB__) {
+            window.__SATOCHIP_PROVIDER_STUB__ = true;
+            window.__SATOCHIP_BOOTSTRAP__ = window.__SATOCHIP_BOOTSTRAP__ || {};
+            if (typeof window.__satochipWalletSetAccounts !== 'function') {
+              window.__satochipWalletSetAccounts = function(accounts) {
+                window.__SATOCHIP_BOOTSTRAP__.accounts = accounts;
+              };
+            }
+            if (typeof window.__satochipWalletSetChain !== 'function') {
+              window.__satochipWalletSetChain = function(chainId) {
+                if (!chainId) return;
+                window.__SATOCHIP_BOOTSTRAP__.chainId = chainId;
+              };
+            }
+          }
+        })();
+    """.trimIndent()
+    webView.post { webView.evaluateJavascript(stubScript, null) }
 }
 
 private fun refreshInjectedBrowserViewport(webView: WebView) {
@@ -1823,6 +1881,24 @@ private fun buildInjectedEthereumProviderScript(): String {
             const entry = pending[id];
             if (!entry) return;
             delete pending[id];
+            try {
+              if (entry.method === "eth_requestAccounts" && Array.isArray(result)) {
+                window.__satochipWalletSetAccounts(result);
+              }
+              if (
+                (entry.method === "wallet_requestPermissions" || entry.method === "wallet_grantPermissions") &&
+                Array.isArray(result)
+              ) {
+                var permission = result[0] || null;
+                var caveats = permission && Array.isArray(permission.caveats) ? permission.caveats : [];
+                var accountCaveat = caveats.find(function(item) {
+                  return item && item.type === "restrictReturnedAccounts" && Array.isArray(item.value);
+                });
+                if (accountCaveat && Array.isArray(accountCaveat.value)) {
+                  window.__satochipWalletSetAccounts(accountCaveat.value);
+                }
+              }
+            } catch (error) {}
             entry.resolve(result);
           };
 
@@ -2079,63 +2155,81 @@ private fun WalletOverviewSection(
     state: WalletUiState,
     chain: WalletChain,
     onRefreshBalances: () -> Unit,
+    onNewAddressChange: (String) -> Unit,
+    onAddAddress: () -> Unit,
+    onSelectAddress: (String) -> Unit,
+    onRemoveAddress: (String) -> Unit,
 ) {
     WalletSectionCard {
-        SectionHeader(
-            title = chain.displayName,
-            subtitle = "观察钱包",
-            trailing = {
-                StatusChip(
-                    label = if (state.selectedAddress.isBlank()) "未添加地址" else "已就绪",
-                    background = if (state.selectedAddress.isBlank()) Color(0xFFF8FAFC) else Color(0xFFEFF8FF),
-                    contentColor = if (state.selectedAddress.isBlank()) Color(0xFF344054) else Color(0xFF175CD3),
-                )
-            },
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text(chain.displayName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("观察钱包", fontSize = 12.sp, color = Color(0xFF667085))
+            }
+            TextButton(onClick = onRefreshBalances) {
+                Text(if (state.loadingBalances) "同步中" else "刷新", fontSize = 12.sp)
+            }
+        }
+
         if (state.selectedAddress.isBlank()) {
-            Surface(
-                color = Color(0xFFF8FAFC),
-                shape = RoundedCornerShape(18.dp),
-                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-            ) {
-                Text(
-                    "添加一个观察地址后，就能查看资产、生成离线签名和连接 DApp。",
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    fontSize = 13.sp,
-                    color = Color(0xFF667085),
-                )
+            Text(
+                "请添加观察地址后即可查看资产和签名",
+                modifier = Modifier.padding(top = 8.dp),
+                fontSize = 12.sp,
+                color = Color(0xFF667085),
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = state.newAddressInput,
+                onValueChange = onNewAddressChange,
+                placeholder = { Text("添加地址 (0x...)", fontSize = 12.sp) },
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 56.dp),
+                singleLine = true,
+            )
+            Button(onClick = onAddAddress, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("添加", fontSize = 12.sp)
             }
-        } else {
-            Surface(
-                color = Color(0xFFF7FAFF),
-                shape = RoundedCornerShape(20.dp),
-                border = BorderStroke(1.dp, Color(0xFFD6E4FF)),
+        }
+
+        if (state.addresses.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        shortAddressLabel(state.selectedAddress),
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF101828),
+                state.addresses.forEach { address ->
+                    AddressListItem(
+                        address = address,
+                        isSelected = address.equals(state.selectedAddress, ignoreCase = true),
+                        onSelect = { onSelectAddress(address) },
+                        onRemove = { onRemoveAddress(address) },
                     )
-                    SelectionContainer {
-                        Text(state.selectedAddress, fontSize = 12.sp, color = Color(0xFF475467))
-                    }
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                StatusChip(label = chain.shortName)
-                TextButton(onClick = onRefreshBalances) {
-                    Text(if (state.loadingBalances) "同步中" else "刷新资产")
-                }
-            }
+        }
+
+        if (state.addresses.isEmpty()) {
+            Text(
+                "添加地址后就能查看资产、转账和签名。",
+                fontSize = 12.sp,
+                color = Color(0xFF667085),
+                modifier = Modifier.padding(top = 10.dp),
+            )
         }
     }
 }
@@ -2143,6 +2237,27 @@ private fun WalletOverviewSection(
 private fun shortAddressLabel(address: String, head: Int = 8, tail: Int = 6): String {
     if (address.length <= head + tail + 3) return address
     return "${address.take(head)}...${address.takeLast(tail)}"
+}
+
+private val usdFormatter: NumberFormat = NumberFormat.getCurrencyInstance(Locale.US).apply {
+    maximumFractionDigits = 2
+}
+
+private fun formatUsdAmount(value: Double?): String? = value?.let { usdFormatter.format(it) }
+
+private fun calculateUsdPreview(amount: String, priceUsd: Double?): String? {
+    val decimal = amount.toBigDecimalOrNull() ?: return null
+    return priceUsd?.let { decimal.multiply(BigDecimal.valueOf(it)).toDouble() }
+        ?.let { usdFormatter.format(it) }
+}
+
+private fun findTokenPrice(state: WalletUiState, chain: WalletChain, symbol: String): Double? {
+    val assets = state.chainPortfolios[chain.chainId]?.assets ?: return null
+    return assets.firstOrNull { it.symbol.equals(symbol, ignoreCase = true) }?.priceUsd
+}
+
+private fun formatPriceTime(timestamp: Long): String {
+    return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
 }
 
 @Composable
@@ -2220,99 +2335,56 @@ private fun ChainSelectorSection(
 }
 
 @Composable
-private fun AddressSection(
-    state: WalletUiState,
-    onNewAddressChange: (String) -> Unit,
-    onAddAddress: () -> Unit,
-    onSelectAddress: (String) -> Unit,
-    onRemoveAddress: (String) -> Unit,
+private fun AddressListItem(
+    address: String,
+    isSelected: Boolean,
+    onSelect: () -> Unit,
+    onRemove: () -> Unit,
 ) {
-    val secondaryAddresses = state.addresses.filterNot { it.equals(state.selectedAddress, ignoreCase = true) }
-    WalletSectionCard {
-        SectionHeader(
-            title = "地址管理",
-            subtitle = "新增、切换或删除观察地址",
-            trailing = if (state.selectedAddress.isNotBlank()) {
-                { StatusChip(label = "已选 1 个") }
-            } else {
-                null
-            },
-        )
-        Surface(
-            color = Color(0xFFF8FAFC),
-            shape = RoundedCornerShape(18.dp),
-            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFFF8FAFC), RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.CenterStart,
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = state.newAddressInput,
-                    onValueChange = onNewAddressChange,
-                    label = { Text("添加地址 (0x...)") },
-                    modifier = Modifier.weight(1f).padding(start = 12.dp, top = 4.dp, bottom = 4.dp),
-                    singleLine = true,
+            SelectionContainer {
+                Text(
+                    text = address,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    color = Color(0xFF0F172A),
+                    softWrap = true,
+                    overflow = TextOverflow.Visible,
+                    modifier = Modifier.fillMaxWidth(),
                 )
-                Button(onClick = onAddAddress, modifier = Modifier.padding(end = 12.dp)) { Text("添加") }
             }
         }
-
-        when {
-            state.addresses.isEmpty() -> {
-                Text("添加地址后就能查看资产、转账和签名。", fontSize = 12.sp, color = Color(0xFF667085))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (isSelected) {
+                Text(
+                    "当前",
+                    fontSize = 11.sp,
+                    color = Color(0xFF475467),
+                    modifier = Modifier.padding(end = 4.dp),
+                )
             }
-
-            secondaryAddresses.isEmpty() -> {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = Color(0xFFF8FAFC),
-                    shape = RoundedCornerShape(18.dp),
-                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-                ) {
-                    Text(
-                        "当前只保留一个观察地址，界面会更简洁。",
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                        fontSize = 12.sp,
-                        color = Color(0xFF667085),
-                    )
-                }
+            TextButton(
+                onClick = onSelect,
+                enabled = !isSelected,
+            ) {
+                Text("切换", fontSize = 12.sp)
             }
-
-            else -> {
-                secondaryAddresses.forEach { address ->
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = Color.White,
-                        shape = RoundedCornerShape(18.dp),
-                        border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(
-                                    shortAddressLabel(address),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFF101828),
-                                )
-                                Text(
-                                    address,
-                                    fontSize = 11.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = Color(0xFF667085),
-                                )
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                TextButton(onClick = { onSelectAddress(address) }) { Text("切换") }
-                                TextButton(onClick = { onRemoveAddress(address) }) { Text("删除") }
-                            }
-                        }
-                    }
-                }
+            TextButton(onClick = onRemove) {
+                Text("删除", fontSize = 12.sp)
             }
         }
     }
@@ -2325,19 +2397,16 @@ private fun PortfolioSection(
     isLoading: Boolean,
 ) {
     WalletSectionCard {
-        SectionHeader(
-            title = "资产",
-            subtitle = chain.displayName,
-            trailing = portfolio?.let {
-                {
-                    Text(
-                        DateUtils.getRelativeTimeSpanString(it.lastUpdatedAt).toString(),
-                        fontSize = 11.sp,
-                        color = Color(0xFF667085),
-                    )
-                }
-            },
-        )
+    val priceLabel = portfolio?.lastUpdatedAt?.let { "价格 ${formatPriceTime(it)}" }
+    SectionHeader(
+        title = "资产",
+        subtitle = chain.displayName,
+        trailing = priceLabel?.let {
+            {
+                Text(it, fontSize = 11.sp, color = Color(0xFF667085))
+            }
+        },
+    )
             if (isLoading && portfolio == null) {
                 Text("正在同步余额...", color = Color(0xFF64748B))
             } else if (portfolio == null) {
@@ -2352,15 +2421,22 @@ private fun PortfolioSection(
                             shape = RoundedCornerShape(16.dp),
                             border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        val usdLabel = formatUsdAmount(asset.usdAmount)
+                        val unitPriceLabel = asset.priceUsd?.let { formatUsdAmount(it) }
+                        val usdCaption = when {
+                            usdLabel != null -> "≈ $usdLabel"
+                            unitPriceLabel != null -> "≈ $unitPriceLabel / ${asset.symbol}"
+                            else -> "≈ --"
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Text(asset.symbol, fontWeight = FontWeight.SemiBold, color = Color(0xFF101828))
                                         if (asset.isNative) {
                                             StatusChip(
@@ -2372,32 +2448,43 @@ private fun PortfolioSection(
                                     }
                                     Text(asset.name, fontSize = 11.sp, color = Color(0xFF667085))
                                 }
-                                Text(
-                                    asset.amount,
-                                    fontWeight = FontWeight.Medium,
-                                    color = if (assetAmountLooksZero(asset.amount)) Color(0xFF98A2B3) else Color(0xFF101828),
-                                )
+                                Column(
+                                    horizontalAlignment = Alignment.End,
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(
+                                        asset.amount,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (assetAmountLooksZero(asset.amount)) Color(0xFF98A2B3) else Color(0xFF101828),
+                                    )
+                                    Text(
+                                        usdCaption,
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF475467),
+                                    )
+                                }
                             }
                         }
                     }
             }
         }
-}
+    }
 
-@Composable
-private fun TransferSection(
-    state: WalletUiState,
-    chain: WalletChain,
-    onTransferToChange: (String) -> Unit,
-    onTransferAmountChange: (String) -> Unit,
-    onTransferTokenChange: (String) -> Unit,
-    onPrepareTransfer: () -> Unit,
-) {
-    WalletSectionCard {
-        SectionHeader(
-            title = "转账",
-            subtitle = "生成树莓派签名二维码",
-        )
+    @Composable
+    private fun TransferSection(
+        state: WalletUiState,
+        chain: WalletChain,
+        onTransferToChange: (String) -> Unit,
+        onTransferAmountChange: (String) -> Unit,
+        onTransferTokenChange: (String) -> Unit,
+        onTransferAmountAll: () -> Unit,
+        onPrepareTransfer: () -> Unit,
+    ) {
+        WalletSectionCard {
+            SectionHeader(
+                title = "转账",
+                subtitle = "生成树莓派签名二维码",
+            )
             OutlinedTextField(
                 value = state.transferTo,
                 onValueChange = onTransferToChange,
@@ -2405,17 +2492,36 @@ private fun TransferSection(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
-            OutlinedTextField(
-                value = state.transferAmount,
-                onValueChange = onTransferAmountChange,
-                label = { Text("数量") },
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = state.transferAmount,
+                    onValueChange = onTransferAmountChange,
+                    label = { Text("数量") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                )
+                TextButton(onClick = onTransferAmountAll) { Text("全部", fontSize = 12.sp) }
+            }
+            val transferUsdLabel = calculateUsdPreview(
+                state.transferAmount,
+                findTokenPrice(state, chain, state.transferToken),
             )
+            if (transferUsdLabel != null) {
+                Text(
+                    "≈ $transferUsdLabel",
+                    fontSize = 12.sp,
+                    color = Color(0xFF475467),
+                    modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+                )
+            }
             Text("代币", fontSize = 12.sp, color = Color(0xFF667085))
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 chain.tokens.forEach { token ->
                     val selected = token.symbol.equals(state.transferToken, ignoreCase = true)
@@ -2471,50 +2577,43 @@ private fun DappToolsSection(
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 2,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = onScanRequest, modifier = Modifier.weight(1f)) { Text("扫码二维码") }
-                OutlinedButton(onClick = onPickRequestFromGallery, modifier = Modifier.weight(1f)) { Text("相册二维码") }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = onScanRequest, modifier = Modifier.weight(1f)) { Text("扫码二维码", fontSize = 12.sp) }
+                OutlinedButton(onClick = onPickRequestFromGallery, modifier = Modifier.weight(1f)) { Text("相册二维码", fontSize = 12.sp) }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = onImportRequestFromClipboard, modifier = Modifier.weight(1f)) { Text("粘贴连接") }
-                OutlinedButton(onClick = onImportRawRequest, modifier = Modifier.weight(1f)) { Text("解析文本") }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = onImportRequestFromClipboard, modifier = Modifier.weight(1f)) { Text("粘贴连接", fontSize = 12.sp) }
+                OutlinedButton(onClick = onImportRawRequest, modifier = Modifier.weight(1f)) { Text("解析文本", fontSize = 12.sp) }
             }
-
-            if (
-                state.walletConnectStatus.isNotBlank() ||
-                state.walletConnectProposal != null ||
-                state.walletConnectPendingRequest != null
-            ) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = Color(0xFFF8FAFC),
-                    shape = RoundedCornerShape(18.dp),
-                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-                ) {
-                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SectionLabel("WalletConnect")
-                        if (state.walletConnectStatus.isNotBlank()) {
-                            Text(state.walletConnectStatus, fontSize = 12.sp, color = Color(0xFF475467))
-                        }
-                        state.walletConnectProposal?.let { proposal ->
-                            Text("待连接: ${proposal.peerName.ifBlank { proposal.peerUrl.ifBlank { "-" } }}", fontSize = 12.sp)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(onClick = onApproveWalletConnectProposal) { Text("批准连接") }
-                                TextButton(onClick = onRejectWalletConnectProposal) { Text("拒绝") }
-                            }
-                        }
-                        state.walletConnectPendingRequest?.let { request ->
-                            Text(
-                                "当前请求: ${request.peerName.ifBlank { request.peerUrl.ifBlank { "-" } }} · ${request.method}",
-                                fontSize = 12.sp,
-                                color = Color(0xFF475467),
-                            )
-                        }
-                    }
+            if (state.walletConnectStatus.isNotBlank()) {
+                Text(
+                    state.walletConnectStatus,
+                    fontSize = 12.sp,
+                    color = Color(0xFF475467),
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+            state.walletConnectProposal?.let { proposal ->
+                Text(
+                    "待连接: ${proposal.peerName.ifBlank { proposal.peerUrl.ifBlank { "-" } }}",
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button(onClick = onApproveWalletConnectProposal) { Text("批准", fontSize = 12.sp) }
+                    TextButton(onClick = onRejectWalletConnectProposal) { Text("拒绝", fontSize = 12.sp) }
                 }
             }
+            state.walletConnectPendingRequest?.let { request ->
+                Text(
+                    "当前请求: ${request.peerName.ifBlank { request.peerUrl.ifBlank { "-" } }} · ${request.method}",
+                    fontSize = 12.sp,
+                    color = Color(0xFF475467),
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
         }
-}
+    }
 
 @Composable
 private fun ActivitySection(
@@ -2911,8 +3010,8 @@ private fun PreparedRequestSection(
 ) {
     Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(state.requestTitle.ifBlank { "树莓派签名请求" }, fontWeight = FontWeight.Bold)
@@ -2924,17 +3023,17 @@ private fun PreparedRequestSection(
             if (state.transferInfo.isNotBlank()) {
                 SectionLabel("转账信息")
                 SelectionContainer {
-                    Text(state.transferInfo, modifier = Modifier.fillMaxWidth(), fontSize = 12.sp)
+                    Text(state.transferInfo, modifier = Modifier.fillMaxWidth(), fontSize = 11.sp, color = Color(0xFF475467))
                 }
             }
             if (state.dappInfo.isNotBlank()) {
                 SectionLabel("DApp 信息")
                 SelectionContainer {
-                    Text(state.dappInfo, modifier = Modifier.fillMaxWidth(), fontSize = 12.sp)
+                    Text(state.dappInfo, modifier = Modifier.fillMaxWidth(), fontSize = 11.sp, color = Color(0xFF475467))
                 }
             }
             if (state.relayHint.isNotBlank()) {
-                Text(state.relayHint, fontSize = 12.sp, color = Color(0xFF667085))
+                Text(state.relayHint, fontSize = 11.sp, color = Color(0xFF667085))
             }
             if (state.signQrPages.size > 1) {
                 Row(
@@ -2951,11 +3050,11 @@ private fun PreparedRequestSection(
                 bitmap = state.signQrBitmap!!,
                 pageIndex = state.signQrPageIndex,
                 pageCount = state.signQrPages.size,
-                qrSize = if (state.signQrPages.size > 1) 344.dp else 352.dp,
+                qrSize = if (state.signQrPages.size > 1) 312.dp else 320.dp,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                Button(onClick = onScanResponse, modifier = Modifier.weight(1f)) { Text("扫码树莓派结果") }
-                Button(onClick = onPickResponseFromGallery, modifier = Modifier.weight(1f)) { Text("相册导入结果") }
+                OutlinedButton(onClick = onScanResponse, modifier = Modifier.weight(1f)) { Text("扫码结果", fontSize = 12.sp) }
+                OutlinedButton(onClick = onPickResponseFromGallery, modifier = Modifier.weight(1f)) { Text("相册导入", fontSize = 12.sp) }
             }
             TextButton(onClick = onClearPreparedRequest) { Text("取消") }
         }

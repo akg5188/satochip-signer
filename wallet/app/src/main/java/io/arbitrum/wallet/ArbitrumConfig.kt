@@ -19,6 +19,7 @@ data class WalletChain(
     val accentColor: Long,
     val historyLookbackBlocks: Long,
     val tokens: List<TokenInfo>,
+    val coingeckoId: String? = null,
 ) {
     fun txUrl(txHash: String): String = "$explorerUrl/tx/${txHash.ensureHexPrefix()}"
 
@@ -53,6 +54,7 @@ object WalletChains {
             TokenInfo("USDC", "USD Coin", 6, "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"),
             TokenInfo("USDT", "Tether USD", 6, "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9"),
         ),
+        coingeckoId = "arbitrum",
     )
 
     val ALL = listOf(ARBITRUM)
