@@ -1,104 +1,110 @@
 # TP Satochip Signer
 
-这个仓库现在一共分成五个核心部分，后面维护时请按用途区分，不要混用。
+这个仓库不是单一项目，而是同一套方案下的 5 个部分。
 
-如果你以后只想最快找到“该下载什么、该进哪个目录、该怎么重新编译”，先看：
+以后时间久了忘了，不要先翻源码，先看下面这 3 个入口：
 
-- [docs/一页式总导航.zh-CN.md](docs/一页式总导航.zh-CN.md)
-- [docs/长期维护总入口.zh-CN.md](docs/长期维护总入口.zh-CN.md)
+- [一页式总导航](docs/一页式总导航.zh-CN.md)
+- [长期维护总入口](docs/长期维护总入口.zh-CN.md)
+- [固件下载与写入指南](docs/固件下载与写入指南.zh-CN.md)
 
-## 1. `card-applet`
+## 我现在要做什么
 
-用途：
+| 现在要做的事 | 去哪个目录 | 看哪份说明 | 下载入口 |
+| --- | --- | --- | --- |
+| 给 `TokenPocket` 商业钱包做签名中转 | `app/` | [app/README.md](app/README.md) | [TP 签名中转 Release](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260318-1956) |
+| 用独立钱包看资产、转账、连 `Hyperliquid` | `wallet/` | [wallet/README.md](wallet/README.md) | [独立钱包 Release](https://github.com/akg5188/tp-satochip-signer/releases/tag/wallet-android-20260318-1717) |
+| 给 `J3R180` 卡设置 `PIN` 和助记词 | `backups/satochip-utils/` | [Tails 离线使用教程](backups/satochip-utils/Tails-离线使用教程.zh-CN.md) | 本仓库离线备份 |
+| 下载或写入 `J3R180` 卡固件 | `card-applet/` | [card-applet 中文说明](card-applet/README.zh-CN.md) | [卡固件 Release](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318) |
+| 下载或写入树莓派固件 | `seedsigner-os/` 和 `dist/` | [seedsigner-os 中文说明](seedsigner-os/README.zh-CN.md) | [树莓派固件 Release](https://github.com/akg5188/tp-satochip-signer/releases/tag/pi-signer-firmware-20260318) |
 
-- `J3R180` 智能卡固件
-- 负责卡片里的签名相关逻辑
+## 下载总表
 
-入口：
+| 内容 | 文件名 | 推荐下载位置 | 仓库内稳定备份 |
+| --- | --- | --- | --- |
+| TP 签名中转安卓 APK | `tp-qr-relay-android-latest.apk` | [tp-relay-android-20260318-1956](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260318-1956) | `dist/tp-qr-relay-android-latest.apk` |
+| 独立钱包安卓 APK | `satochip-wallet-release.apk` | [wallet-android-20260318-1717](https://github.com/akg5188/tp-satochip-signer/releases/tag/wallet-android-20260318-1717) | Release 为主 |
+| `J3R180` 卡固件 | `SatoChip-3.0.4.cap` | [j3r180-card-firmware-20260318](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318) | `card-applet/prebuilt/SatoChip-3.0.4.cap` |
+| 树莓派固件 | `system-update-latest.img.xz` | [pi-signer-firmware-20260318](https://github.com/akg5188/tp-satochip-signer/releases/tag/pi-signer-firmware-20260318) | `dist/system-update-latest.img.xz` |
+| `Tails` 离线卡初始化工具 | `Satochip-Utils-linux-x86_64-0.3.0-beta` 等 | 本地离线包和 `backups/satochip-utils/` | `backups/satochip-utils/` |
 
-- [card-applet/](card-applet/)
-- [card-applet 中文说明](card-applet/README.zh-CN.md)
-- [J3R180 卡固件 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318)
+## 五个核心部分
 
-## 2. `seedsigner-os`
+| 目录 | 它是什么 | 主要用途 | 不要和什么混用 |
+| --- | --- | --- | --- |
+| `card-applet` | `J3R180` 智能卡固件 | 卡内签名逻辑、卡固件文件 | 树莓派固件、安卓 APK |
+| `seedsigner-os` | 树莓派固件源码 | 设备系统、运行环境、镜像相关 | 卡固件、安卓 APK |
+| `wallet` | 独立钱包安卓工程 | 观察钱包、资产、转账、`Hyperliquid` | TP 中转 App |
+| `app` | TP 配套安卓工程 | 手机扫码中转签名 | 独立钱包 |
+| `backups/satochip-utils` | 离线桌面工具备份 | 设置 `PIN`、导入助记词 | 固件、安卓 APK |
 
-用途：
+## 两个安卓 APK 一眼区分
 
-- 树莓派固件
-- 负责树莓派设备侧系统、界面和运行环境
-
-入口：
-
-- [seedsigner-os/](seedsigner-os/)
-- [seedsigner-os 中文说明](seedsigner-os/README.zh-CN.md)
-- [树莓派固件 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/pi-signer-firmware-20260318)
-
-## 3. `wallet`
-
-用途：
-
-- 独立钱包安卓 APK
-- `Arbitrum One` 观察钱包
-- 资产查看
-- 转账二维码签名
-- 内置 `Hyperliquid`
-
-源码入口：
-
-- [wallet/](wallet/README.md)
-
-下载入口：
-
-- [独立钱包 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/wallet-android-20260318-1717)
-- [独立钱包 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/wallet-android-20260318-1717/satochip-wallet-release.apk)
-
-## 4. `app`
-
-用途：
-
-- 安卓软件，中文名就是“智能卡”
-- 专门配合 `TokenPocket` 商业钱包使用
-- 手机扫 TP 动态二维码，再中转给树莓派签名
-- 不是独立钱包
-
-源码入口：
-
-- [app/](app/README.md)
-
-下载入口：
-
-- [TP 签名中转 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260318-1956)
-- [TP 签名中转 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260318-1956/tp-qr-relay-android-latest.apk)
-- 仓库内稳定文件名：`dist/tp-qr-relay-android-latest.apk`
-
-## 5. `backups/satochip-utils`
-
-用途：
-
-- `J3R180` 卡初始化工具的离线备份
-- 用来在 `Tails OS` 里设置卡的 `PIN`
-- 用来导入或生成助记词
-- 不是固件，也不是安卓 APK
-
-入口：
-
-- [backups/satochip-utils/README.zh-CN.md](backups/satochip-utils/README.zh-CN.md)
-- [Tails OS 离线使用教程](backups/satochip-utils/Tails-离线使用教程.zh-CN.md)
-
-## 总结
-
-以后只要记住这五个角色就不会乱：
-
-- `card-applet` = 智能卡固件
-- `seedsigner-os` = 树莓派固件
-- `wallet` = 独立钱包安卓 APK
-- `app` = 给 TokenPocket 用的“智能卡”安卓软件
-- `backups/satochip-utils` = 设置 `J3R180` 卡 PIN 和助记词的离线工具备份
+| APK | 用途 | 源码目录 |
+| --- | --- | --- |
+| `tp-qr-relay-android-latest.apk` | 给 `TokenPocket` 商业钱包做签名中转 | `app/` |
+| `satochip-wallet-release.apk` | 独立钱包，带资产、转账和 `Hyperliquid` | `wallet/` |
 
 详细说明：
 
-- [docs/一页式总导航.zh-CN.md](docs/一页式总导航.zh-CN.md)
-- [docs/仓库结构说明.zh-CN.md](docs/仓库结构说明.zh-CN.md)
-- [docs/两个安卓APK说明.zh-CN.md](docs/两个安卓APK说明.zh-CN.md)
-- [docs/固件下载与写入指南.zh-CN.md](docs/固件下载与写入指南.zh-CN.md)
-- [docs/长期维护总入口.zh-CN.md](docs/长期维护总入口.zh-CN.md)
+- [两个安卓APK说明](docs/两个安卓APK说明.zh-CN.md)
+
+## 最常用重新编译命令
+
+### 重新编独立钱包
+
+```bash
+cd wallet
+cp local.properties.example local.properties
+./gradlew assembleRelease --console=plain
+```
+
+输出：
+
+```text
+wallet/app/build/outputs/apk/release/app-release.apk
+```
+
+### 重新编 TP 签名中转 App
+
+```bash
+cp local.properties.example local.properties
+./gradlew :app:assembleRelease --console=plain
+```
+
+输出：
+
+```text
+app/build/outputs/apk/release/app-release.apk
+```
+
+### 重新生成树莓派运行时镜像
+
+```bash
+bash scripts/repack_runtime_image.sh
+```
+
+### 卡固件优先直接用预编译文件
+
+```text
+card-applet/prebuilt/SatoChip-3.0.4.cap
+```
+
+## 最短维护顺序
+
+1. 先看 [一页式总导航](docs/一页式总导航.zh-CN.md)，确认这次要动哪一块。
+2. 改完后先本地重新编译或重新打包。
+3. 生成对应 `sha256`。
+4. 同步更新仓库里的稳定文件名。
+5. 上传到 GitHub Release。
+6. 最后补说明文档。
+
+## 配套文档
+
+- [一页式总导航](docs/一页式总导航.zh-CN.md)
+- [长期维护总入口](docs/长期维护总入口.zh-CN.md)
+- [仓库结构说明](docs/仓库结构说明.zh-CN.md)
+- [两个安卓APK说明](docs/两个安卓APK说明.zh-CN.md)
+- [固件下载与写入指南](docs/固件下载与写入指南.zh-CN.md)
+- [快速开始](docs/快速开始.zh-CN.md)
+- [维护说明](docs/维护说明.zh-CN.md)
