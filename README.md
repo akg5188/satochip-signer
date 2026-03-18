@@ -12,6 +12,7 @@
 入口：
 
 - [card-applet/](card-applet/)
+- [card-applet 中文说明](card-applet/README.zh-CN.md)
 
 ## 2. `seedsigner-os`
 
@@ -23,6 +24,7 @@
 入口：
 
 - [seedsigner-os/](seedsigner-os/)
+- [seedsigner-os 中文说明](seedsigner-os/README.zh-CN.md)
 
 ## 3. `wallet`
 
