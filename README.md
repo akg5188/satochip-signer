@@ -1,6 +1,6 @@
 # TP Satochip Signer
 
-这个仓库现在一共分成四个核心部分，后面维护时请按用途区分，不要混用。
+这个仓库现在一共分成五个核心部分，后面维护时请按用途区分，不要混用。
 
 ## 1. `card-applet`
 
@@ -63,14 +63,29 @@
 - [TP 签名中转 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260316)
 - [TP 签名中转 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260316/tp-qr-relay-android-latest.apk)
 
+## 5. `backups/satochip-utils`
+
+用途：
+
+- `J3R180` 卡初始化工具的离线备份
+- 用来在 `Tails OS` 里设置卡的 `PIN`
+- 用来导入或生成助记词
+- 不是固件，也不是安卓 APK
+
+入口：
+
+- [backups/satochip-utils/README.zh-CN.md](backups/satochip-utils/README.zh-CN.md)
+- [Tails OS 离线使用教程](backups/satochip-utils/Tails-离线使用教程.zh-CN.md)
+
 ## 总结
 
-以后只要记住这四个角色就不会乱：
+以后只要记住这五个角色就不会乱：
 
 - `card-applet` = 智能卡固件
 - `seedsigner-os` = 树莓派固件
 - `wallet` = 独立钱包安卓 APK
 - `app` = 给 TokenPocket 用的“智能卡”安卓软件
+- `backups/satochip-utils` = 设置 `J3R180` 卡 PIN 和助记词的离线工具备份
 
 详细说明：
 
