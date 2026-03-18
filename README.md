@@ -15,8 +15,9 @@
 
 下载入口：
 
-- [TP 签名中转 APK](dist/tp-qr-relay-android-latest.apk)
-- [TP 签名中转 APK sha256](dist/tp-qr-relay-android-latest.apk.sha256)
+- [TP 签名中转 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260316)
+- [TP 签名中转 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260316/tp-qr-relay-android-latest.apk)
+- [TP 签名中转 APK sha256](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260316/tp-qr-relay-android-latest.apk.sha256)
 
 对应源码入口：
 
