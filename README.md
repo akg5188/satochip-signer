@@ -106,5 +106,6 @@ card-applet/prebuilt/SatoChip-3.0.4.cap
 - [仓库结构说明](docs/仓库结构说明.zh-CN.md)
 - [两个安卓APK说明](docs/两个安卓APK说明.zh-CN.md)
 - [固件下载与写入指南](docs/固件下载与写入指南.zh-CN.md)
+- [3D 打印外壳改造方案](docs/3D打印外壳改造方案.zh-CN.md)
 - [快速开始](docs/快速开始.zh-CN.md)
 - [维护说明](docs/维护说明.zh-CN.md)
