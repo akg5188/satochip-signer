@@ -1,0 +1,8 @@
+source_snapshot_build_commit_time=2026-03-10 16:30
+raw_image_path=seedsigner-os/images/seedsigner_os.dev_.pi0-smartcard.img
+raw_image_sha256=a30d49061d58835e79c0bb1d304f48090159de3c172e0ad2459495b1fae64192
+compressed_image_path=dist/system-update-latest.img.xz
+compressed_image_sha256=5ce60369b3ab41086e191751f47579992b16be5a5adcb73f9a4160cd205a963f
+build_script=scripts/run_seedsigner_build.sh
+package_script=scripts/build_pi_firmware_from_snapshot.sh
+build_time_utc=2026-03-23T13:38:34Z

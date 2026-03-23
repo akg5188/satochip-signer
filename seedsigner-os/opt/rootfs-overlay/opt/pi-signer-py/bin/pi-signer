@@ -1,0 +1,2457 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import sys
+import time
+import urllib.parse
+import zlib
+from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+DEFAULT_PATH = "m/44'/60'/0'/0/0"
+DEFAULT_TIMEOUT_SEC = 25
+
+SECP256K1_P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+SECP256K1_GX = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
+SECP256K1_GY = 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8
+SECP256K1_HALF_N = SECP256K1_N >> 1
+
+VENDOR_DIR = Path(__file__).resolve().parents[1] / "vendor"
+if VENDOR_DIR.is_dir():
+    sys.path.insert(0, str(VENDOR_DIR))
+
+try:
+    from smartcard.System import readers as pcsc_readers
+except Exception as import_error:  # pragma: no cover - runtime import path
+    pcsc_readers = None
+    PCSC_IMPORT_ERROR: Optional[Exception] = import_error
+else:
+    PCSC_IMPORT_ERROR = None
+
+try:
+    from pysatochip.CardConnector import CardConnector
+    from pysatochip.ecc import ECPubkey as SatochipECPubkey
+except Exception as import_error:  # pragma: no cover - runtime import path
+    CardConnector = None
+    SatochipECPubkey = None
+    PYSATOCHIP_IMPORT_ERROR: Optional[Exception] = import_error
+else:
+    PYSATOCHIP_IMPORT_ERROR = None
+
+
+class CliError(RuntimeError):
+    pass
+
+
+def stage_error(code: str, exc: Exception | str) -> CliError:
+    detail = str(exc).strip() if not isinstance(exc, str) else exc.strip()
+    if detail:
+        return CliError(f"{code}:{detail}")
+    return CliError(code)
+
+
+def classify_stage_51(exc: Exception | str) -> str:
+    detail = str(exc).strip() if not isinstance(exc, str) else exc.strip()
+    lowered = detail.lower()
+    if "legacy 交易缺少 gasprice" in lowered or "eip-2930 交易缺少 gasprice" in lowered:
+        return "511"
+    if "maxpriorityfeepergas" in lowered:
+        return "512"
+    if "maxfeepergas" in lowered:
+        return "513"
+    if "无法解析 chainid" in detail or "chainid" in lowered:
+        return "514"
+    if "暂不支持的交易类型" in detail or "unsupported tx type" in lowered:
+        return "515"
+    if "accesslist" in lowered:
+        return "516"
+    return "51"
+
+
+# -----------------------------
+# Hex / hash helpers
+# -----------------------------
+
+
+def clean_hex_prefix(value: str) -> str:
+    if value.startswith(("0x", "0X")):
+        return value[2:]
+    return value
+
+
+def ensure_hex_prefix(value: str) -> str:
+    if value.startswith(("0x", "0X")):
+        return value
+    return f"0x{value}"
+
+
+def normalize_eth_address(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    text = ensure_hex_prefix(clean_hex_prefix(text)).lower()
+    if len(clean_hex_prefix(text)) != 40:
+        raise CliError(f"地址格式无效: {value}")
+    return text
+
+
+def bytes_to_hex(data: bytes) -> str:
+    return data.hex()
+
+
+def hex_to_bytes(value: Optional[str]) -> bytes:
+    if value is None:
+        return b""
+    text = clean_hex_prefix(value.strip())
+    if not text:
+        return b""
+    try:
+        int(text, 16)
+    except ValueError as exc:
+        raise CliError("Invalid hex string") from exc
+    if len(text) % 2:
+        text = "0" + text
+    return bytes.fromhex(text)
+
+
+def parse_quantity(value: object) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, str):
+        return int(value)
+    raw = value.strip()
+    if not raw:
+        return 0
+    if raw.startswith(("0x", "0X")):
+        stripped = raw[2:]
+        return int(stripped or "0", 16)
+    return int(raw)
+
+
+def int_to_min_bytes(value: int) -> bytes:
+    if value == 0:
+        return b""
+    width = (value.bit_length() + 7) // 8
+    return value.to_bytes(width, "big")
+
+
+def int_to_fixed_bytes(value: int, size: int) -> bytes:
+    raw = value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
+    if len(raw) > size and raw[0] == 0:
+        raw = raw[1:]
+    if len(raw) > size:
+        raise CliError(f"Integer does not fit in {size} bytes")
+    return b"\x00" * (size - len(raw)) + raw
+
+
+KECCAK_ROTATIONS = [
+    0,
+    1,
+    62,
+    28,
+    27,
+    36,
+    44,
+    6,
+    55,
+    20,
+    3,
+    10,
+    43,
+    25,
+    39,
+    41,
+    45,
+    15,
+    21,
+    8,
+    18,
+    2,
+    61,
+    56,
+    14,
+]
+KECCAK_PERMUTATION = [
+    1,
+    6,
+    9,
+    22,
+    14,
+    20,
+    2,
+    12,
+    13,
+    19,
+    23,
+    15,
+    4,
+    24,
+    21,
+    8,
+    16,
+    5,
+    3,
+    18,
+    17,
+    11,
+    7,
+    10,
+]
+KECCAK_ROUND_CONSTANTS = [
+    0x0000000000000001,
+    0x0000000000008082,
+    0x800000000000808A,
+    0x8000000080008000,
+    0x000000000000808B,
+    0x0000000080000001,
+    0x8000000080008081,
+    0x8000000000008009,
+    0x000000000000008A,
+    0x0000000000000088,
+    0x0000000080008009,
+    0x000000008000000A,
+    0x000000008000808B,
+    0x800000000000008B,
+    0x8000000000008089,
+    0x8000000000008003,
+    0x8000000000008002,
+    0x8000000000000080,
+    0x000000000000800A,
+    0x800000008000000A,
+    0x8000000080008081,
+    0x8000000000008080,
+    0x0000000080000001,
+    0x8000000080008008,
+]
+
+
+def _rol64(value: int, shift: int) -> int:
+    return ((value << shift) | (value >> (64 - shift))) & ((1 << 64) - 1)
+
+
+def _keccak_f1600(state: List[int]) -> None:
+    for round_constant in KECCAK_ROUND_CONSTANTS:
+        column_parity = [0] * 5
+        for index in range(25):
+            column_parity[index % 5] ^= state[index]
+
+        d = [0] * 5
+        for index in range(5):
+            d[index] = column_parity[(index + 4) % 5] ^ _rol64(
+                column_parity[(index + 1) % 5], 1
+            )
+        for index in range(25):
+            state[index] ^= d[index % 5]
+
+        for index, rotation in enumerate(KECCAK_ROTATIONS):
+            state[index] = _rol64(state[index], rotation)
+
+        temp = state[KECCAK_PERMUTATION[0]]
+        for index in range(len(KECCAK_PERMUTATION) - 1):
+            state[KECCAK_PERMUTATION[index]] = state[KECCAK_PERMUTATION[index + 1]]
+        state[KECCAK_PERMUTATION[-1]] = temp
+
+        for row in range(0, 25, 5):
+            snapshot = [
+                state[row],
+                state[row + 1],
+                state[row + 2],
+                state[row + 3],
+                state[row + 4],
+                state[row],
+                state[row + 1],
+            ]
+            for column in range(5):
+                state[row + column] = snapshot[column] ^ (
+                    (~snapshot[column + 1]) & snapshot[column + 2]
+                )
+
+        state[0] ^= round_constant
+
+
+def _keccak256_pure_python(data: bytes) -> bytes:
+    rate_bytes = 136  # 1088-bit rate for Keccak-256
+    state = [0] * 25
+    offset = 0
+    full_blocks = len(data) // rate_bytes
+
+    for _ in range(full_blocks):
+        block = data[offset : offset + rate_bytes]
+        for lane_index in range(rate_bytes // 8):
+            lane = int.from_bytes(block[lane_index * 8 : lane_index * 8 + 8], "little")
+            state[lane_index] ^= lane
+        offset += rate_bytes
+        _keccak_f1600(state)
+
+    final_block = bytearray(data[offset:])
+    final_block.append(0x01)  # Keccak domain separation, not SHA3's 0x06
+    while len(final_block) < rate_bytes:
+        final_block.append(0)
+    final_block[-1] |= 0x80
+
+    for lane_index in range(rate_bytes // 8):
+        lane = int.from_bytes(
+            final_block[lane_index * 8 : lane_index * 8 + 8], "little"
+        )
+        state[lane_index] ^= lane
+    _keccak_f1600(state)
+
+    output = bytearray()
+    while len(output) < 32:
+        for lane in state[: rate_bytes // 8]:
+            output.extend(lane.to_bytes(8, "little"))
+        if len(output) >= 32:
+            break
+        _keccak_f1600(state)
+    return bytes(output[:32])
+
+
+def keccak256(data: bytes) -> bytes:
+    try:
+        from Crypto.Hash import keccak  # type: ignore
+        digest = keccak.new(digest_bits=256)
+        digest.update(data)
+        return digest.digest()
+    except Exception:
+        pass
+
+    try:
+        import sha3  # type: ignore
+
+        return sha3.keccak_256(data).digest()
+    except Exception:
+        pass
+
+    return _keccak256_pure_python(data)
+
+
+def sha256(data: bytes) -> bytes:
+    return hashlib.sha256(data).digest()
+
+
+def ethereum_address_from_pubkey(pubkey_uncompressed: bytes) -> str:
+    if len(pubkey_uncompressed) != 65 or pubkey_uncompressed[0] != 0x04:
+        raise CliError("Expected uncompressed 65-byte public key")
+    address = keccak256(pubkey_uncompressed[1:])[-20:]
+    return ensure_hex_prefix(address.hex())
+
+
+# -----------------------------
+# RLP & EVM tx encoding
+# -----------------------------
+
+
+@dataclass
+class AccessListEntry:
+    address: str
+    storage_keys: List[str]
+
+
+@dataclass
+class EvmUnsignedTx:
+    tx_type: int
+    chain_id: int
+    nonce: int
+    gas_limit: int
+    to: Optional[str]
+    value: int
+    data: bytes
+    gas_price: Optional[int]
+    max_priority_fee_per_gas: Optional[int]
+    max_fee_per_gas: Optional[int]
+    access_list: List[AccessListEntry]
+
+
+class RlpEncoder:
+    @staticmethod
+    def encode_bytes(data: bytes) -> bytes:
+        if len(data) == 1 and data[0] < 0x80:
+            return data
+        return RlpEncoder._encode_len(len(data), 0x80) + data
+
+    @staticmethod
+    def encode_int(value: int) -> bytes:
+        return RlpEncoder.encode_bytes(int_to_min_bytes(value))
+
+    @staticmethod
+    def encode_list(items: Sequence[bytes]) -> bytes:
+        payload = b"".join(items)
+        return RlpEncoder._encode_len(len(payload), 0xC0) + payload
+
+    @staticmethod
+    def _encode_len(length: int, offset: int) -> bytes:
+        if length < 56:
+            return bytes([offset + length])
+        len_bytes = int_to_min_bytes(length)
+        return bytes([offset + 55 + len(len_bytes)]) + len_bytes
+
+
+class EvmTxEncoder:
+    @staticmethod
+    def from_tp_request(request: "TpSignTransactionRequest") -> EvmUnsignedTx:
+        tx_data = request.tx_data
+        tx_type = EvmTxEncoder._parse_tx_type(tx_data)
+
+        nonce = parse_quantity(tx_data.get("nonce"))
+        gas_limit = parse_quantity(tx_data.get("gas") or tx_data.get("gasLimit"))
+        to = tx_data.get("to")
+        if isinstance(to, str):
+            to = to.strip() or None
+        else:
+            to = None
+
+        value = parse_quantity(tx_data.get("value"))
+        data_hex = tx_data.get("data") or tx_data.get("input") or "0x"
+        if not isinstance(data_hex, str):
+            data_hex = str(data_hex)
+
+        gas_price = (
+            tx_data.get("gasPrice")
+            or tx_data.get("gas_price")
+            or tx_data.get("gasprice")
+        )
+        max_priority = (
+            tx_data.get("maxPriorityFeePerGas")
+            or tx_data.get("max_priority_fee_per_gas")
+            or tx_data.get("maxPriorityFee")
+        )
+        max_fee = (
+            tx_data.get("maxFeePerGas")
+            or tx_data.get("max_fee_per_gas")
+            or tx_data.get("maxFee")
+        )
+
+        gas_price_int = parse_quantity(gas_price) if gas_price is not None else None
+        max_priority_int = parse_quantity(max_priority) if max_priority is not None else None
+        max_fee_int = parse_quantity(max_fee) if max_fee is not None else None
+
+        access_list = EvmTxEncoder._parse_access_list(tx_data.get("accessList"))
+
+        if tx_type == 0:
+            if gas_price_int is None:
+                gas_price_int = max_fee_int if max_fee_int is not None else max_priority_int
+            if gas_price_int is None:
+                raise CliError("Legacy 交易缺少 gasPrice")
+            return EvmUnsignedTx(
+                tx_type=0,
+                chain_id=request.chain_id,
+                nonce=nonce,
+                gas_limit=gas_limit,
+                to=to,
+                value=value,
+                data=hex_to_bytes(data_hex),
+                gas_price=gas_price_int,
+                max_priority_fee_per_gas=None,
+                max_fee_per_gas=None,
+                access_list=[],
+            )
+
+        if tx_type == 1:
+            if gas_price_int is None:
+                gas_price_int = max_fee_int if max_fee_int is not None else max_priority_int
+            if gas_price_int is None:
+                raise CliError("EIP-2930 交易缺少 gasPrice")
+            return EvmUnsignedTx(
+                tx_type=1,
+                chain_id=request.chain_id,
+                nonce=nonce,
+                gas_limit=gas_limit,
+                to=to,
+                value=value,
+                data=hex_to_bytes(data_hex),
+                gas_price=gas_price_int,
+                max_priority_fee_per_gas=None,
+                max_fee_per_gas=None,
+                access_list=access_list,
+            )
+
+        if tx_type == 2:
+            if max_priority_int is None:
+                max_priority_int = max_fee_int
+            if max_fee_int is None:
+                max_fee_int = max_priority_int
+            if max_priority_int is None:
+                raise CliError("EIP-1559 交易缺少 maxPriorityFeePerGas")
+            if max_fee_int is None:
+                raise CliError("EIP-1559 交易缺少 maxFeePerGas")
+            return EvmUnsignedTx(
+                tx_type=2,
+                chain_id=request.chain_id,
+                nonce=nonce,
+                gas_limit=gas_limit,
+                to=to,
+                value=value,
+                data=hex_to_bytes(data_hex),
+                gas_price=None,
+                max_priority_fee_per_gas=max_priority_int,
+                max_fee_per_gas=max_fee_int,
+                access_list=access_list,
+            )
+
+        raise CliError(f"暂不支持的交易类型: {tx_type}")
+
+    @staticmethod
+    def transaction_hash(tx: EvmUnsignedTx) -> bytes:
+        return keccak256(EvmTxEncoder.unsigned_payload(tx))
+
+    @staticmethod
+    def unsigned_payload(tx: EvmUnsignedTx) -> bytes:
+        if tx.tx_type == 0:
+            return EvmTxEncoder._encode_legacy_unsigned(tx)
+        if tx.tx_type == 1:
+            return EvmTxEncoder._encode_2930_unsigned(tx)
+        if tx.tx_type == 2:
+            return EvmTxEncoder._encode_1559_unsigned(tx)
+        raise CliError("Unsupported tx type")
+
+    @staticmethod
+    def signed_payload(tx: EvmUnsignedTx, rec_id: int, r: int, s: int) -> bytes:
+        if tx.tx_type == 0:
+            return EvmTxEncoder._encode_legacy_signed(tx, rec_id, r, s)
+        if tx.tx_type == 1:
+            return EvmTxEncoder._encode_2930_signed(tx, rec_id, r, s)
+        if tx.tx_type == 2:
+            return EvmTxEncoder._encode_1559_signed(tx, rec_id, r, s)
+        raise CliError("Unsupported tx type")
+
+    @staticmethod
+    def _encode_legacy_unsigned(tx: EvmUnsignedTx) -> bytes:
+        fields = [
+            RlpEncoder.encode_int(tx.nonce),
+            RlpEncoder.encode_int(tx.gas_price or 0),
+            RlpEncoder.encode_int(tx.gas_limit),
+            EvmTxEncoder._encode_address(tx.to),
+            RlpEncoder.encode_int(tx.value),
+            RlpEncoder.encode_bytes(tx.data),
+            RlpEncoder.encode_int(tx.chain_id),
+            RlpEncoder.encode_int(0),
+            RlpEncoder.encode_int(0),
+        ]
+        return RlpEncoder.encode_list(fields)
+
+    @staticmethod
+    def _encode_legacy_signed(tx: EvmUnsignedTx, rec_id: int, r: int, s: int) -> bytes:
+        normalized = normalize_recovery_id(rec_id)
+        v = tx.chain_id * 2 + 35 + normalized
+        fields = [
+            RlpEncoder.encode_int(tx.nonce),
+            RlpEncoder.encode_int(tx.gas_price or 0),
+            RlpEncoder.encode_int(tx.gas_limit),
+            EvmTxEncoder._encode_address(tx.to),
+            RlpEncoder.encode_int(tx.value),
+            RlpEncoder.encode_bytes(tx.data),
+            RlpEncoder.encode_int(v),
+            RlpEncoder.encode_bytes(int_to_min_bytes(r)),
+            RlpEncoder.encode_bytes(int_to_min_bytes(s)),
+        ]
+        return RlpEncoder.encode_list(fields)
+
+    @staticmethod
+    def _encode_2930_unsigned(tx: EvmUnsignedTx) -> bytes:
+        fields = [
+            RlpEncoder.encode_int(tx.chain_id),
+            RlpEncoder.encode_int(tx.nonce),
+            RlpEncoder.encode_int(tx.gas_price or 0),
+            RlpEncoder.encode_int(tx.gas_limit),
+            EvmTxEncoder._encode_address(tx.to),
+            RlpEncoder.encode_int(tx.value),
+            RlpEncoder.encode_bytes(tx.data),
+            EvmTxEncoder._encode_access_list(tx.access_list),
+        ]
+        return b"\x01" + RlpEncoder.encode_list(fields)
+
+    @staticmethod
+    def _encode_2930_signed(tx: EvmUnsignedTx, rec_id: int, r: int, s: int) -> bytes:
+        y_parity = normalize_recovery_id(rec_id)
+        fields = [
+            RlpEncoder.encode_int(tx.chain_id),
+            RlpEncoder.encode_int(tx.nonce),
+            RlpEncoder.encode_int(tx.gas_price or 0),
+            RlpEncoder.encode_int(tx.gas_limit),
+            EvmTxEncoder._encode_address(tx.to),
+            RlpEncoder.encode_int(tx.value),
+            RlpEncoder.encode_bytes(tx.data),
+            EvmTxEncoder._encode_access_list(tx.access_list),
+            RlpEncoder.encode_int(y_parity),
+            RlpEncoder.encode_bytes(int_to_min_bytes(r)),
+            RlpEncoder.encode_bytes(int_to_min_bytes(s)),
+        ]
+        return b"\x01" + RlpEncoder.encode_list(fields)
+
+    @staticmethod
+    def _encode_1559_unsigned(tx: EvmUnsignedTx) -> bytes:
+        fields = [
+            RlpEncoder.encode_int(tx.chain_id),
+            RlpEncoder.encode_int(tx.nonce),
+            RlpEncoder.encode_int(tx.max_priority_fee_per_gas or 0),
+            RlpEncoder.encode_int(tx.max_fee_per_gas or 0),
+            RlpEncoder.encode_int(tx.gas_limit),
+            EvmTxEncoder._encode_address(tx.to),
+            RlpEncoder.encode_int(tx.value),
+            RlpEncoder.encode_bytes(tx.data),
+            EvmTxEncoder._encode_access_list(tx.access_list),
+        ]
+        return b"\x02" + RlpEncoder.encode_list(fields)
+
+    @staticmethod
+    def _encode_1559_signed(tx: EvmUnsignedTx, rec_id: int, r: int, s: int) -> bytes:
+        y_parity = normalize_recovery_id(rec_id)
+        fields = [
+            RlpEncoder.encode_int(tx.chain_id),
+            RlpEncoder.encode_int(tx.nonce),
+            RlpEncoder.encode_int(tx.max_priority_fee_per_gas or 0),
+            RlpEncoder.encode_int(tx.max_fee_per_gas or 0),
+            RlpEncoder.encode_int(tx.gas_limit),
+            EvmTxEncoder._encode_address(tx.to),
+            RlpEncoder.encode_int(tx.value),
+            RlpEncoder.encode_bytes(tx.data),
+            EvmTxEncoder._encode_access_list(tx.access_list),
+            RlpEncoder.encode_int(y_parity),
+            RlpEncoder.encode_bytes(int_to_min_bytes(r)),
+            RlpEncoder.encode_bytes(int_to_min_bytes(s)),
+        ]
+        return b"\x02" + RlpEncoder.encode_list(fields)
+
+    @staticmethod
+    def _encode_address(address: Optional[str]) -> bytes:
+        if not address:
+            return RlpEncoder.encode_bytes(b"")
+        return RlpEncoder.encode_bytes(hex_to_bytes(address))
+
+    @staticmethod
+    def _encode_access_list(access_list: Sequence[AccessListEntry]) -> bytes:
+        entries: List[bytes] = []
+        for entry in access_list:
+            storage_rlp = [RlpEncoder.encode_bytes(hex_to_bytes(key)) for key in entry.storage_keys]
+            entries.append(
+                RlpEncoder.encode_list(
+                    [
+                        RlpEncoder.encode_bytes(hex_to_bytes(entry.address)),
+                        RlpEncoder.encode_list(storage_rlp),
+                    ]
+                )
+            )
+        return RlpEncoder.encode_list(entries)
+
+    @staticmethod
+    def _parse_access_list(value: object) -> List[AccessListEntry]:
+        if not isinstance(value, list):
+            return []
+        out: List[AccessListEntry] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise CliError("accessList 元素格式错误")
+            address = item.get("address")
+            if not isinstance(address, str) or not address.strip():
+                raise CliError("accessList.address 缺失")
+            storage_keys_raw = item.get("storageKeys")
+            storage_keys: List[str] = []
+            if isinstance(storage_keys_raw, list):
+                for one in storage_keys_raw:
+                    if isinstance(one, str):
+                        storage_keys.append(one)
+                    else:
+                        storage_keys.append(str(one))
+            out.append(AccessListEntry(address=address, storage_keys=storage_keys))
+        return out
+
+    @staticmethod
+    def _parse_tx_type(value: object) -> int:
+        if isinstance(value, dict):
+            tx_type = value.get("type")
+            if tx_type is None or not str(tx_type).strip():
+                has_1559_fees = value.get("maxPriorityFeePerGas") is not None or value.get("maxFeePerGas") is not None
+                if has_1559_fees:
+                    return 2
+                if value.get("accessList") is not None:
+                    return 1
+                return 0
+            value = tx_type
+        if value is None:
+            return 0
+        text = str(value).strip()
+        if not text:
+            return 0
+        if text.startswith(("0x", "0X")):
+            return int(text[2:] or "0", 16)
+        return int(text)
+
+
+# -----------------------------
+# secp256k1 recovery helpers
+# -----------------------------
+
+
+Point = Optional[Tuple[int, int]]
+G_POINT: Point = (SECP256K1_GX, SECP256K1_GY)
+
+
+def inv_mod(k: int, p: int) -> int:
+    if k == 0:
+        raise ZeroDivisionError("division by zero")
+    return pow(k, -1, p)
+
+
+def point_add(p1: Point, p2: Point) -> Point:
+    if p1 is None:
+        return p2
+    if p2 is None:
+        return p1
+
+    x1, y1 = p1
+    x2, y2 = p2
+
+    if x1 == x2 and (y1 + y2) % SECP256K1_P == 0:
+        return None
+
+    if x1 == x2 and y1 == y2:
+        slope = (3 * x1 * x1) * inv_mod((2 * y1) % SECP256K1_P, SECP256K1_P)
+    else:
+        slope = (y2 - y1) * inv_mod((x2 - x1) % SECP256K1_P, SECP256K1_P)
+
+    slope %= SECP256K1_P
+    x3 = (slope * slope - x1 - x2) % SECP256K1_P
+    y3 = (slope * (x1 - x3) - y1) % SECP256K1_P
+    return x3, y3
+
+
+def point_mul(k: int, point: Point) -> Point:
+    if point is None:
+        return None
+    k %= SECP256K1_N
+    if k == 0:
+        return None
+
+    result: Point = None
+    addend: Point = point
+
+    while k:
+        if k & 1:
+            result = point_add(result, addend)
+        addend = point_add(addend, addend)
+        k >>= 1
+    return result
+
+
+def point_to_uncompressed(point: Point) -> bytes:
+    if point is None:
+        raise CliError("公钥恢复失败")
+    x, y = point
+    return b"\x04" + x.to_bytes(32, "big") + y.to_bytes(32, "big")
+
+
+def lift_x(x: int, odd: int) -> Point:
+    if x >= SECP256K1_P:
+        return None
+    y2 = (pow(x, 3, SECP256K1_P) + 7) % SECP256K1_P
+    y = pow(y2, (SECP256K1_P + 1) // 4, SECP256K1_P)
+    if (y * y - y2) % SECP256K1_P != 0:
+        return None
+    if y & 1 != odd:
+        y = SECP256K1_P - y
+    return x, y
+
+
+def recover_pubkey_from_digest(digest: bytes, r: int, s: int, rec_id: int) -> Optional[bytes]:
+    if len(digest) != 32:
+        return None
+    if r <= 0 or r >= SECP256K1_N or s <= 0 or s >= SECP256K1_N:
+        return None
+
+    x = r + (rec_id // 2) * SECP256K1_N
+    if x >= SECP256K1_P:
+        return None
+
+    point_r = lift_x(x, rec_id & 1)
+    if point_r is None:
+        return None
+
+    # Reject invalid points that are not in correct subgroup.
+    if point_mul(SECP256K1_N, point_r) is not None:
+        return None
+
+    e = int.from_bytes(digest, "big")
+    r_inv = pow(r, -1, SECP256K1_N)
+
+    sr = point_mul((s * r_inv) % SECP256K1_N, point_r)
+    eg = point_mul((-e * r_inv) % SECP256K1_N, G_POINT)
+    q = point_add(sr, eg)
+    if q is None:
+        return None
+
+    return point_to_uncompressed(q)
+
+
+def decode_der_signature(der_sig: bytes) -> Tuple[int, int]:
+    if len(der_sig) < 8 or der_sig[0] != 0x30:
+        raise CliError("DER 签名格式错误")
+
+    index = 1
+    total_len = der_sig[index]
+    index += 1
+
+    if total_len & 0x80:
+        n_len_bytes = total_len & 0x7F
+        if n_len_bytes <= 0 or index + n_len_bytes > len(der_sig):
+            raise CliError("DER 长度字段错误")
+        total_len = int.from_bytes(der_sig[index : index + n_len_bytes], "big")
+        index += n_len_bytes
+
+    if index + total_len > len(der_sig):
+        raise CliError("DER 总长度超出范围")
+
+    if der_sig[index] != 0x02:
+        raise CliError("DER 缺少 r")
+    index += 1
+    r_len = der_sig[index]
+    index += 1
+    r_raw = der_sig[index : index + r_len]
+    index += r_len
+
+    if index >= len(der_sig) or der_sig[index] != 0x02:
+        raise CliError("DER 缺少 s")
+    index += 1
+    s_len = der_sig[index]
+    index += 1
+    s_raw = der_sig[index : index + s_len]
+
+    r = int.from_bytes(r_raw, "big")
+    s = int.from_bytes(s_raw, "big")
+
+    if s > SECP256K1_HALF_N:
+        s = SECP256K1_N - s
+
+    if r <= 0 or s <= 0:
+        raise CliError("DER 签名无效")
+
+    return r, s
+
+
+def normalize_recovery_id(rec_id: int) -> int:
+    if 0 <= rec_id <= 1:
+        return rec_id
+    if 2 <= rec_id <= 3:
+        return rec_id % 2
+    raise CliError(f"非法 recovery id: {rec_id}")
+
+
+def recover_rec_id(digest: bytes, r: int, s: int, expected_pubkey: bytes) -> int:
+    for candidate in range(4):
+        pubkey = recover_pubkey_from_digest(digest, r, s, candidate)
+        if pubkey is not None and pubkey == expected_pubkey:
+            return candidate
+
+    if len(expected_pubkey) >= 33:
+        coordx = expected_pubkey[1:33]
+        for candidate in range(4):
+            pubkey = recover_pubkey_from_digest(digest, r, s, candidate)
+            if pubkey is not None and pubkey[1:33] == coordx:
+                return candidate
+
+    raise CliError("无法恢复 recovery id")
+
+
+def recover_rec_id_by_address(digest: bytes, r: int, s: int, expected_address: str) -> int:
+    normalized = normalize_eth_address(expected_address)
+    if normalized is None:
+        raise CliError("缺少签名地址")
+
+    for candidate in range(4):
+        pubkey = recover_pubkey_from_digest(digest, r, s, candidate)
+        if pubkey is None:
+            continue
+        try:
+            recovered = ethereum_address_from_pubkey(pubkey).lower()
+        except Exception:
+            continue
+        if recovered == normalized:
+            return candidate
+
+    raise CliError("无法根据地址恢复 recovery id")
+
+
+def recover_pubkey_from_msg_sha256(msg: bytes, der_sig: bytes, coordx: bytes) -> bytes:
+    digest = sha256(msg)
+    r, s = decode_der_signature(der_sig)
+    for candidate in range(4):
+        pubkey = recover_pubkey_from_digest(digest, r, s, candidate)
+        if pubkey is not None and pubkey[1:33] == coordx:
+            return pubkey
+    raise CliError("无法从 BIP32 扩展公钥响应恢复公钥")
+
+
+# -----------------------------
+# TP request parser / builder
+# -----------------------------
+
+
+PERSONAL_ACTIONS = {"personalsign", "signpersonalmessage"}
+TYPED_ACTIONS = {"signtypeddata", "signtypedatav4", "signtypeddatalegacy", "signtypedata"}
+
+
+@dataclass
+class TpRequestContext:
+    raw_payload: str
+    namespace: str
+    action: str
+    request_format: str
+    version: str
+    protocol: str
+    network: str
+    chain_id_raw: Optional[str]
+    request_id: Optional[str]
+    action_id: Optional[str]
+    data_id: Optional[str]
+    data_json: Dict[str, object]
+
+
+@dataclass
+class TpSignRequest:
+    request_format: str
+    namespace: str
+    action: str
+    version: str
+    protocol: str
+    network: str
+    chain_id: int
+    request_id: Optional[str]
+    action_id: Optional[str]
+    data_id: Optional[str]
+    raw_payload: str
+
+
+@dataclass
+class TpSignTransactionRequest(TpSignRequest):
+    address: Optional[str]
+    tx_data: Dict[str, object]
+
+
+@dataclass
+class TpSignPersonalMessageRequest(TpSignRequest):
+    address: Optional[str]
+    message: str
+
+
+@dataclass
+class TpSignTypedDataRequest(TpSignRequest):
+    address: Optional[str]
+    typed_data_json: str
+    primary_type: Optional[str]
+    is_legacy: bool
+
+
+@dataclass
+class TpMultiFragment:
+    index: int
+    total: int
+    chunk: str
+    crc32: str
+
+
+class MultiFragmentAssembler:
+    def __init__(self) -> None:
+        self.expected_total: Optional[int] = None
+        self.expected_crc: Optional[str] = None
+        self.fragments: Dict[int, str] = {}
+
+    def reset(self) -> None:
+        self.expected_total = None
+        self.expected_crc = None
+        self.fragments.clear()
+
+    def accept(self, fragment: TpMultiFragment) -> Tuple[str, Optional[str]]:
+        total = fragment.total
+        idx = fragment.index
+        if total <= 0:
+            return "error", "分片总数不合法"
+
+        valid_one_based = 1 <= idx <= total
+        valid_zero_based = 0 <= idx < total
+        if not valid_one_based and not valid_zero_based:
+            return "error", f"分片索引不合法 (index={idx} total={total})"
+
+        if self.expected_total is None:
+            self.expected_total = total
+            self.expected_crc = fragment.crc32
+        elif self.expected_total != total or self.expected_crc != fragment.crc32:
+            self.reset()
+            return "error", "分片属于不同二维码序列，已重置"
+
+        self.fragments[idx] = fragment.chunk
+
+        expected = self.expected_total or total
+        if len(self.fragments) < expected:
+            return "progress", f"已接收分片 {len(self.fragments)}/{expected}"
+
+        payload = self._assemble(expected)
+        if payload is None:
+            self.reset()
+            return "error", "分片索引基准不一致或有缺片"
+
+        crc = str(zlib.crc32(payload.encode("utf-8")) & 0xFFFFFFFF)
+        if crc != self.expected_crc:
+            self.reset()
+            return "error", "分片 CRC 校验失败"
+
+        self.reset()
+        return "complete", payload
+
+    def _assemble(self, total: int) -> Optional[str]:
+        if all(i in self.fragments for i in range(1, total + 1)):
+            return "".join(self.fragments[i] for i in range(1, total + 1))
+        if all(i in self.fragments for i in range(0, total)):
+            return "".join(self.fragments[i] for i in range(0, total))
+        return None
+
+
+def normalize_action(action: str) -> str:
+    return action.lower()
+
+
+def parse_query(query_raw: str) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    marker = query_raw.find("data=")
+
+    if marker >= 0:
+        before = query_raw[:marker]
+        if before.strip():
+            for piece in before.split("&"):
+                if not piece or "=" not in piece:
+                    continue
+                key, value = piece.split("=", 1)
+                result[key] = smart_url_decode(value)
+        result["data"] = smart_url_decode(query_raw[marker + 5 :])
+        return result
+
+    for piece in query_raw.split("&"):
+        if not piece or "=" not in piece:
+            continue
+        key, value = piece.split("=", 1)
+        result[key] = smart_url_decode(value)
+    return result
+
+
+def smart_url_decode(value: str) -> str:
+    try:
+        return urllib.parse.unquote_plus(value)
+    except Exception:
+        return value
+
+
+def parse_chain_id(raw: str) -> int:
+    value = raw.strip().split(":")[-1]
+    if value.startswith(("0x", "0X")):
+        return int(value[2:] or "0", 16)
+    return int(value)
+
+
+def parse_optional_chain_id(raw: Optional[object]) -> Optional[int]:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    return parse_chain_id(text)
+
+
+def extract_domain_chain_id(typed_data_json: str) -> Optional[int]:
+    try:
+        parsed = json.loads(typed_data_json)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    domain = parsed.get("domain")
+    if not isinstance(domain, dict):
+        return None
+    return parse_optional_chain_id(domain.get("chainId"))
+
+
+def extract_primary_type(typed_data_json: str) -> Optional[str]:
+    try:
+        parsed = json.loads(typed_data_json)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    value = parsed.get("primaryType")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def extract_typed_data_json(message_element: object) -> str:
+    if isinstance(message_element, (dict, list)):
+        text = json.dumps(message_element, ensure_ascii=False, separators=(",", ":"))
+    elif isinstance(message_element, str):
+        text = message_element.strip()
+    else:
+        raise CliError("typedData message 格式无效")
+
+    if not text:
+        raise CliError("typedData message 为空")
+    if not text.startswith("{") and not text.startswith("["):
+        raise CliError("typedData message 必须是 JSON 字符串")
+
+    try:
+        json.loads(text)
+    except Exception as exc:
+        raise CliError("typedData message 不是合法 JSON") from exc
+
+    return text
+
+
+def parse_request_context(raw: str) -> TpRequestContext:
+    dash = raw.find("-")
+    if dash <= 0:
+        raise CliError("不是 TP 协议字符串")
+
+    left = raw[:dash]
+    namespace = left.split(":", 1)[0]
+    action = left.split(":", 1)[1] if ":" in left else ""
+    if not namespace.strip() or not action.strip():
+        raise CliError("协议前缀不合法")
+
+    query_raw = raw[dash + 1 :]
+    if query_raw.startswith("?"):
+        query_raw = query_raw[1:]
+
+    params = parse_query(query_raw)
+    data_raw = params.get("data")
+    if not data_raw:
+        raise CliError("缺少 data 字段")
+
+    try:
+        data_json_obj = json.loads(data_raw)
+    except Exception as exc:
+        raise CliError("data 不是合法 JSON") from exc
+
+    if not isinstance(data_json_obj, dict):
+        raise CliError("data JSON 必须是对象")
+
+    request_format = "legacy" if ("v" in params or "action" in params) else "modern"
+
+    data_id = data_json_obj.get("id")
+    data_id_str = str(data_id).strip() if data_id is not None and str(data_id).strip() else None
+
+    return TpRequestContext(
+        raw_payload=raw,
+        namespace=namespace,
+        action=action,
+        request_format=request_format,
+        version=params.get("version") or params.get("v") or "1.0",
+        protocol=params.get("protocol") or "TokenPocket",
+        network=params.get("network") or "ethereum",
+        chain_id_raw=params.get("chain_id") or params.get("blockchainId"),
+        request_id=params.get("requestId"),
+        action_id=params.get("actionId"),
+        data_id=data_id_str,
+        data_json=data_json_obj,
+    )
+
+
+def parse_sign_request(raw: str) -> TpSignRequest:
+    context = parse_request_context(raw)
+    action_norm = normalize_action(context.action)
+
+    if action_norm == "signtransaction":
+        return parse_sign_transaction(context)
+    if action_norm in PERSONAL_ACTIONS:
+        return parse_personal_sign(context)
+    if action_norm in TYPED_ACTIONS:
+        return parse_typed_data_sign(context)
+
+    raise CliError("当前仅支持 signTransaction / personalSign / signTypedData")
+
+
+def parse_sign_transaction(context: TpRequestContext) -> TpSignTransactionRequest:
+    tx_data_obj = context.data_json.get("txData")
+    if isinstance(tx_data_obj, dict):
+        tx_data = tx_data_obj
+    else:
+        tx_data = context.data_json
+
+    address_value = context.data_json.get("address")
+    if address_value is None and isinstance(tx_data, dict):
+        address_value = tx_data.get("from") or tx_data.get("fromAddress")
+    address = str(address_value).strip() if address_value is not None and str(address_value).strip() else None
+
+    chain_id_raw = tx_data.get("chainId") if isinstance(tx_data, dict) else None
+    chain_id = parse_optional_chain_id(chain_id_raw) or parse_optional_chain_id(context.chain_id_raw)
+    if chain_id is None:
+        raise CliError("无法解析 chainId")
+
+    return TpSignTransactionRequest(
+        request_format=context.request_format,
+        namespace=context.namespace,
+        action=context.action,
+        version=context.version,
+        protocol=context.protocol,
+        network=context.network,
+        chain_id=chain_id,
+        request_id=context.request_id,
+        action_id=context.action_id,
+        data_id=context.data_id,
+        raw_payload=context.raw_payload,
+        address=address,
+        tx_data=tx_data,
+    )
+
+
+def parse_personal_sign(context: TpRequestContext) -> TpSignPersonalMessageRequest:
+    message_value = context.data_json.get("message")
+    if message_value is None:
+        raise CliError("personalSign 缺少 message 字段")
+
+    message = str(message_value)
+    address = context.data_json.get("address")
+    address_str = str(address) if address is not None else None
+
+    chain_id = parse_optional_chain_id(context.chain_id_raw) or 1
+
+    return TpSignPersonalMessageRequest(
+        request_format=context.request_format,
+        namespace=context.namespace,
+        action=context.action,
+        version=context.version,
+        protocol=context.protocol,
+        network=context.network,
+        chain_id=chain_id,
+        request_id=context.request_id,
+        action_id=context.action_id,
+        data_id=context.data_id,
+        raw_payload=context.raw_payload,
+        address=address_str,
+        message=message,
+    )
+
+
+def parse_typed_data_sign(context: TpRequestContext) -> TpSignTypedDataRequest:
+    message_element = context.data_json.get("message")
+    if message_element is None:
+        raise CliError("signTypedData 缺少 message 字段")
+
+    typed_data_json = extract_typed_data_json(message_element)
+    chain_from_domain = extract_domain_chain_id(typed_data_json)
+    chain_id = parse_optional_chain_id(context.chain_id_raw) or chain_from_domain or 1
+    primary_type = extract_primary_type(typed_data_json)
+    address = context.data_json.get("address")
+    address_str = str(address) if address is not None else None
+    is_legacy = "legacy" in normalize_action(context.action)
+
+    return TpSignTypedDataRequest(
+        request_format=context.request_format,
+        namespace=context.namespace,
+        action=context.action,
+        version=context.version,
+        protocol=context.protocol,
+        network=context.network,
+        chain_id=chain_id,
+        request_id=context.request_id,
+        action_id=context.action_id,
+        data_id=context.data_id,
+        raw_payload=context.raw_payload,
+        address=address_str,
+        typed_data_json=typed_data_json,
+        primary_type=primary_type,
+        is_legacy=is_legacy,
+    )
+
+
+def parse_tp_multi_fragment(raw: str) -> TpMultiFragment:
+    normalized = raw.strip()
+    if not normalized.lower().startswith("tp:multifragment-"):
+        raise CliError("不是 tp:multiFragment 分片")
+
+    dash = normalized.find("-")
+    if dash <= 0:
+        raise CliError("无效分片格式")
+
+    query_raw = normalized[dash + 1 :]
+    if query_raw.startswith("?"):
+        query_raw = query_raw[1:]
+
+    params = parse_query(query_raw)
+    data_raw = params.get("data")
+    if not data_raw:
+        raise CliError("分片缺少 data")
+
+    try:
+        data_obj = json.loads(data_raw)
+    except Exception as exc:
+        raise CliError(f"分片 data JSON 无效: {exc}") from exc
+
+    if not isinstance(data_obj, dict):
+        raise CliError("分片 data JSON 必须是对象")
+
+    content = str(data_obj.get("content") or "")
+    if not content:
+        raise CliError("分片缺少 content")
+
+    index, total = parse_fragment_position(data_obj)
+
+    split = content.rfind("_")
+    if split <= 0 or split >= len(content) - 1:
+        raise CliError("分片 content 格式无效")
+
+    return TpMultiFragment(
+        index=index,
+        total=total,
+        chunk=content[:split],
+        crc32=content[split + 1 :],
+    )
+
+
+def parse_fragment_position(data_obj: Dict[str, object]) -> Tuple[int, int]:
+    index_raw = str(data_obj.get("index") or "").strip()
+    total_raw = (
+        str(data_obj.get("total") or "").strip()
+        or str(data_obj.get("count") or "").strip()
+        or str(data_obj.get("size") or "").strip()
+    )
+
+    if index_raw:
+        pair = parse_index_total(index_raw)
+        if pair is not None:
+            return pair
+        if total_raw:
+            return int(index_raw), int(total_raw)
+
+    raise CliError("分片缺少 index/total 信息")
+
+
+def parse_index_total(value: str) -> Optional[Tuple[int, int]]:
+    if "/" in value:
+        left, right = value.split("/", 1)
+        return int(left.strip()), int(right.strip())
+    if "-" in value:
+        left, right = value.split("-", 1)
+        return int(left.strip()), int(right.strip())
+    return None
+
+
+def build_query(values: Sequence[Tuple[str, Optional[str]]]) -> str:
+    pieces = []
+    for key, value in values:
+        if value is None:
+            continue
+        text = str(value)
+        if not text.strip():
+            continue
+        pieces.append(f"{key}={text}")
+    return "&".join(pieces)
+
+
+def build_sign_response(request: TpSignRequest, signature_hex: str, signer_address: str) -> str:
+    response_action = f"{request.action}Signature"
+
+    if isinstance(request, TpSignTransactionRequest):
+        response_data_obj: Dict[str, object] = {"rawTransaction": signature_hex}
+        ident = request.action_id or request.data_id
+        if ident:
+            response_data_obj["id"] = ident
+        response_data = json.dumps(response_data_obj, ensure_ascii=False, separators=(",", ":"))
+    else:
+        response_data_obj = {"signature": signature_hex, "address": signer_address}
+        response_data = json.dumps(response_data_obj, ensure_ascii=False, separators=(",", ":"))
+
+    if request.request_format == "legacy":
+        query = build_query(
+            [
+                ("v", request.version),
+                ("requestId", request.request_id),
+                ("action", request.action),
+                ("actionId", request.action_id or request.data_id),
+                ("data", response_data),
+            ]
+        )
+        return f"{request.namespace}:{response_action}-?{query}"
+
+    query = build_query(
+        [
+            ("version", request.version),
+            ("protocol", request.protocol),
+            ("network", request.network),
+            ("chain_id", str(request.chain_id)),
+            ("requestId", request.request_id),
+            ("data", response_data),
+        ]
+    )
+    return f"{request.namespace}:{response_action}-{query}"
+
+
+# -----------------------------
+# PC/SC + Satochip APDU
+# -----------------------------
+
+
+@dataclass
+class ConnectedCard:
+    reader_name: str
+    connection: object
+    atr_hex: str
+    connector: object | None = None
+    connector_error: Optional[Exception] = None
+
+
+@dataclass
+class SignatureParts:
+    rec_id: int
+    r: int
+    s: int
+
+
+@dataclass
+class UnlockOutcome:
+    address: str
+
+
+@dataclass
+class CardStatus:
+    needs_2fa: bool
+    is_seeded: bool
+    setup_done: bool
+    needs_secure_channel: bool
+
+
+@dataclass
+class SigningOutcome:
+    response_payload: str
+    signer_address: str
+    digest_hex: str
+    digest_label: str
+    result_hex: str
+    result_label: str
+
+
+def connect_pcsc(reader_hint: Optional[str], timeout_seconds: int) -> ConnectedCard:
+    if timeout_seconds <= 0:
+        raise CliError("timeoutSeconds 必须大于 0")
+
+    if pcsc_readers is None:
+        raise CliError(f"缺少 pyscard 依赖: {PCSC_IMPORT_ERROR}")
+
+    try:
+        terminals = list(pcsc_readers())
+    except Exception as exc:
+        raise CliError(f"读取 PC/SC 读卡器失败: {exc}") from exc
+    if not terminals:
+        raise CliError("未检测到读卡器。请确认 ACR39U 已连接且 pcscd 正常")
+
+    selected = order_terminals(terminals, reader_hint)
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Optional[Exception] = None
+
+    while time.monotonic() <= deadline:
+        for terminal in selected:
+            try:
+                connection = terminal.createConnection()
+                connection.connect()
+                atr = bytes(connection.getATR() or [])
+                return ConnectedCard(
+                    reader_name=str(terminal),
+                    connection=connection,
+                    atr_hex=bytes_to_hex(atr),
+                )
+            except Exception as error:
+                last_error = error
+                continue
+
+        time.sleep(0.25)
+
+    reader_list = ", ".join(str(t) for t in selected)
+    detail = f": {last_error}" if last_error else ""
+    raise CliError(f"超时未检测到插卡。读卡器=[{reader_list}]{detail}")
+
+
+def order_terminals(terminals: Sequence[object], reader_hint: Optional[str]) -> List[object]:
+    if not reader_hint or not reader_hint.strip():
+        return sorted(terminals, key=lambda x: str(x))
+
+    lowered = reader_hint.lower()
+
+    def key_fn(item: object) -> Tuple[bool, str]:
+        name = str(item)
+        return (lowered not in name.lower(), name)
+
+    return sorted(terminals, key=key_fn)
+
+
+def disconnect_card(card: ConnectedCard) -> None:
+    try:
+        if card.connector is not None:
+            try:
+                card.connector.cardmonitor.deleteObserver(card.connector.cardobserver)
+            except Exception:
+                pass
+        card.connection.disconnect()
+    except Exception:
+        pass
+
+
+def create_satochip_connector(connection: object) -> object:
+    if CardConnector is None:
+        raise CliError(f"缺少 pysatochip 依赖: {PYSATOCHIP_IMPORT_ERROR}")
+
+    try:
+        connector = CardConnector(client=None, loglevel=logging.WARNING, card_filter="satochip")
+    except Exception as exc:
+        raise CliError(f"初始化 Satochip 连接器失败: {exc}") from exc
+
+    try:
+        try:
+            connector.cardmonitor.deleteObserver(connector.cardobserver)
+        except Exception:
+            pass
+
+        connector.cardservice = SimpleNamespace(connection=connection)
+        connector.card_present = True
+        connector.card_filter = "satochip"
+        connector.card_type = "Satochip"
+        connector.sc = None
+        connector.pin = None
+        connector.pin_nbr = None
+        connector.parser.authentikey = None
+        connector.parser.authentikey_coordx = None
+        connector.parser.authentikey_from_storage = None
+
+        connector.card_select()
+        _response, sw1, sw2, _status = connector.card_get_status()
+        if sw1 != 0x90 or sw2 != 0x00:
+            raise CliError(f"读取卡状态失败: SW=0x{sw1:02X}{sw2:02X}")
+        if connector.needs_secure_channel:
+            connector.card_initiate_secure_channel()
+        return connector
+    except CliError:
+        raise
+    except Exception as exc:
+        raise CliError(f"安全通道初始化失败: {exc}") from exc
+
+
+def ensure_satochip_connector(card: ConnectedCard) -> object:
+    if card.connector is not None:
+        return card.connector
+    if card.connector_error is not None:
+        raise CliError(f"安全通道初始化失败: {card.connector_error}")
+
+    try:
+        card.connector = create_satochip_connector(card.connection)
+    except Exception as exc:
+        card.connector_error = exc
+        raise
+    return card.connector
+
+
+def send_apdu(connection: object, apdu: bytes) -> Tuple[bytes, int]:
+    try:
+        data_list, sw1, sw2 = connection.transmit(list(apdu))
+    except Exception as exc:
+        raise CliError(f"PC/SC APDU 发送失败: {exc}") from exc
+    data = bytes(data_list)
+    sw = ((sw1 & 0xFF) << 8) | (sw2 & 0xFF)
+    return data, sw
+
+
+def build_apdu(cla: int, ins: int, p1: int, p2: int, data: bytes, le: Optional[int] = None) -> bytes:
+    if len(data) > 255:
+        raise CliError("APDU data 过长")
+    out = bytearray([cla & 0xFF, ins & 0xFF, p1 & 0xFF, p2 & 0xFF, len(data) & 0xFF])
+    out.extend(data)
+    if le is not None:
+        out.append(le & 0xFF)
+    return bytes(out)
+
+
+def sw_error_text(sw: int) -> str:
+    if (sw & 0xFFF0) == 0x63C0:
+        tries = sw & 0x000F
+        return f"PIN 错误，剩余重试次数: {tries}"
+    if sw == 0x9C02:
+        return "PIN 验证失败"
+    if sw == 0x9C0C:
+        return "PIN 已锁定"
+    return f"SW=0x{sw:04X}"
+
+
+def ensure_satochip_selected(connection: object) -> None:
+    base_aid = bytes.fromhex("5361746f43686970")
+    instance_aid = base_aid + b"\x00"
+
+    attempts: List[str] = []
+    variants = [
+        (base_aid, False),
+        (base_aid, True),
+        (instance_aid, False),
+        (instance_aid, True),
+    ]
+
+    for aid, needs_le in variants:
+        cmd = bytearray([0x00, 0xA4, 0x04, 0x00, len(aid)])
+        cmd.extend(aid)
+        if needs_le:
+            cmd.append(0x00)
+
+        try:
+            rapdu, sw = send_apdu(connection, bytes(cmd))
+        except Exception as error:
+            attempts.append(f"aid={aid.hex()} le={1 if needs_le else 0} ioErr={error}")
+            continue
+
+        attempts.append(f"aid={aid.hex()} le={1 if needs_le else 0} sw=0x{sw:04X} rapdu={rapdu.hex()}")
+        if sw == 0x9000:
+            return
+
+    raise CliError("选择 Satochip Applet 失败: " + " | ".join(attempts))
+
+
+def card_get_status(connection: object) -> CardStatus:
+    rapdu, sw = send_apdu(connection, build_apdu(0xB0, 0x3C, 0x00, 0x00, b""))
+    if sw != 0x9000:
+        raise CliError(f"读取卡状态失败: SW=0x{sw:04X}")
+
+    needs_2fa = len(rapdu) >= 9 and rapdu[8] != 0x00
+    is_seeded = len(rapdu) >= 10 and rapdu[9] != 0x00
+    setup_done = True if len(rapdu) < 11 else rapdu[10] != 0x00
+    needs_secure_channel = len(rapdu) >= 12 and rapdu[11] != 0x00
+    return CardStatus(
+        needs_2fa=needs_2fa,
+        is_seeded=is_seeded,
+        setup_done=setup_done,
+        needs_secure_channel=needs_secure_channel,
+    )
+
+
+def connector_card_get_status(connector: object) -> CardStatus:
+    try:
+        _response, sw1, sw2, status = connector.card_get_status()
+    except Exception as exc:
+        raise CliError(f"读取卡状态失败: {exc}") from exc
+
+    if sw1 != 0x90 or sw2 != 0x00:
+        raise CliError(f"读取卡状态失败: SW=0x{sw1:02X}{sw2:02X}")
+
+    return CardStatus(
+        needs_2fa=bool(status.get("needs2FA")),
+        is_seeded=bool(status.get("is_seeded")),
+        setup_done=bool(status.get("setup_done", True)),
+        needs_secure_channel=bool(status.get("needs_secure_channel")),
+    )
+
+
+def card_verify_pin(connection: object, pin: str) -> None:
+    pin_bytes = pin.encode("utf-8")
+    rapdu, sw = send_apdu(connection, build_apdu(0xB0, 0x42, 0x00, 0x00, pin_bytes))
+    _ = rapdu
+    if sw != 0x9000:
+        raise CliError(f"PIN 验证失败: {sw_error_text(sw)}")
+
+
+def connector_card_verify_pin(connector: object, pin: str) -> None:
+    try:
+        _response, sw1, sw2 = connector.card_verify_PIN(pin)
+    except Exception as exc:
+        raise CliError(f"PIN 验证失败: {exc}") from exc
+
+    if sw1 != 0x90 or sw2 != 0x00:
+        raise CliError(f"PIN 验证失败: {sw_error_text(((sw1 & 0xFF) << 8) | (sw2 & 0xFF))}")
+
+
+def parse_bip32_path(string_path: str) -> Tuple[int, bytes]:
+    parts = string_path.split("/")
+    if parts and parts[0] == "m":
+        parts = parts[1:]
+
+    depth = len(parts)
+    if depth > 10:
+        raise CliError(f"Path length exceeds maximum depth of 10: {depth}")
+
+    out = bytearray()
+    for part in parts:
+        sub = part.strip()
+        if not sub:
+            raise CliError(f"Failed to parse Bip32 path: {string_path}")
+
+        hardened = sub.endswith("'") or sub.endswith("h")
+        if hardened:
+            sub = sub[:-1]
+
+        try:
+            value = int(sub)
+        except ValueError as exc:
+            raise CliError(f"Failed to parse Bip32 path: {string_path}") from exc
+
+        if hardened:
+            value += 0x80000000
+
+        out.extend(int(value & 0xFFFFFFFF).to_bytes(4, "big"))
+
+    return depth, bytes(out)
+
+
+def parse_bip32_get_extended_key_response(response_data: bytes) -> Tuple[bytes, bytes]:
+    if len(response_data) < 32 + 2 + 2 + 2:
+        raise CliError("BIP32 响应长度不足")
+
+    offset = 0
+    chain_code = response_data[offset : offset + 32]
+    offset += 32
+
+    coordx_size = ((response_data[offset] & 0x7F) << 8) + response_data[offset + 1]
+    offset += 2
+    if coordx_size <= 0 or offset + coordx_size > len(response_data):
+        raise CliError("BIP32 响应 coordx 长度错误")
+
+    coordx = response_data[offset : offset + coordx_size]
+    offset += coordx_size
+
+    msg1 = response_data[: 32 + 2 + coordx_size]
+
+    if offset + 2 > len(response_data):
+        raise CliError("BIP32 响应 sig1 长度字段缺失")
+    sig1_size = (response_data[offset] << 8) + response_data[offset + 1]
+    offset += 2
+
+    if sig1_size <= 0 or offset + sig1_size > len(response_data):
+        raise CliError("BIP32 响应 sig1 长度错误")
+
+    sig1 = response_data[offset : offset + sig1_size]
+    _ = sig1
+
+    pubkey = recover_pubkey_from_msg_sha256(msg1, sig1, coordx)
+    return pubkey, chain_code
+
+
+def card_bip32_get_extended_key(connection: object, string_path: str) -> Tuple[bytes, bytes]:
+    depth, path_bytes = parse_bip32_path(string_path)
+    p1 = depth & 0xFF
+    option_flags = 0x40
+    p2 = option_flags
+
+    while True:
+        cmd = build_apdu(0xB0, 0x6D, p1, p2, path_bytes)
+        rapdu, sw = send_apdu(connection, cmd)
+
+        if sw == 0x9C01:
+            p2 ^= 0x80
+            cmd = build_apdu(0xB0, 0x6D, p1, p2, path_bytes)
+            rapdu, sw = send_apdu(connection, cmd)
+            p2 = option_flags
+            if sw == 0x9C01:
+                continue
+
+        if sw != 0x9000:
+            raise CliError(f"BIP32 派生失败: SW=0x{sw:04X}")
+
+        return parse_bip32_get_extended_key_response(rapdu)
+
+
+def card_prepare_bip32_path(connection: object, string_path: str) -> None:
+    depth, path_bytes = parse_bip32_path(string_path)
+    p1 = depth & 0xFF
+    option_flags = 0x40
+    p2 = option_flags
+
+    while True:
+        cmd = build_apdu(0xB0, 0x6D, p1, p2, path_bytes)
+        _rapdu, sw = send_apdu(connection, cmd)
+
+        if sw == 0x9C01:
+            p2 ^= 0x80
+            cmd = build_apdu(0xB0, 0x6D, p1, p2, path_bytes)
+            _rapdu, sw = send_apdu(connection, cmd)
+            p2 = option_flags
+            if sw == 0x9C01:
+                continue
+
+        if sw != 0x9000:
+            raise CliError(f"BIP32 派生失败: SW=0x{sw:04X}")
+        return
+
+
+def connector_card_bip32_get_extended_key(connector: object, string_path: str) -> Tuple[bytes, bytes]:
+    depth, path_bytes = parse_bip32_path(string_path)
+    p1 = depth & 0xFF
+    option_flags = 0x40
+    p2 = option_flags
+    data = list(path_bytes)
+
+    try:
+        while True:
+            apdu = [0xB0, 0x6D, p1, p2, len(data)] + data
+            response, sw1, sw2 = connector.card_transmit(apdu)
+
+            if sw1 == 0x9C and sw2 == 0x01:
+                p2 ^= 0x80
+                apdu = [0xB0, 0x6D, p1, p2, len(data)] + data
+                response, sw1, sw2 = connector.card_transmit(apdu)
+                p2 = option_flags
+                if sw1 == 0x9C and sw2 == 0x01:
+                    continue
+
+            if sw1 != 0x90 or sw2 != 0x00:
+                raise CliError(f"BIP32 派生失败: SW=0x{sw1:02X}{sw2:02X}")
+
+            return parse_bip32_get_extended_key_response(bytes(response))
+    except CliError:
+        raise
+    except Exception as exc:
+        raise CliError(f"BIP32 派生失败: {exc}") from exc
+
+
+def connector_card_prepare_bip32_path(connector: object, string_path: str) -> None:
+    depth, path_bytes = parse_bip32_path(string_path)
+    p1 = depth & 0xFF
+    option_flags = 0x40
+    p2 = option_flags
+    data = list(path_bytes)
+
+    try:
+        while True:
+            apdu = [0xB0, 0x6D, p1, p2, len(data)] + data
+            _response, sw1, sw2 = connector.card_transmit(apdu)
+
+            if sw1 == 0x9C and sw2 == 0x01:
+                p2 ^= 0x80
+                apdu = [0xB0, 0x6D, p1, p2, len(data)] + data
+                _response, sw1, sw2 = connector.card_transmit(apdu)
+                p2 = option_flags
+                if sw1 == 0x9C and sw2 == 0x01:
+                    continue
+
+            if sw1 != 0x90 or sw2 != 0x00:
+                raise CliError(f"BIP32 派生失败: SW=0x{sw1:02X}{sw2:02X}")
+            return
+    except CliError:
+        raise
+    except Exception as exc:
+        raise CliError(f"BIP32 派生失败: {exc}") from exc
+
+
+def card_sign_transaction_hash(connection: object, digest: bytes) -> bytes:
+    if len(digest) != 32:
+        raise CliError("摘要长度必须为 32 字节")
+    rapdu, sw = send_apdu(connection, build_apdu(0xB0, 0x7A, 0xFF, 0x00, digest))
+    if sw != 0x9000:
+        raise CliError(f"签名 APDU 失败: SW=0x{sw:04X}")
+    return rapdu
+
+
+def connector_card_sign_transaction_hash(connector: object, digest: bytes) -> bytes:
+    if len(digest) != 32:
+        raise CliError("摘要长度必须为 32 字节")
+    try:
+        response, sw1, sw2 = connector.card_sign_transaction_hash(0xFF, list(digest), None)
+    except Exception as exc:
+        raise CliError(f"签名 APDU 失败: {exc}") from exc
+    if sw1 != 0x90 or sw2 != 0x00:
+        raise CliError(f"签名 APDU 失败: SW=0x{sw1:02X}{sw2:02X}")
+    return bytes(response)
+
+
+def sign_digest_with_card(
+    connection: object,
+    digest: bytes,
+    expected_pubkey: Optional[bytes],
+    expected_address: Optional[str] = None,
+    connector: object | None = None,
+) -> SignatureParts:
+    if connector is not None:
+        der_sig = connector_card_sign_transaction_hash(connector, digest)
+        if expected_pubkey is not None and SatochipECPubkey is not None:
+            try:
+                pubkey_obj = SatochipECPubkey(expected_pubkey)
+                r, s, v, _sigstring = connector.parser.parse_rsv_from_dersig(der_sig, digest, pubkey_obj)
+                return SignatureParts(rec_id=v, r=int(r), s=int(s))
+            except Exception:
+                pass
+    else:
+        der_sig = card_sign_transaction_hash(connection, digest)
+    r, s = decode_der_signature(der_sig)
+    if expected_pubkey is not None:
+        rec_id = recover_rec_id(digest, r, s, expected_pubkey)
+    elif expected_address:
+        rec_id = recover_rec_id_by_address(digest, r, s, expected_address)
+    else:
+        raise CliError("缺少签名地址或公钥，无法恢复 recovery id")
+    return SignatureParts(rec_id=rec_id, r=r, s=s)
+
+
+# -----------------------------
+# Signer flow
+# -----------------------------
+
+
+class SatochipSigner:
+    def unlock_card(self, card: ConnectedCard, derivation_path: str, pin: str) -> UnlockOutcome:
+        try:
+            ensure_satochip_selected(card.connection)
+            status = card_get_status(card.connection)
+        except Exception as exc:
+            raise stage_error("50", exc) from exc
+        if not status.setup_done:
+            raise CliError("卡尚未初始化")
+        if not status.is_seeded:
+            raise CliError("卡内未导入种子/助记词")
+        if status.needs_2fa:
+            raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+
+        if status.needs_secure_channel:
+            try:
+                connector = ensure_satochip_connector(card)
+                connector_status = connector_card_get_status(connector)
+            except Exception as exc:
+                raise stage_error("50", exc) from exc
+            if not connector_status.setup_done:
+                raise CliError("卡尚未初始化")
+            if not connector_status.is_seeded:
+                raise CliError("卡内未导入种子/助记词")
+            if connector_status.needs_2fa:
+                raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+            try:
+                connector_card_verify_pin(connector, pin)
+            except Exception as exc:
+                raise stage_error("52", exc) from exc
+            try:
+                pubkey, _chain = connector_card_bip32_get_extended_key(connector, derivation_path)
+            except Exception as exc:
+                raise stage_error("53", exc) from exc
+        else:
+            try:
+                card_verify_pin(card.connection, pin)
+            except Exception as exc:
+                raise stage_error("52", exc) from exc
+            try:
+                pubkey, _chain = card_bip32_get_extended_key(card.connection, derivation_path)
+            except Exception as exc:
+                raise stage_error("53", exc) from exc
+
+        return UnlockOutcome(address=ethereum_address_from_pubkey(pubkey))
+
+    def sign_with_card(
+        self,
+        card: ConnectedCard,
+        request: TpSignRequest,
+        derivation_path: str,
+        pin: str,
+    ) -> SigningOutcome:
+        try:
+            ensure_satochip_selected(card.connection)
+            status = card_get_status(card.connection)
+        except Exception as exc:
+            raise stage_error("50", exc) from exc
+        if not status.setup_done:
+            raise CliError("卡尚未初始化")
+        if not status.is_seeded:
+            raise CliError("卡内未导入种子/助记词")
+        if status.needs_2fa:
+            raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+
+        connector = None
+        address_hint = self._request_address_hint(request)
+        pubkey: Optional[bytes] = None
+        if status.needs_secure_channel:
+            try:
+                connector = ensure_satochip_connector(card)
+                connector_status = connector_card_get_status(connector)
+            except Exception as exc:
+                raise stage_error("50", exc) from exc
+            if not connector_status.setup_done:
+                raise CliError("卡尚未初始化")
+            if not connector_status.is_seeded:
+                raise CliError("卡内未导入种子/助记词")
+            if connector_status.needs_2fa:
+                raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+            try:
+                connector_card_verify_pin(connector, pin)
+            except Exception as exc:
+                raise stage_error("52", exc) from exc
+            try:
+                if address_hint:
+                    connector_card_prepare_bip32_path(connector, derivation_path)
+                else:
+                    pubkey, _chain = connector_card_bip32_get_extended_key(connector, derivation_path)
+            except Exception as exc:
+                raise stage_error("53", exc) from exc
+        else:
+            try:
+                card_verify_pin(card.connection, pin)
+            except Exception as exc:
+                raise stage_error("52", exc) from exc
+            try:
+                if address_hint:
+                    card_prepare_bip32_path(card.connection, derivation_path)
+                else:
+                    pubkey, _chain = card_bip32_get_extended_key(card.connection, derivation_path)
+            except Exception as exc:
+                raise stage_error("53", exc) from exc
+
+        if pubkey is not None:
+            try:
+                signer_address = ethereum_address_from_pubkey(pubkey)
+            except Exception as exc:
+                raise stage_error("53", exc) from exc
+        elif address_hint:
+            try:
+                signer_address = normalize_eth_address(address_hint)
+            except Exception as exc:
+                raise stage_error("53", exc) from exc
+        else:
+            raise stage_error("53", "缺少地址提示，无法完成派生")
+
+        if isinstance(request, TpSignTransactionRequest):
+            return self._sign_transaction(card, request, pubkey, signer_address, connector)
+        if isinstance(request, TpSignPersonalMessageRequest):
+            return self._sign_personal(card, request, pubkey, signer_address, connector)
+        if isinstance(request, TpSignTypedDataRequest):
+            return self._sign_typed_data(card, request, pubkey, signer_address, connector)
+        raise stage_error("51", "未知请求类型")
+
+    def _sign_transaction(
+        self,
+        card: ConnectedCard,
+        request: TpSignTransactionRequest,
+        pubkey: Optional[bytes],
+        signer_address: str,
+        connector: object | None,
+    ) -> SigningOutcome:
+        try:
+            tx = EvmTxEncoder.from_tp_request(request)
+            tx_hash = EvmTxEncoder.transaction_hash(tx)
+        except Exception as exc:
+            raise stage_error(classify_stage_51(exc), exc) from exc
+        try:
+            sig = sign_digest_with_card(card.connection, tx_hash, pubkey, signer_address, connector)
+        except Exception as exc:
+            raise stage_error("54", exc) from exc
+        try:
+            signed_payload = EvmTxEncoder.signed_payload(tx, sig.rec_id, sig.r, sig.s)
+            raw_tx = ensure_hex_prefix(signed_payload.hex())
+        except Exception as exc:
+            raise stage_error("55", exc) from exc
+        try:
+            response_payload = build_sign_response(request, raw_tx, signer_address)
+        except Exception as exc:
+            raise stage_error("56", exc) from exc
+
+        return SigningOutcome(
+            response_payload=response_payload,
+            signer_address=signer_address,
+            digest_hex=ensure_hex_prefix(tx_hash.hex()),
+            digest_label="交易哈希",
+            result_hex=raw_tx,
+            result_label="RawTx",
+        )
+
+    def _sign_personal(
+        self,
+        card: ConnectedCard,
+        request: TpSignPersonalMessageRequest,
+        pubkey: Optional[bytes],
+        signer_address: str,
+        connector: object | None,
+    ) -> SigningOutcome:
+        try:
+            digest = personal_sign_hash(request.message)
+        except Exception as exc:
+            raise stage_error(classify_stage_51(exc), exc) from exc
+        try:
+            sig = sign_digest_with_card(card.connection, digest, pubkey, signer_address, connector)
+        except Exception as exc:
+            raise stage_error("54", exc) from exc
+        try:
+            signature_hex = build_eth_message_signature(sig.rec_id, sig.r, sig.s)
+        except Exception as exc:
+            raise stage_error("55", exc) from exc
+        try:
+            response_payload = build_sign_response(request, signature_hex, signer_address)
+        except Exception as exc:
+            raise stage_error("56", exc) from exc
+
+        return SigningOutcome(
+            response_payload=response_payload,
+            signer_address=signer_address,
+            digest_hex=ensure_hex_prefix(digest.hex()),
+            digest_label="消息哈希",
+            result_hex=signature_hex,
+            result_label="签名Hex",
+        )
+
+    def _sign_typed_data(
+        self,
+        card: ConnectedCard,
+        request: TpSignTypedDataRequest,
+        pubkey: Optional[bytes],
+        signer_address: str,
+        connector: object | None,
+    ) -> SigningOutcome:
+        if request.is_legacy or request.typed_data_json.strip().startswith("["):
+            raise CliError("暂不支持 signTypedDataLegacy 数组格式，请在 TP 端改用 signTypedData/signTypeDataV4")
+
+        try:
+            digest = typed_data_hash(request.typed_data_json)
+        except Exception as exc:
+            raise stage_error(classify_stage_51(exc), exc) from exc
+        try:
+            sig = sign_digest_with_card(card.connection, digest, pubkey, signer_address, connector)
+        except Exception as exc:
+            raise stage_error("54", exc) from exc
+        try:
+            signature_hex = build_eth_message_signature(sig.rec_id, sig.r, sig.s)
+        except Exception as exc:
+            raise stage_error("55", exc) from exc
+        try:
+            response_payload = build_sign_response(request, signature_hex, signer_address)
+        except Exception as exc:
+            raise stage_error("56", exc) from exc
+
+        return SigningOutcome(
+            response_payload=response_payload,
+            signer_address=signer_address,
+            digest_hex=ensure_hex_prefix(digest.hex()),
+            digest_label="TypedData哈希",
+            result_hex=signature_hex,
+            result_label="签名Hex",
+        )
+
+    def _request_address_hint(self, request: TpSignRequest) -> Optional[str]:
+        if isinstance(request, TpSignTransactionRequest):
+            return request.address
+        if isinstance(request, TpSignPersonalMessageRequest):
+            return request.address
+        if isinstance(request, TpSignTypedDataRequest):
+            return request.address
+        return None
+
+
+def decode_personal_message(message: str) -> bytes:
+    if message.startswith(("0x", "0X")):
+        try:
+            return hex_to_bytes(message)
+        except Exception:
+            return message.encode("utf-8")
+    return message.encode("utf-8")
+
+
+def personal_sign_hash(message: str) -> bytes:
+    message_bytes = decode_personal_message(message)
+    prefix = f"\x19Ethereum Signed Message:\n{len(message_bytes)}".encode("utf-8")
+    return keccak256(prefix + message_bytes)
+
+
+def typed_data_hash(typed_data_json: str) -> bytes:
+    try:
+        from eth_account._utils.encode_typed_data.encoding_and_hashing import (  # type: ignore
+            get_primary_type,
+            hash_domain,
+            hash_eip712_message,
+        )
+    except Exception as exc:
+        raise CliError(
+            f"当前环境缺少 signTypedData 依赖: {exc.__class__.__name__}: {exc}"
+        ) from exc
+
+    try:
+        typed_obj = json.loads(typed_data_json)
+    except Exception as exc:
+        raise CliError("typedData 解析失败: message 不是合法 JSON") from exc
+
+    if not isinstance(typed_obj, dict):
+        raise CliError("typedData 解析失败: 顶层必须是 JSON 对象")
+
+    try:
+        full_types = dict(typed_obj.get("types") or {})
+        domain_data = dict(typed_obj.get("domain") or {})
+        message_data = dict(typed_obj.get("message") or {})
+    except Exception as exc:
+        raise CliError(f"typedData 解析失败: {exc}") from exc
+
+    if not isinstance(full_types, dict) or not full_types:
+        raise CliError("typedData 解析失败: 缺少 types")
+
+    if "EIP712Domain" in full_types:
+        domain_keys = list(domain_data.keys())
+        domain_type_keys = [
+            field["name"] for field in full_types["EIP712Domain"] if isinstance(field, dict)
+        ]
+        if set(domain_keys) != set(domain_type_keys):
+            raise CliError(
+                "typedData 解析失败: domain 字段与 types.EIP712Domain 不匹配"
+            )
+
+    message_types = full_types.copy()
+    message_types.pop("EIP712Domain", None)
+    if not message_types:
+        raise CliError("typedData 解析失败: 缺少自定义消息类型")
+
+    provided_primary_type = typed_obj.get("primaryType")
+    if provided_primary_type is not None:
+        derived_primary_type = get_primary_type(message_types)
+        if derived_primary_type != provided_primary_type:
+            raise CliError(
+                "typedData 解析失败: primaryType 与推导结果不一致"
+            )
+
+    try:
+        domain_hash = bytes(hash_domain(domain_data))
+        message_hash = bytes(hash_eip712_message(message_types, message_data))
+        return keccak256(b"\x19\x01" + domain_hash + message_hash)
+    except Exception as exc:
+        raise CliError(f"typedData 解析失败: {exc}") from exc
+
+
+def build_eth_message_signature(rec_id: int, r: int, s: int) -> str:
+    normalized = normalize_recovery_id(rec_id)
+    v = 27 + normalized
+    signature = int_to_fixed_bytes(r, 32) + int_to_fixed_bytes(s, 32) + bytes([v & 0xFF])
+    return ensure_hex_prefix(signature.hex())
+
+
+# -----------------------------
+# CLI helpers
+# -----------------------------
+
+
+@dataclass
+class CliOptions:
+    values: Dict[str, str]
+    flags: set
+
+    def required(self, name: str) -> str:
+        value = self.values.get(name)
+        if value is None or not value.strip():
+            raise CliError(f"缺少参数 --{name}")
+        return value
+
+    def value(self, name: str, default: str) -> str:
+        value = self.values.get(name)
+        if value is None or not value.strip():
+            return default
+        return value
+
+    def value_or_none(self, name: str) -> Optional[str]:
+        return self.values.get(name)
+
+    def int_value(self, name: str, default: int) -> int:
+        value = self.values.get(name)
+        if value is None or not value.strip():
+            return default
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise CliError(f"参数 --{name} 不是整数") from exc
+
+    def path_value(self, name: str, default: Path) -> Path:
+        value = self.values.get(name)
+        if value is None:
+            return default
+        return Path(value)
+
+
+def parse_options(tokens: Sequence[str]) -> CliOptions:
+    values: Dict[str, str] = {}
+    flags = set()
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if not token.startswith("--"):
+            raise CliError(f"参数格式错误: {token}")
+
+        key_value = token[2:]
+        if "=" in key_value:
+            key, value = key_value.split("=", 1)
+            values[key] = value
+            i += 1
+            continue
+
+        key = key_value
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+        if nxt is not None and not nxt.startswith("--"):
+            values[key] = nxt
+            i += 2
+        else:
+            flags.add(key)
+            i += 1
+
+    return CliOptions(values=values, flags=flags)
+
+
+def load_payload_input(options: CliOptions) -> str:
+    payload = options.value_or_none("payload")
+    if payload is not None and payload.strip():
+        return payload.strip()
+
+    payload_file = options.value_or_none("payload-file")
+    if payload_file is not None and payload_file.strip():
+        path = Path(payload_file)
+        if not path.is_file():
+            raise CliError(f"payload-file 不存在: {payload_file}")
+        return path.read_text(encoding="utf-8")
+
+    stdin_text = "\n".join(line.rstrip("\n") for line in sys.stdin).strip()
+    if not stdin_text:
+        raise CliError("请提供 --payload 或 --payload-file，或者从 stdin 输入 TP 请求字符串")
+    return stdin_text
+
+
+def normalize_payload(raw_input: str) -> str:
+    lines = [line.strip() for line in raw_input.splitlines() if line.strip()]
+    if not lines:
+        raise CliError("TP 请求内容为空")
+
+    if len(lines) == 1 and not lines[0].lower().startswith("tp:multifragment-"):
+        return lines[0]
+
+    if not all(line.lower().startswith("tp:multifragment-") for line in lines):
+        return "".join(lines)
+
+    assembler = MultiFragmentAssembler()
+    for line in lines:
+        fragment = parse_tp_multi_fragment(line)
+        state, detail = assembler.accept(fragment)
+        if state == "complete":
+            return detail or ""
+        if state == "error":
+            raise CliError(detail or "分片处理失败")
+
+    raise CliError("分片未收齐，请补齐所有 tp:multiFragment 二维码内容")
+
+
+def write_text_file(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def write_qr_png(content: str, path: Path) -> None:
+    try:
+        import qrcode  # type: ignore
+    except Exception as exc:
+        raise CliError("缺少 qrcode 依赖，无法生成二维码") from exc
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=1,
+    )
+    qr.add_data(content)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    image.save(path)
+
+
+def run_unlock(options: CliOptions) -> None:
+    pin = options.required("pin")
+    path = options.value("path", DEFAULT_PATH)
+    reader = options.value_or_none("reader")
+    timeout = options.int_value("timeout-sec", DEFAULT_TIMEOUT_SEC)
+
+    connected = connect_pcsc(reader, timeout)
+    try:
+        print(f"已连接读卡器: {connected.reader_name}")
+        print(f"卡 ATR: {connected.atr_hex or 'unknown'}")
+
+        signer = SatochipSigner()
+        unlocked = signer.unlock_card(connected, path, pin)
+        print("解锁成功")
+        print(f"地址: {unlocked.address.lower()}")
+    finally:
+        disconnect_card(connected)
+
+
+def run_sign(options: CliOptions) -> None:
+    pin = options.required("pin")
+    path = options.value("path", DEFAULT_PATH)
+    reader = options.value_or_none("reader")
+    timeout = options.int_value("timeout-sec", DEFAULT_TIMEOUT_SEC)
+
+    payload_input = load_payload_input(options)
+    payload = normalize_payload(payload_input)
+
+    request = parse_sign_request(payload)
+    connected = connect_pcsc(reader, timeout)
+
+    try:
+        print(f"已连接读卡器: {connected.reader_name}")
+        print(f"卡 ATR: {connected.atr_hex or 'unknown'}")
+
+        signer = SatochipSigner()
+        outcome = signer.sign_with_card(connected, request, path, pin)
+
+        response_path = options.path_value("out", Path("response.txt"))
+        qr_value = options.value_or_none("qr")
+        qr_path = Path(qr_value) if qr_value and qr_value.strip() else None
+
+        write_text_file(response_path, outcome.response_payload + "\n")
+        if qr_path is not None:
+            write_qr_png(outcome.response_payload, qr_path)
+
+        print("签名成功")
+        print(f"签名地址: {outcome.signer_address.lower()}")
+        print(f"{outcome.digest_label}: {outcome.digest_hex}")
+        print(f"{outcome.result_label}: {outcome.result_hex}")
+        print(f"回传字符串已写入: {response_path.absolute()}")
+        if qr_path is not None:
+            print(f"回传二维码已写入: {qr_path.absolute()}")
+        print("\n----- TP Response Begin -----")
+        print(outcome.response_payload)
+        print("----- TP Response End -----")
+    finally:
+        disconnect_card(connected)
+
+
+def print_usage() -> None:
+    print(
+        """
+TP Satochip Pi Signer (Python)
+
+用法:
+  pi-signer unlock --pin <PIN> [--path <BIP32>] [--reader <关键字>] [--timeout-sec <秒>]
+  pi-signer sign --pin <PIN> [--path <BIP32>] (--payload <TP字符串> | --payload-file <文件>)
+                 [--reader <关键字>] [--timeout-sec <秒>] [--out response.txt] [--qr response.png]
+
+例子:
+  pi-signer unlock --pin 123456
+  pi-signer sign --pin 123456 --payload-file request.txt --out response.txt --qr response.png
+        """.strip()
+    )
+
+
+def main(argv: Sequence[str]) -> int:
+    if not argv or argv[0] in {"-h", "--help"}:
+        print_usage()
+        return 0
+
+    command = argv[0].lower()
+
+    try:
+        options = parse_options(argv[1:])
+        if command == "unlock":
+            run_unlock(options)
+            return 0
+        if command == "sign":
+            run_sign(options)
+            return 0
+        raise CliError(f"未知命令: {command}")
+    except CliError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

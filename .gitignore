@@ -12,6 +12,7 @@ logs/
 official-seedsigner/
 seedsigner-os/buildroot_dl/
 seedsigner-os/images/
+seedsigner-os/output/
 seedsigner-os/opt/tmp/
 seedsigner-os/opt/output/
 seedsigner-os/docs/ssh/
@@ -39,10 +40,12 @@ dist/system-update-*.img
 dist/system-update-*.img.SHA256SUMS
 dist/system-update-*.img.xz
 dist/system-update-*.img.xz.sha256
+dist/system-update-*.build-info.txt
 dist/tp-qr-relay-android-*.apk
 dist/tp-qr-relay-android-*.apk.sha256
 !dist/system-update-latest.img.xz
 !dist/system-update-latest.img.xz.sha256
+!dist/system-update-latest.build-info.txt
 !dist/tp-qr-relay-android-latest.apk
 !dist/tp-qr-relay-android-latest.apk.sha256
 !dist/seedsigner-case-files-20260308.tar.gz

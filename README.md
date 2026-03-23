@@ -81,7 +81,7 @@ app/build/outputs/apk/release/app-release.apk
 ### 重新生成树莓派运行时镜像
 
 ```bash
-bash scripts/repack_runtime_image.sh
+bash scripts/build_pi_firmware_from_snapshot.sh
 ```
 
 ### 卡固件优先直接用预编译文件
@@ -109,3 +109,4 @@ card-applet/prebuilt/SatoChip-3.0.4.cap
 - [3D 打印外壳改造方案](docs/3D打印外壳改造方案.zh-CN.md)
 - [快速开始](docs/快速开始.zh-CN.md)
 - [维护说明](docs/维护说明.zh-CN.md)
+- [树莓派固件构建与备份](docs/树莓派固件构建与备份.zh-CN.md)

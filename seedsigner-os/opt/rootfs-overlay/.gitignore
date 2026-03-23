@@ -1,1 +1,3 @@
-opt/
+opt/**/__pycache__/
+opt/**/*.pyc
+opt/**/*.pyo

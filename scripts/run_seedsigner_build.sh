@@ -15,6 +15,10 @@ ASCII_BUILD_DIR="${TP_BUILD_DIR:-$ASCII_BASE/output}"
 ASCII_IMAGE_DIR="${TP_IMAGE_DIR:-$ASCII_BASE/images}"
 ASCII_CCACHE_DIR="${TP_CCACHE_DIR:-$ASCII_BASE/ccache}"
 ASCII_CCACHE_TEMPDIR="${TP_CCACHE_TEMPDIR:-$ASCII_BASE/ccache-tmp}"
+BR2_JLEVEL="${BR2_JLEVEL:-4}"
+TP_BUILD_CPUSET="${TP_BUILD_CPUSET:-0,1,2,3}"
+TP_BUILD_NICE="${TP_BUILD_NICE:-19}"
+TP_BUILD_IONICE_CLASS="${TP_BUILD_IONICE_CLASS:-3}"
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$ASCII_BUILD_DIR" "$ASCII_IMAGE_DIR" "$ASCII_CCACHE_DIR" "$ASCII_CCACHE_TEMPDIR"
@@ -42,5 +46,15 @@ export LC_ALL=C.UTF-8
 export LANG=C.UTF-8
 export TP_BUILD_DIR="$ASCII_BUILD_DIR"
 export TP_IMAGE_DIR="$ASCII_IMAGE_DIR"
+BUILD_PREFIX=(env "BR2_JLEVEL=$BR2_JLEVEL")
+if command -v taskset >/dev/null 2>&1; then
+  BUILD_PREFIX=(taskset -c "$TP_BUILD_CPUSET" "${BUILD_PREFIX[@]}")
+fi
 
-./build.sh --pi0 --smartcard --skip-repo --no-clean 2>&1 | tee "$LOG_FILE"
+echo "Starting SeedSigner OS build"
+echo "  BR2_JLEVEL=$BR2_JLEVEL"
+echo "  TP_BUILD_CPUSET=$TP_BUILD_CPUSET"
+echo "  log=$LOG_FILE"
+
+nice -n "$TP_BUILD_NICE" ionice -c "$TP_BUILD_IONICE_CLASS" \
+  "${BUILD_PREFIX[@]}" ./build.sh --pi0 --smartcard --skip-repo --no-clean 2>&1 | tee "$LOG_FILE"
