@@ -1,8 +1,7 @@
 module=app
 artifact_path=dist/tp-qr-relay-android-latest.apk
-artifact_sha256=af22763852b1f9b50901dcf8c00148dc988418a354dd016aa2d086936b6bfbde
+artifact_sha256=e12ac5406ce18454738b60fbe7ba70332dd267b967d87500b704a0794364e953
 version_name=0.1.19
-repo_head=4712328bfc0cd644790e43919fdff0f7e1ff3b6d
+repo_head=d680098b13f5541b113fe452ed81df2a5fb0197b
 build_script=scripts/build_tp_relay_apk.sh
-build_time_utc=2026-03-23T14:35:29Z
-build_note=metadata_reconstructed_from_existing_artifact_without_local_rebuild
+build_time_utc=2026-03-23T22:32:22Z
