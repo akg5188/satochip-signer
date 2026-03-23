@@ -16,7 +16,7 @@
 | 用独立钱包看资产、转账、连 `Hyperliquid` | `wallet/` | [wallet/README.md](wallet/README.md) | [独立钱包 Release](https://github.com/akg5188/tp-satochip-signer/releases/tag/wallet-android-20260318-1717) |
 | 给 `J3R180` 卡设置 `PIN` 和助记词 | `backups/satochip-utils/` | [Tails 离线使用教程](backups/satochip-utils/Tails-离线使用教程.zh-CN.md) | 本仓库离线备份 |
 | 下载或写入 `J3R180` 卡固件 | `card-applet/` | [card-applet 中文说明](card-applet/README.zh-CN.md) | [卡固件 Release](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318) |
-| 下载或写入树莓派固件 | `seedsigner-os/` 和 `dist/` | [seedsigner-os 中文说明](seedsigner-os/README.zh-CN.md) | [树莓派固件 Release](https://github.com/akg5188/tp-satochip-signer/releases/tag/pi-signer-firmware-20260318) |
+| 下载或写入树莓派固件 | `seedsigner-os/` 和 `dist/` | [seedsigner-os 中文说明](seedsigner-os/README.zh-CN.md) | [树莓派固件稳定备份](dist/system-update-latest.img.xz) |
 
 ## 下载总表
 
@@ -25,7 +25,7 @@
 | TP 签名中转安卓 APK | `tp-qr-relay-android-latest.apk` | [tp-relay-android-20260318-1956](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260318-1956) | `dist/tp-qr-relay-android-latest.apk` |
 | 独立钱包安卓 APK | `satochip-wallet-release.apk` | [wallet-android-20260318-1717](https://github.com/akg5188/tp-satochip-signer/releases/tag/wallet-android-20260318-1717) | Release 为主 |
 | `J3R180` 卡固件 | `SatoChip-3.0.4.cap` | [j3r180-card-firmware-20260318](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318) | `card-applet/prebuilt/SatoChip-3.0.4.cap` |
-| 树莓派固件 | `system-update-latest.img.xz` | [pi-signer-firmware-20260318](https://github.com/akg5188/tp-satochip-signer/releases/tag/pi-signer-firmware-20260318) | `dist/system-update-latest.img.xz` |
+| 树莓派固件 | `system-update-latest.img.xz` | 仓库里的稳定文件名 `dist/system-update-latest.img.xz` | `dist/system-update-latest.img.xz` |
 | `Tails` 离线卡初始化工具 | `Satochip-Utils-linux-x86_64-0.3.0-beta` 等 | 本地离线包和 `backups/satochip-utils/` | `backups/satochip-utils/` |
 
 ## 五个核心部分

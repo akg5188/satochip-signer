@@ -1,0 +1,15 @@
+name: Repo Maintenance Checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  repo-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run repository consistency checks
+        run: bash scripts/check_repo_consistency.sh

@@ -22,6 +22,26 @@ TP_BUILD_IONICE_CLASS="${TP_BUILD_IONICE_CLASS:-3}"
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$ASCII_BUILD_DIR" "$ASCII_IMAGE_DIR" "$ASCII_CCACHE_DIR" "$ASCII_CCACHE_TEMPDIR"
+case "$ASCII_ROOT" in
+  ""|"/")
+    echo "Refusing unsafe TP_ASCII_ROOT: $ASCII_ROOT" >&2
+    exit 1
+    ;;
+  "$ROOT_DIR"|"$ROOT_DIR"/*)
+    echo "Refusing TP_ASCII_ROOT inside repository: $ASCII_ROOT" >&2
+    exit 1
+    ;;
+  "$ASCII_BASE"/*)
+    ;;
+  *)
+    echo "Refusing TP_ASCII_ROOT outside TP_ASCII_BASE: $ASCII_ROOT" >&2
+    exit 1
+    ;;
+esac
+if [[ -e "$ASCII_ROOT" && ! -L "$ASCII_ROOT" ]]; then
+  echo "Refusing to remove non-symlink TP_ASCII_ROOT: $ASCII_ROOT" >&2
+  exit 1
+fi
 rm -rf "$ASCII_ROOT"
 ln -s "$ROOT_DIR" "$ASCII_ROOT"
 
