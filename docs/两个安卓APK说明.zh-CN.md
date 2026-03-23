@@ -7,9 +7,11 @@
 文件：
 
 - `dist/tp-qr-relay-android-latest.apk`
+- `dist/tp-qr-relay-android-latest.apk.sha256`
+- `dist/tp-qr-relay-android-latest.build-info.txt`
 - GitHub Release：`tp-relay-android-20260318-1956`
 - 源码目录：`app/`
-- 本地重新编译输出：`app/build/outputs/apk/release/app-release.apk`
+- 标准构建命令：`bash scripts/build_tp_relay_apk.sh`
 
 用途：
 
@@ -22,10 +24,17 @@
 
 文件：
 
-- GitHub Release 里的 `satochip-wallet-release.apk`
+- 目标稳定文件名：`dist/satochip-wallet-release.apk`
+- 对应校验文件：`dist/satochip-wallet-release.apk.sha256`
 - GitHub Release：`wallet-android-20260318-1717`
 - 源码目录：`wallet/`
-- 本地重新编译输出：`wallet/app/build/outputs/apk/release/app-release.apk`
+- 标准构建命令：`bash scripts/build_wallet_release.sh`
+
+如果仓库里当前没有这两个文件，先本地运行标准构建命令生成。
+
+共同环境准备看：
+
+- [安卓构建环境准备](安卓构建环境准备.zh-CN.md)
 
 用途：
 

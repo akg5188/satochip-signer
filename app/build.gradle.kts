@@ -1,12 +1,35 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
+val keystoreProperties = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) {
+        f.inputStream().use { load(it) }
+    }
+}
+
+val hasReleaseKeystore = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    .all { !keystoreProperties.getProperty(it).isNullOrBlank() }
+
 android {
     namespace = "com.smartcard.signer"
     compileSdk = 34
     buildToolsVersion = "35.0.0"
+
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.smartcard.signer"
@@ -19,7 +42,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (hasReleaseKeystore) "release" else "debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

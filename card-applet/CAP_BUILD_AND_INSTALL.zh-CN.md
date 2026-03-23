@@ -47,6 +47,12 @@ cd card-applet/SatochipApplet
 git clone --depth=1 https://github.com/martinpaljak/oracle_javacard_sdks sdks
 ```
 
+说明：
+
+- 上面这条命令是快速拿工具链，不是严格冻结版本
+- 如果你以后第一次成功编过，最好把当时的 `oracle_javacard_sdks` 提交号记到你自己的维护记录里
+- 不要每次维护都无脑追 `latest`
+
 设置 Java 11：
 
 ```bash
@@ -76,10 +82,16 @@ mkdir -p ~/card-work && cd ~/card-work
 wget -O gp.jar https://github.com/martinpaljak/GlobalPlatformPro/releases/latest/download/gp.jar
 ```
 
+说明：
+
+- 这里为了方便仍然写 `latest`
+- 但长期维护时，最好把第一次验证通过的 `GlobalPlatformPro` 版本号单独记下来
+- 如果你手里已经有一份能稳定装卡的 `gp.jar`，不要随便替换
+
 安装 CAP：
 
 ```bash
-CAP=/home/ak/智能卡/tp-satochip-signer/card-applet/SatochipApplet/SatoChip-3.0.4.cap
+CAP=/absolute/path/to/SatoChip-3.0.4.cap
 java -jar gp.jar -install "$CAP"
 java -jar gp.jar -l
 ```
@@ -117,3 +129,5 @@ opensc-tool -s 00A40400085361746F43686970
 
 - 上游项目：`https://github.com/Toporin/SatochipApplet`
 - 本仓库内源码为该项目的可构建快照（已去掉 `.git`、`sdks` 和 `gp` 二进制）。
+- 当前快照信息见：
+  `card-applet/SatochipApplet/UPSTREAM_SNAPSHOT.txt`
