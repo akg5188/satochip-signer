@@ -10,14 +10,31 @@ OUT_DIR="${OUT_DIR:-$SRC_DIR/dist}"
 VARIANT="${1:-release}"
 
 detect_java_home() {
-  if [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/java" ]]; then
-    printf '%s\n' "$JAVA_HOME"
+  local candidate=""
+
+  for candidate in \
+    "${JAVA_HOME:-}" \
+    "/home/ak/.local-jdk/jdk-17.0.18+8"
+  do
+    if [[ -n "$candidate" && -x "$candidate/bin/java" && -x "$candidate/bin/javac" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  if command -v javac >/dev/null 2>&1; then
+    dirname "$(dirname "$(readlink -f "$(command -v javac)")")"
     return
   fi
+
   if command -v java >/dev/null 2>&1; then
-    dirname "$(dirname "$(readlink -f "$(command -v java)")")"
-    return
+    candidate="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+    if [[ -x "$candidate/bin/javac" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
   fi
+
   echo ""
 }
 
@@ -135,10 +152,11 @@ printf 'sdk.dir=%s\n' "$SDK_DIR" > "$BUILD_DIR/local.properties"
 cd "$BUILD_DIR"
 export JAVA_HOME="$(detect_java_home)"
 if [[ -z "$JAVA_HOME" ]]; then
-  echo "Unable to locate a usable JAVA_HOME" >&2
+  echo "Unable to locate a usable JDK 17 with both java and javac" >&2
   exit 1
 fi
 export GRADLE_USER_HOME
+export ORG_GRADLE_JAVA_INSTALLATIONS_PATHS="$JAVA_HOME"
 export PATH="$JAVA_HOME/bin:$PATH"
 ./gradlew --no-daemon "$GRADLE_TASK" --console=plain
 
