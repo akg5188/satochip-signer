@@ -2,6 +2,8 @@
 /build/
 **/build/
 /local.properties
+/keystore.properties
+/wallet/keystore.properties
 .idea/
 *.iml
 __pycache__/
@@ -43,9 +45,17 @@ dist/system-update-*.img.xz.sha256
 dist/system-update-*.build-info.txt
 dist/tp-qr-relay-android-*.apk
 dist/tp-qr-relay-android-*.apk.sha256
+dist/tp-qr-relay-android-*.build-info.txt
+dist/satochip-wallet-*.apk
+dist/satochip-wallet-*.apk.sha256
+dist/satochip-wallet-*.build-info.txt
 !dist/system-update-latest.img.xz
 !dist/system-update-latest.img.xz.sha256
 !dist/system-update-latest.build-info.txt
 !dist/tp-qr-relay-android-latest.apk
 !dist/tp-qr-relay-android-latest.apk.sha256
+!dist/tp-qr-relay-android-latest.build-info.txt
+!dist/satochip-wallet-release.apk
+!dist/satochip-wallet-release.apk.sha256
+!dist/satochip-wallet-release.build-info.txt
 !dist/seedsigner-case-files-20260308.tar.gz

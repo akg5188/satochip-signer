@@ -12,33 +12,61 @@
 
 ## 对应 APK
 
-- [TP 签名中转 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260318-1956)
-- [TP 签名中转 APK](https://github.com/akg5188/tp-satochip-signer/releases/download/tp-relay-android-20260318-1956/tp-qr-relay-android-latest.apk)
 - 仓库内稳定文件名：`dist/tp-qr-relay-android-latest.apk`
+- 对应校验文件：`dist/tp-qr-relay-android-latest.apk.sha256`
+- 对应构建信息：`dist/tp-qr-relay-android-latest.build-info.txt`
 
-## 重新编译
+## 文档入口
 
-1. 在仓库根目录复制配置文件
+- [使用教程](docs/使用教程.zh-CN.md)
+- [开发维护指南](docs/开发维护指南.zh-CN.md)
+- [安卓构建环境准备](../docs/安卓构建环境准备.zh-CN.md)
+
+## 标准构建
+
+优先使用仓库根目录下的标准脚本：
 
 ```bash
-cp local.properties.example local.properties
-```
-
-2. 把 `local.properties` 里的 `sdk.dir` 改成你机器上的 Android SDK 路径
-
-3. 构建 release APK
-
-```bash
-./gradlew :app:assembleRelease --console=plain
+bash scripts/build_tp_relay_apk.sh
 ```
 
 输出路径：
 
 ```text
+dist/tp-qr-relay-android-latest.apk
+dist/tp-qr-relay-android-latest.apk.sha256
+```
+
+如果你只是想在当前机器上快速直编，也可以：
+
+```bash
+cp local.properties.example local.properties
+./gradlew :app:assembleRelease --console=plain
+```
+
+直编输出：
+
+```text
 app/build/outputs/apk/release/app-release.apk
 ```
 
-如果你只是下载现成包，不需要自己编译，优先去上面的 GitHub Release 页面。
+## 环境要求
+
+- JDK 17
+- Android SDK 34
+- Android Build Tools 35.0.0
+- Android 5.0 及以上设备
+
+第一次换机器时，优先看：
+
+- [../docs/安卓构建环境准备.zh-CN.md](../docs/安卓构建环境准备.zh-CN.md)
+
+## 当前签名说明
+
+- 当前 `release` 仍使用调试签名，适合你自己安装、备份和继续维护
+- 如果以后换了电脑或调试 keystore 变了，覆盖安装旧包可能失败，需要先卸载再装
+- 如果你要长期平滑升级，建议尽早换成自己的正式 keystore
+- 仓库根目录已经提供 `keystore.properties.example`
 
 如果以后只是忘了整个项目怎么维护，直接看：
 

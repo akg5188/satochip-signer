@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BUILD_ROOT="${BUILD_ROOT:-/tmp/satochip-wallet-ascii-build}"
-BUILD_DIR="$BUILD_ROOT/satochip-wallet-android"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BUILD_ROOT="${BUILD_ROOT:-/tmp/tp-relay-ascii-build}"
+BUILD_DIR="${BUILD_DIR:-$BUILD_ROOT/tp-satochip-signer-android}"
 GRADLE_USER_HOME="${GRADLE_USER_HOME:-$BUILD_ROOT/.gradle}"
-OUT_DIR="${OUT_DIR:-$SRC_DIR/dist}"
-VARIANT="${1:-release}"
+OUT_DIR="${OUT_DIR:-$ROOT_DIR/dist}"
+OUT_APK="$OUT_DIR/tp-qr-relay-android-latest.apk"
+OUT_SUM="$OUT_APK.sha256"
+OUT_INFO="$OUT_DIR/tp-qr-relay-android-latest.build-info.txt"
 
 detect_java_home() {
   if [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/java" ]]; then
@@ -18,7 +19,7 @@ detect_java_home() {
     dirname "$(dirname "$(readlink -f "$(command -v java)")")"
     return
   fi
-  echo ""
+  echo "" 
 }
 
 read_sdk_dir_from_properties() {
@@ -36,7 +37,7 @@ detect_android_sdk() {
   local candidate
 
   for candidate in \
-    "$(read_sdk_dir_from_properties "$SRC_DIR/local.properties")" \
+    "$(read_sdk_dir_from_properties "$ROOT_DIR/local.properties")" \
     "${ANDROID_SDK_ROOT:-}" \
     "${ANDROID_HOME:-}" \
     "/home/ak/Android/Sdk" \
@@ -72,23 +73,6 @@ EOF
   fi
 }
 
-case "$VARIANT" in
-  release)
-    GRADLE_TASK=":app:assembleRelease"
-    SRC_APK="$BUILD_DIR/app/build/outputs/apk/release/app-release.apk"
-    OUT_APK="$OUT_DIR/satochip-wallet-release.apk"
-    ;;
-  debug)
-    GRADLE_TASK=":app:assembleDebug"
-    SRC_APK="$BUILD_DIR/app/build/outputs/apk/debug/app-debug.apk"
-    OUT_APK="$OUT_DIR/satochip-wallet-debug.apk"
-    ;;
-  *)
-    echo "用法: ./scripts/build_local_ascii.sh [release|debug]" >&2
-    exit 1
-    ;;
-esac
-
 SDK_DIR="$(detect_android_sdk)"
 if [[ -z "$SDK_DIR" ]]; then
   cat >&2 <<'EOF'
@@ -119,16 +103,26 @@ require_sdk_component "$SDK_DIR/platforms/android-34" "Android SDK Platform 34"
 require_sdk_component "$SDK_DIR/build-tools/35.0.0" "Android Build Tools 35.0.0"
 require_sdk_component "$SDK_DIR/platform-tools" "Android platform-tools"
 
-mkdir -p "$BUILD_ROOT" "$GRADLE_USER_HOME"
+mkdir -p "$BUILD_ROOT" "$GRADLE_USER_HOME" "$OUT_DIR"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 rsync -a \
+  --exclude '.git' \
   --exclude '.gradle' \
-  --exclude 'app/build' \
+  --exclude 'build' \
   --exclude 'dist' \
   --exclude 'local.properties' \
-  "$SRC_DIR/" "$BUILD_DIR/"
+  "$ROOT_DIR/gradle" \
+  "$ROOT_DIR/gradlew" \
+  "$ROOT_DIR/build.gradle.kts" \
+  "$ROOT_DIR/settings.gradle.kts" \
+  "$ROOT_DIR/gradle.properties" \
+  "$ROOT_DIR/local.properties.example" \
+  "$ROOT_DIR/app" \
+  "$ROOT_DIR/satochip-lib" \
+  "$ROOT_DIR/pi-signer" \
+  "$BUILD_DIR/"
 
 printf 'sdk.dir=%s\n' "$SDK_DIR" > "$BUILD_DIR/local.properties"
 
@@ -140,10 +134,26 @@ if [[ -z "$JAVA_HOME" ]]; then
 fi
 export GRADLE_USER_HOME
 export PATH="$JAVA_HOME/bin:$PATH"
-./gradlew --no-daemon "$GRADLE_TASK" --console=plain
+./gradlew --no-daemon :app:assembleRelease --console=plain
 
-mkdir -p "$OUT_DIR"
-cp -f "$SRC_APK" "$OUT_APK"
-sha256sum "$OUT_APK" > "$OUT_APK.sha256"
+cp -f "$BUILD_DIR/app/build/outputs/apk/release/app-release.apk" "$OUT_APK"
+sha256sum "$OUT_APK" > "$OUT_SUM"
+
+repo_head="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+apk_sha="$(awk 'NR==1 {print $1}' "$OUT_SUM")"
+version_name="$(awk -F'"' '/versionName = / {print $2; exit}' "$ROOT_DIR/app/build.gradle.kts")"
+build_time_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+cat > "$OUT_INFO" <<EOF
+module=app
+artifact_path=dist/$(basename "$OUT_APK")
+artifact_sha256=$apk_sha
+version_name=$version_name
+repo_head=$repo_head
+build_script=scripts/build_tp_relay_apk.sh
+build_time_utc=$build_time_utc
+EOF
 
 echo "APK written to: $OUT_APK"
+echo "SHA256 file:    $OUT_SUM"
+echo "Build info:     $OUT_INFO"

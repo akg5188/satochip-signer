@@ -29,11 +29,28 @@
 
 - [用户使用教程](docs/使用教程.zh-CN.md)
 - [开发维护指南](docs/开发维护指南.zh-CN.md)
+- [安卓构建环境准备](../docs/安卓构建环境准备.zh-CN.md)
 
 ## 直接下载 APK
 
-- [release APK](https://github.com/akg5188/tp-satochip-signer/releases/download/wallet-android-20260318-1717/satochip-wallet-release.apk)
-- [release APK sha256](https://github.com/akg5188/tp-satochip-signer/releases/download/wallet-android-20260318-1717/satochip-wallet-release.apk.sha256)
+- 目标稳定文件名：`dist/satochip-wallet-release.apk`
+- 对应校验文件：`dist/satochip-wallet-release.apk.sha256`
+- 如果仓库里当前没有这两个文件，先执行标准构建脚本生成
+
+## 标准构建
+
+优先使用仓库根目录下的标准脚本：
+
+```bash
+bash scripts/build_wallet_release.sh
+```
+
+输出：
+
+```text
+dist/satochip-wallet-release.apk
+dist/satochip-wallet-release.apk.sha256
+```
 
 ## 直接编译
 
@@ -79,7 +96,13 @@ dist/satochip-wallet-release.apk.sha256
 - Android Build Tools 35.0.0
 - Android 8.0 及以上设备
 
+第一次换机器时，优先看：
+
+- [../docs/安卓构建环境准备.zh-CN.md](../docs/安卓构建环境准备.zh-CN.md)
+
 ## 当前说明
 
 - 当前 release APK 使用调试签名，适合你自己安装、备份和继续维护
+- 如果以后换机器、换用户或调试 keystore 变化，覆盖安装旧包可能失败，需要先卸载再装
 - 如果以后要正式分发或上架，再换成你自己的正式 keystore
+- `wallet/` 目录里已经提供 `keystore.properties.example`
