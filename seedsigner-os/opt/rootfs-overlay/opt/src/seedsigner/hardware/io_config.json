@@ -58,7 +58,7 @@
         ],
         "KEY_PRESS": [
           "/dev/gpiochip0",
-          20,
+          13,
           "pull_up"
         ],
         "KEY1": [
@@ -68,7 +68,7 @@
         ],
         "KEY2": [
           "/dev/gpiochip0",
-          13,
+          20,
           "pull_up"
         ],
         "KEY3": [
