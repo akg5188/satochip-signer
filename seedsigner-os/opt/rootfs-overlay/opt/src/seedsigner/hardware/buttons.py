@@ -310,8 +310,11 @@ class HardwareButtons(Singleton):
         if cls._instance is None:
             cls._instance = cls.__new__(cls)
 
-    def wait_for(self, keys: List = []) -> int:
+    def wait_for(self, keys: List = None, check_release: bool = False, release_keys: List = None) -> int:
         from seedsigner.controller import Controller
+
+        keys = keys or []
+        release_keys = release_keys or keys
 
         controller = Controller.get_instance()
         self.override_ind = False
@@ -334,6 +337,8 @@ class HardwareButtons(Singleton):
                         continue
                     is_low = not self._gpio_pins[key].read()
                     if is_low:
+                        if check_release and key in release_keys and not HardwareButtonsConstants.release_lock:
+                            continue
                         low_since = self._low_since_ms.get(key)
                         if low_since is None:
                             self._low_since_ms[key] = cur_time
@@ -341,19 +346,27 @@ class HardwareButtons(Singleton):
                         if cur_time - low_since < self.debounce_threshold_ms:
                             continue
                         if self.cur_input != key:
+                            if check_release and key in release_keys:
+                                HardwareButtonsConstants.release_lock = False
                             self.cur_input = key
                             self.cur_input_started = cur_time
                             self.last_input_time = cur_time
                             return key
                         else:
                             if cur_time - self.last_input_time > self.next_repeat_threshold:
+                                if check_release and key in release_keys:
+                                    HardwareButtonsConstants.release_lock = False
                                 self.cur_input_started = cur_time
                                 self.last_input_time = cur_time
                                 return key
                             elif cur_time - self.cur_input_started > self.first_repeat_threshold:
+                                if check_release and key in release_keys:
+                                    HardwareButtonsConstants.release_lock = False
                                 self.last_input_time = cur_time
                                 return key
                     else:
+                        if check_release and key in release_keys:
+                            HardwareButtonsConstants.release_lock = True
                         self._low_since_ms[key] = None
                         if self.cur_input == key:
                             self.cur_input = None
@@ -363,27 +376,46 @@ class HardwareButtons(Singleton):
                 for event in pygame.event.get():
                     if event.type == pygame.KEYDOWN:
                         mapped = self.key_map.get(event.key)
+                    elif event.type == pygame.KEYUP:
+                        HardwareButtonsConstants.release_lock = True
+                        if self.cur_input == self.key_map.get(event.key):
+                            self.cur_input = None
+                            self.cur_input_started = None
+                        mapped = None
                     elif event.type == pygame.MOUSEBUTTONDOWN:
                         mapped = None
                         for key, rect in self.button_rects.items():
                             if rect.collidepoint(event.pos):
                                 mapped = key
                                 break
+                    elif event.type == pygame.MOUSEBUTTONUP:
+                        HardwareButtonsConstants.release_lock = True
+                        self.cur_input = None
+                        self.cur_input_started = None
+                        mapped = None
                     else:
                         mapped = None
 
                     if mapped in keys:
+                        if check_release and mapped in release_keys and not HardwareButtonsConstants.release_lock:
+                            continue
                         if self.cur_input != mapped:
+                            if check_release and mapped in release_keys:
+                                HardwareButtonsConstants.release_lock = False
                             self.cur_input = mapped
                             self.cur_input_started = cur_time
                             self.last_input_time = cur_time
                             return mapped
                         else:
                             if cur_time - self.last_input_time > self.next_repeat_threshold:
+                                if check_release and mapped in release_keys:
+                                    HardwareButtonsConstants.release_lock = False
                                 self.cur_input_started = cur_time
                                 self.last_input_time = cur_time
                                 return mapped
                             elif cur_time - self.cur_input_started > self.first_repeat_threshold:
+                                if check_release and mapped in release_keys:
+                                    HardwareButtonsConstants.release_lock = False
                                 self.last_input_time = cur_time
                                 return mapped
                 time.sleep(0.01)
@@ -391,8 +423,15 @@ class HardwareButtons(Singleton):
     def update_last_input_time(self):
         self.last_input_time = int(time.time() * 1000)
 
-    def trigger_override(self) -> bool:
+    def trigger_override(self, force_release: bool = False) -> bool:
+        if force_release:
+            HardwareButtonsConstants.release_lock = True
         self.override_ind = True
+        return True
+
+    def force_release(self) -> bool:
+        HardwareButtonsConstants.release_lock = True
+        return True
 
     def check_for_low(self, key=None, keys: List = None) -> bool:
         if key:
@@ -535,3 +574,4 @@ class HardwareButtonsConstants:
 
     KEYS__LEFT_RIGHT_UP_DOWN = [KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN]
     KEYS__ANYCLICK = [KEY_PRESS, KEY1, KEY2, KEY3]
+    release_lock = True

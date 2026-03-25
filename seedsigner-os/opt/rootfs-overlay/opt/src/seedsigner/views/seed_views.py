@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 class SeedsMenuView(View):
-    LOAD = ButtonOption("Load a seed")
+    LOAD = ButtonOption("导入助记词")
 
     def __init__(self):
         super().__init__()
@@ -80,6 +80,9 @@ class SeedsMenuView(View):
     def run(self):
         if not self.seeds:
             # Nothing to do here unless we have a seed loaded
+            if os.environ.get("TP_ONLY_MODE") == "1":
+                from seedsigner.views.tp_views import ToolsTpSeedToolsView
+                return Destination(ToolsTpSeedToolsView, clear_history=True)
             return Destination(LoadSeedView, clear_history=True)
 
         button_data = []
@@ -94,7 +97,7 @@ class SeedsMenuView(View):
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title=_("In-Memory Seeds"),
+            title="已加载助记词",
             is_button_text_centered=False,
             button_data=button_data
         )
@@ -258,20 +261,20 @@ class SeedSelectSeedView(View):
     Loading seeds, passphrases, etc
 ****************************************************************************"""
 class LoadSeedView(View):
-    SEED_QR = ButtonOption(" Scan a SeedQR", SeedSignerIconConstants.QRCODE)
-    TYPE_12WORD = ButtonOption("Enter 12-word seed", FontAwesomeIconConstants.KEYBOARD, return_data=12)
-    TYPE_15WORD = ButtonOption("Enter 15-word seed", FontAwesomeIconConstants.KEYBOARD, return_data=15)
-    TYPE_18WORD = ButtonOption("Enter 18-word seed", FontAwesomeIconConstants.KEYBOARD, return_data=18)
-    TYPE_21WORD = ButtonOption("Enter 21-word seed", FontAwesomeIconConstants.KEYBOARD, return_data=21)
-    TYPE_24WORD = ButtonOption("Enter 24-word seed", FontAwesomeIconConstants.KEYBOARD, return_data=24)
-    TYPE_ELECTRUM = ButtonOption("Enter Electrum seed", FontAwesomeIconConstants.KEYBOARD)
-    TYPE_AEZEED = ButtonOption("Enter Aezeed seed", FontAwesomeIconConstants.KEYBOARD)
-    TYPE_SLIP39 = ButtonOption("SLIP-39 Shares", FontAwesomeIconConstants.KEYBOARD)
-    IMPORT_SEEDKEEPER = ButtonOption("From SeedKeeper", FontAwesomeIconConstants.LOCK)
-    BITBOX_BACKUP = ButtonOption("BitBox02 backup", SeedSignerIconConstants.MICROSD)
-    PASSPORT_BACKUP = ButtonOption("Passport backup", SeedSignerIconConstants.MICROSD)
-    TAPSIGNER_BACKUP = ButtonOption("TAPSIGNER backup", SeedSignerIconConstants.MICROSD)
-    CREATE = ButtonOption(" Create a seed", SeedSignerIconConstants.PLUS)
+    SEED_QR = ButtonOption("扫描 SeedQR", SeedSignerIconConstants.QRCODE)
+    TYPE_12WORD = ButtonOption("输入 12 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=12)
+    TYPE_15WORD = ButtonOption("输入 15 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=15)
+    TYPE_18WORD = ButtonOption("输入 18 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=18)
+    TYPE_21WORD = ButtonOption("输入 21 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=21)
+    TYPE_24WORD = ButtonOption("输入 24 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=24)
+    TYPE_ELECTRUM = ButtonOption("输入 Electrum 助记词", FontAwesomeIconConstants.KEYBOARD)
+    TYPE_AEZEED = ButtonOption("输入 Aezeed 助记词", FontAwesomeIconConstants.KEYBOARD)
+    TYPE_SLIP39 = ButtonOption("输入 SLIP-39 分片", FontAwesomeIconConstants.KEYBOARD)
+    IMPORT_SEEDKEEPER = ButtonOption("从 SeedKeeper 导入", FontAwesomeIconConstants.LOCK)
+    BITBOX_BACKUP = ButtonOption("导入 BitBox02 备份", SeedSignerIconConstants.MICROSD)
+    PASSPORT_BACKUP = ButtonOption("导入 Passport 备份", SeedSignerIconConstants.MICROSD)
+    TAPSIGNER_BACKUP = ButtonOption("导入 TAPSIGNER 备份", SeedSignerIconConstants.MICROSD)
+    CREATE = ButtonOption("创建助记词", SeedSignerIconConstants.PLUS)
 
     def run(self):
         seed_lengths = self.settings.get_value(SettingsConstants.SETTING__SEED_WORD_LENGTHS)
@@ -312,7 +315,7 @@ class LoadSeedView(View):
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title=_("Load A Seed"),
+            title="导入助记词",
             is_button_text_centered=False,
             button_data=button_data
         )
@@ -1032,8 +1035,7 @@ class SeedMnemonicEntryView(View):
     def run(self):
         ret = self.run_screen(
             seed_screens.SeedMnemonicEntryScreen,
-            # TRANSLATOR_NOTE: Inserts the word number (e.g. "Seed Word #6")
-            title=_("Seed Word #{}").format(self.cur_word_index + 1),  # Human-readable 1-indexing!
+            title=f"第 {self.cur_word_index + 1} 个单词",
             initial_letters=list(self.cur_word) if self.cur_word else ["a"],
             wordlist=Seed.get_wordlist(wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE)),
         )
@@ -1043,6 +1045,9 @@ class SeedMnemonicEntryView(View):
                 return Destination(BackStackView)
             else:
                 self.controller.storage.discard_pending_mnemonic()
+                if os.environ.get("TP_ONLY_MODE") == "1":
+                    from seedsigner.views.tp_views import ToolsTpSeedToolsView
+                    return Destination(ToolsTpSeedToolsView, clear_history=True)
                 return Destination(MainMenuView)
         
         # ret will be our new mnemonic word
@@ -1084,13 +1089,17 @@ class SeedMnemonicEntryView(View):
             if isinstance(pending_seed, AezeedSeed) and pending_seed.seed_bytes is None:
                 return Destination(SeedAezeedPassphraseModeView)
 
+            if os.environ.get("TP_ONLY_MODE") == "1" and not self.controller.resume_main_flow:
+                seed_num = self.controller.storage.finalize_pending_seed()
+                return Destination(SeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
+
             return Destination(SeedFinalizeView)
 
 
 
 class SeedMnemonicInvalidView(View):
-    EDIT = ButtonOption("Review & Edit")
-    DISCARD = ButtonOption("Discard", button_label_color="red")
+    EDIT = ButtonOption("检查并修改")
+    DISCARD = ButtonOption("丢弃", button_label_color="red")
 
     def __init__(self):
         super().__init__()
@@ -1101,10 +1110,10 @@ class SeedMnemonicInvalidView(View):
         button_data = [self.EDIT, self.DISCARD]
         selected_menu_num = self.run_screen(
             DireWarningScreen,
-            title=_("Invalid Mnemonic!"),
+            title="助记词无效",
             status_icon_name=SeedSignerIconConstants.ERROR,
             status_headline=None,
-            text=_("Checksum failure; not a valid seed phrase."),
+            text="校验和错误，不是有效的助记词。",
             show_back_button=False,
             button_data=button_data,
         )
@@ -1114,15 +1123,18 @@ class SeedMnemonicInvalidView(View):
 
         elif button_data[selected_menu_num] == self.DISCARD:
             self.controller.storage.discard_pending_mnemonic()
+            if os.environ.get("TP_ONLY_MODE") == "1":
+                from seedsigner.views.tp_views import ToolsTpSeedToolsView
+                return Destination(ToolsTpSeedToolsView, clear_history=True)
             return Destination(MainMenuView)
 
 
 
 class SeedFinalizeView(View):
-    FINALIZE = ButtonOption("Done")
-    LOAD_SEEDKEEPER = ButtonOption("Load Passphrase")
-    TYPE_PASSPHRASE = ButtonOption("Type Passphrase")
-    SCAN_PASSPHRASE = ButtonOption("Scan Passphrase")
+    FINALIZE = ButtonOption("完成")
+    LOAD_SEEDKEEPER = ButtonOption("加载口令")
+    TYPE_PASSPHRASE = ButtonOption("输入口令")
+    SCAN_PASSPHRASE = ButtonOption("扫描口令")
 
     def __init__(self):
         super().__init__()
@@ -1159,6 +1171,10 @@ class SeedFinalizeView(View):
 
 
     def run(self):
+        if os.environ.get("TP_ONLY_MODE") == "1" and not self.controller.resume_main_flow:
+            seed_num = self.controller.storage.finalize_pending_seed()
+            return Destination(SeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
+
         button_data = [self.FINALIZE]
         #self.TYPE_PASSPHRASE.button_label = self.seed.passphrase_label
         if isinstance(self.seed, (XprvSeed, AezeedSeed)):
@@ -1194,9 +1210,9 @@ class SeedFinalizeView(View):
 
 
 class SeedAezeedPassphraseModeView(View):
-    LOAD_SEEDKEEPER = ButtonOption("Load from SeedKeeper")
-    TYPE_PASSPHRASE = ButtonOption("Type Passphrase")
-    SCAN_PASSPHRASE = ButtonOption("Scan Passphrase")
+    LOAD_SEEDKEEPER = ButtonOption("从 SeedKeeper 加载")
+    TYPE_PASSPHRASE = ButtonOption("输入口令")
+    SCAN_PASSPHRASE = ButtonOption("扫描口令")
 
     def __init__(self):
         super().__init__()
@@ -1212,11 +1228,11 @@ class SeedAezeedPassphraseModeView(View):
 
         selected_menu_num = self.run_screen(
             LargeIconStatusScreen,
-            title=_("Aezeed passphrase"),
+            title="Aezeed 口令",
             status_icon_name=SeedSignerIconConstants.FINGERPRINT,
             status_icon_size=GUIConstants.ICON_LARGE_BUTTON_SIZE,
             status_color=GUIConstants.INFO_COLOR,
-            text=_("Passphrase required\nfor this mnemonic."),
+            text="该助记词需要口令。",
             is_button_text_centered=False,
             button_data=button_data,
             show_back_button=True,
@@ -1587,8 +1603,8 @@ class SeedReviewPassphraseView(View):
 
 
 class SeedDiscardView(View):
-    KEEP = ButtonOption("Keep Seed")
-    DISCARD = ButtonOption("Discard", button_label_color="red")
+    KEEP = ButtonOption("保留助记词")
+    DISCARD = ButtonOption("删除", button_label_color="red")
 
     def __init__(self, seed_num: int = None):
         super().__init__()
@@ -1603,11 +1619,10 @@ class SeedDiscardView(View):
         button_data = [self.KEEP, self.DISCARD]
 
         fingerprint = self.seed.get_fingerprint(self.settings.get_value(SettingsConstants.SETTING__NETWORK))
-        # TRANSLATOR_NOTE: Inserts the seed fingerprint
-        text = _("Wipe seed {} from the device?").format(fingerprint)
+        text = f"要从设备中删除这条助记词吗？\n{fingerprint}"
         selected_menu_num = self.run_screen(
             WarningScreen,
-            title=_("Discard Seed?"),
+            title="删除助记词？",
             status_headline=None,
             text=text,
             show_back_button=False,
@@ -1626,6 +1641,11 @@ class SeedDiscardView(View):
                 self.controller.discard_seed(self.seed_num)
             else:
                 self.controller.storage.clear_pending_seed()
+            if os.environ.get("TP_ONLY_MODE") == "1":
+                if self.controller.storage.seeds:
+                    return Destination(SeedsMenuView, clear_history=True)
+                from seedsigner.views.tp_views import ToolsTpSeedToolsView
+                return Destination(ToolsTpSeedToolsView, clear_history=True)
             return Destination(MainMenuView, clear_history=True)
 
 
@@ -2004,14 +2024,14 @@ class SeedSlip39RegenerateSharesView(View):
     Views for actions on individual seeds:
 ****************************************************************************"""
 class SeedOptionsView(View):
-    SCAN_PSBT = ButtonOption("Scan PSBT", SeedSignerIconConstants.QRCODE)
-    VERIFY_ADDRESS = ButtonOption("Verify Addr")
-    EXPORT_XPUB = ButtonOption("Export Xpub")
-    EXPLORER = ButtonOption("Address Explorer")
-    SIGN_MESSAGE = ButtonOption("Sign Message")
-    BACKUP = ButtonOption("Backup Seed", right_icon_name=SeedSignerIconConstants.CHEVRON_RIGHT)
-    BIP85_CHILD_SEED = ButtonOption("BIP-85 Child Seed")
-    DISCARD = ButtonOption("Discard Seed", button_label_color="red")
+    SCAN_PSBT = ButtonOption("扫描 PSBT", SeedSignerIconConstants.QRCODE)
+    VERIFY_ADDRESS = ButtonOption("验证地址")
+    EXPORT_XPUB = ButtonOption("导出 Xpub")
+    EXPLORER = ButtonOption("地址浏览器")
+    SIGN_MESSAGE = ButtonOption("签名消息")
+    BACKUP = ButtonOption("备份助记词", right_icon_name=SeedSignerIconConstants.CHEVRON_RIGHT)
+    BIP85_CHILD_SEED = ButtonOption("BIP-85 子助记词")
+    DISCARD = ButtonOption("删除助记词", button_label_color="red")
 
 
     def __init__(self, seed_num: int):
@@ -2081,7 +2101,8 @@ class SeedOptionsView(View):
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
-            # Force BACK to always return to the Main Menu
+            if os.environ.get("TP_ONLY_MODE") == "1":
+                return Destination(SeedsMenuView, clear_history=True)
             return Destination(MainMenuView)
 
         if button_data[selected_menu_num] == self.SCAN_PSBT:
@@ -2117,11 +2138,11 @@ class SeedOptionsView(View):
 
 
 class SeedBackupView(View):
-    VIEW_WORDS = ButtonOption("View Seed Words")
-    EXPORT_SEEDQR = ButtonOption("Export as SeedQR")
-    EXPORT_PLAINTEXTQR = ButtonOption("Export as Plaintext QR")
-    TO_SEEDKEEPER = ButtonOption("To SeedKeeper")
-    REGENERATE_SHARES = ButtonOption("Regenerate Shares")
+    VIEW_WORDS = ButtonOption("查看助记词")
+    EXPORT_SEEDQR = ButtonOption("导出为 SeedQR")
+    EXPORT_PLAINTEXTQR = ButtonOption("导出为明文二维码")
+    TO_SEEDKEEPER = ButtonOption("写入 SeedKeeper")
+    REGENERATE_SHARES = ButtonOption("重新生成分片")
 
     def __init__(self, seed_num):
         super().__init__()
@@ -2654,11 +2675,16 @@ class SeedWordsWarningView(View):
         if self.seed_num is not None:
             seed = self.controller.get_seed(self.seed_num)
             if isinstance(seed, AezeedSeed) and len(seed.passphrase) > 0:
-                warning_text = _("Passphrase was used.\nYou'll need words + passphrase.")
+                warning_text = "此助记词使用了口令。\n恢复时需要助记词和口令。"
+            else:
+                warning_text = "请务必离线妥善保存助记词，不要让任何联网设备看到。"
+        else:
+            warning_text = "请务必离线妥善保存助记词，不要让任何联网设备看到。"
 
         selected_menu_num = self.run_screen(
             DireWarningScreen,
             text=warning_text,
+            button_data=[ButtonOption("我明白")],
         )
 
         if selected_menu_num == 0:
@@ -2671,8 +2697,8 @@ class SeedWordsWarningView(View):
 
 
 class SeedWordsView(View):
-    NEXT = ButtonOption("Next")
-    DONE = ButtonOption("Done")
+    NEXT = ButtonOption("下一页")
+    DONE = ButtonOption("完成")
 
     def __init__(self, seed_num: int, bip85_data: dict = None, page_index: int = 0, share_index: int | None = None):
         super().__init__()
@@ -2710,7 +2736,7 @@ class SeedWordsView(View):
                         button_data=[ButtonOption(_("OK"))],
                     )
                     return Destination(BackStackView)
-            title = _("Seed Words")
+            title = "助记词"
         words = mnemonic[self.page_index*words_per_page:(self.page_index + 1)*words_per_page]
 
         button_data = []
@@ -2868,10 +2894,10 @@ class SeedBIP85InvalidChildIndexView(View):
     Seed Words Backup Test
 ****************************************************************************"""
 class SeedWordsBackupTestPromptView(View):
-    VERIFY = ButtonOption("Verify")
-    REVIEW = ButtonOption("Review")
-    SKIP = ButtonOption("Skip")
-    FINALIZE = ButtonOption("Finalize child")
+    VERIFY = ButtonOption("验证备份")
+    REVIEW = ButtonOption("重新查看")
+    SKIP = ButtonOption("跳过")
+    FINALIZE = ButtonOption("完成子助记词")
 
     def __init__(self, seed_num: int, bip85_data: dict = None, share_index: int | None = None):
         super().__init__()
@@ -2970,8 +2996,7 @@ class SeedWordsBackupTestView(View):
         button_data = [real_word, fake_word1, fake_word2, fake_word3]
         random.shuffle(button_data)
 
-        # TRANSLATOR_NOTE: Inserts the word number (e.g. "Verify Word #1")
-        title = _("Verify Word #{}").format(self.cur_index + 1)
+        title = f"验证第 {self.cur_index + 1} 个单词"
         selected_menu_num = ButtonListScreen(
             title=title,
             show_back_button=False,
@@ -3012,8 +3037,8 @@ class SeedWordsBackupTestView(View):
 
 
 class SeedWordsBackupTestMistakeView(View):
-    REVIEW = ButtonOption("Review Seed Words")
-    RETRY = ButtonOption("Try Again")
+    REVIEW = ButtonOption("查看助记词")
+    RETRY = ButtonOption("再试一次")
 
     def __init__(self, seed_num: int, bip85_data: dict = None, cur_index: int = None, wrong_word: str = None, confirmed_list: list[bool] = None, share_index: int | None = None):
         super().__init__()
@@ -3029,13 +3054,13 @@ class SeedWordsBackupTestMistakeView(View):
         button_data = [self.REVIEW, self.RETRY]
 
         # TRANSLATOR_NOTE: Inserts the word number and the word (e.g. "Word #1 is not "apple"!")
-        text = _("Word #{} is not \"{}\"!").format(self.cur_index + 1, self.wrong_word)
+        text = f"第 {self.cur_index + 1} 个单词不是 “{self.wrong_word}”！"
 
         # TRANSLATOR_NOTE: User selected the wrong word during the mnemonic backup test (e.g. incorrectly said the 5th word was "zoo")
-        status_headline = _("Wrong Word!")
+        status_headline = "单词选错了"
 
         selected_menu_num = DireWarningScreen(
-            title=_("Verification Error"),
+            title="验证失败",
             show_back_button=False,
             status_icon_name=SeedSignerIconConstants.ERROR,
             status_headline=status_headline,
@@ -3074,11 +3099,11 @@ class SeedWordsBackupTestSuccessView(View):
     def run(self):
         from seedsigner.gui.screens.screen import LargeIconStatusScreen
         LargeIconStatusScreen(
-            title=_("Backup Verified"),
+            title="备份已验证",
             show_back_button=False,
-            status_headline=_("Success!"),
-            text=_("All mnemonic backup words were successfully verified!"),
-            button_data=[ButtonOption("OK")]
+            status_headline="成功",
+            text="所有助记词都已验证通过。",
+            button_data=[ButtonOption("确定")]
         ).display()
 
         # if BIP-85 child is backed-up, setup to finalize it.

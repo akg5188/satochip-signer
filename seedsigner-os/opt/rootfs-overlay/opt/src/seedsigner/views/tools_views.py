@@ -108,6 +108,14 @@ BIP85_APP_BASE85 = 707785
 BIP85_APP_DICE = 89101
 
 
+def _tp_post_main_destination() -> Destination:
+    if os.environ.get("TP_ONLY_MODE") == "1":
+        from seedsigner.views.tp_views import ToolsTpHomeView
+
+        return Destination(ToolsTpHomeView, clear_history=True)
+    return Destination(MainMenuView)
+
+
 def _clear_password_entropy_cache(controller) -> None:
     controller.password_generator_entropy_cache = None
 
@@ -662,16 +670,16 @@ class ToolsImageEntropyFinalImageView(View):
 
 
 class ToolsImageEntropyMnemonicLengthView(View):
-    TWELVE_WORDS = ButtonOption("12 words", return_data=12)
-    FIFTEEN_WORDS = ButtonOption("15 words", return_data=15)
-    EIGHTEEN_WORDS = ButtonOption("18 words", return_data=18)
-    TWENTYONE_WORDS = ButtonOption("21 words", return_data=21)
-    TWENTYFOUR_WORDS = ButtonOption("24 words", return_data=24)
+    TWELVE_WORDS = ButtonOption("12 个单词", return_data=12)
+    FIFTEEN_WORDS = ButtonOption("15 个单词", return_data=15)
+    EIGHTEEN_WORDS = ButtonOption("18 个单词", return_data=18)
+    TWENTYONE_WORDS = ButtonOption("21 个单词", return_data=21)
+    TWENTYFOUR_WORDS = ButtonOption("24 个单词", return_data=24)
 
     def run(self):
         if getattr(self.controller, "create_slip39", False):
-            twenty = ButtonOption("20 words", return_data=20)
-            thirty_three = ButtonOption("33 words", return_data=33)
+            twenty = ButtonOption("20 个单词", return_data=20)
+            thirty_three = ButtonOption("33 个单词", return_data=33)
             button_data = [twenty, thirty_three]
         else:
             allowed = self.settings.get_value(SettingsConstants.SETTING__SEED_WORD_LENGTHS)
@@ -685,7 +693,7 @@ class ToolsImageEntropyMnemonicLengthView(View):
             button_data = [options[l] for l in allowed]
 
         selected_menu_num = ButtonListScreen(
-            title=_("Mnemonic Length?"),
+            title="助记词长度",
             button_data=button_data,
         ).display()
 
@@ -749,17 +757,17 @@ class ToolsImageEntropyMnemonicLengthView(View):
 class ToolsDiceEntropyMnemonicLengthView(View):
     """Prompt for mnemonic length when using dice entropy."""
 
-    TWELVE = ButtonOption("12 words", return_data=12)
-    FIFTEEN = ButtonOption("15 words", return_data=15)
-    EIGHTEEN = ButtonOption("18 words", return_data=18)
-    TWENTY_ONE = ButtonOption("21 words", return_data=21)
-    TWENTY_FOUR = ButtonOption("24 words", return_data=24)
+    TWELVE = ButtonOption("12 个单词", return_data=12)
+    FIFTEEN = ButtonOption("15 个单词", return_data=15)
+    EIGHTEEN = ButtonOption("18 个单词", return_data=18)
+    TWENTY_ONE = ButtonOption("21 个单词", return_data=21)
+    TWENTY_FOUR = ButtonOption("24 个单词", return_data=24)
     TWENTY = ButtonOption(
-        _("20 words ({} rolls)").format(mnemonic_generation.DICE_ROLLS_REQUIRED[12]),
+        f"20 个单词（{mnemonic_generation.DICE_ROLLS_REQUIRED[12]} 次掷骰）",
         return_data=mnemonic_generation.DICE_ROLLS_REQUIRED[12],
     )
     THIRTY_THREE = ButtonOption(
-        _("33 words ({} rolls)").format(mnemonic_generation.DICE_ROLLS_REQUIRED[24]),
+        f"33 个单词（{mnemonic_generation.DICE_ROLLS_REQUIRED[24]} 次掷骰）",
         return_data=mnemonic_generation.DICE_ROLLS_REQUIRED[24],
     )
 
@@ -777,7 +785,7 @@ class ToolsDiceEntropyMnemonicLengthView(View):
             }
             button_data = [options[l] for l in allowed]
         selected_menu_num = ButtonListScreen(
-            title=_("Mnemonic Length"),
+            title="助记词长度",
             is_bottom_list=True,
             is_button_text_centered=True,
             button_data=button_data,
@@ -1396,17 +1404,17 @@ class ToolsTextQRView(View):
     Smartcard Views
 ****************************************************************************"""
 class ToolsSmartcardMenuView(View):
-    COMMON = ButtonOption("Common Functions")
-    SATOCHIP = ButtonOption("Satochip Functions")
-    SEEDKEEPER = ButtonOption("SeedKeeper Functions")
-    Satochip_DIY = ButtonOption("DIY Tools")
+    COMMON = ButtonOption("通用功能")
+    SATOCHIP = ButtonOption("Satochip 功能")
+    SEEDKEEPER = ButtonOption("SeedKeeper 功能")
+    Satochip_DIY = ButtonOption("DIY 工具")
 
     def run(self):
         button_data = [self.COMMON, self.SEEDKEEPER, self.SATOCHIP, self.Satochip_DIY]
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title="Smartcard Tools",
+            title="智能卡工具",
             is_button_text_centered=False,
             button_data=button_data
         )
@@ -1427,13 +1435,13 @@ class ToolsSmartcardMenuView(View):
             return Destination(ToolsSatochipDIYView)
 
 class ToolsCommonView(View):
-    FILTER = ButtonOption("Device Filter")
-    INFO = ButtonOption("Card Info")
-    GENUINE = ButtonOption("Genuine Check")
-    CHANGE_PIN = ButtonOption("Change PIN")
-    CHANGE_LABEL = ButtonOption("Change Label")
-    CHANGE_NFC = ButtonOption("Change NFC Policy")
-    FACTORY_RESET = ButtonOption("Factory Reset Card")
+    FILTER = ButtonOption("设备筛选")
+    INFO = ButtonOption("卡片信息")
+    GENUINE = ButtonOption("真伪检查")
+    CHANGE_PIN = ButtonOption("更改 PIN")
+    CHANGE_LABEL = ButtonOption("修改标签")
+    CHANGE_NFC = ButtonOption("修改 NFC 策略")
+    FACTORY_RESET = ButtonOption("恢复出厂")
 
     def run(self):
 
@@ -1449,7 +1457,7 @@ class ToolsCommonView(View):
 
         selected_menu_num = self.run_screen(
                 ButtonListScreen,
-                title="Common Tools",
+                title="通用工具",
                 is_button_text_centered=False,
                 button_data=button_data
             )
@@ -1662,7 +1670,7 @@ class ToolsSatochipChangePinView(View):
         if not Satochip_Connector:
             return Destination(BackStackView)
 
-        new_pin_str = seedkeeper_utils.prompt_for_pin(self, "New PIN")
+        new_pin_str = seedkeeper_utils.prompt_for_pin(self, "新 PIN")
 
         if new_pin_str is None:
             return Destination(BackStackView)
@@ -1691,7 +1699,7 @@ class ToolsSatochipChangePinView(View):
                 show_back_button=True,
             )
         
-        return Destination(MainMenuView)
+        return _tp_post_main_destination()
     
 class ToolsSatochipChangeNFCView(View):
     def run(self):
@@ -1773,10 +1781,11 @@ class ToolsSatochipFactoryResetView(View):
 
         ret = self.run_screen(
                 DireWarningScreen,
-                title="Warning",
+                title="警告",
                 status_headline=None,
-                text="FACTORY RESET WITHOUT A WORKING BACKUP WILL LEAD TO UNRECOVERABLE LOSS OF FUNDS",
+                text="如果没有可用备份就执行恢复出厂，资金将无法找回。",
                 show_back_button=True,
+                button_data=[ButtonOption("我明白")],
             )
         if ret == RET_CODE__BACK_BUTTON:
             return Destination(BackStackView)
@@ -1828,9 +1837,9 @@ class ToolsSatochipFactoryResetView(View):
                 print("Satochip below version v0.12-0.4 do not support factory reset!")
                 ret = self.run_screen(
                     WarningScreen,
-                    title="Failed",
+                    title="失败",
                     status_headline=None,
-                    text="Satochip below version v0.12-0.4 do not support factory reset!",
+                    text="低于 v0.12-0.4 的 Satochip 不支持恢复出厂。",
                     show_back_button=True,
                 )
 
@@ -1838,26 +1847,26 @@ class ToolsSatochipFactoryResetView(View):
             print(f"Unsupported card type: {Satochip_Connector.card_type}")
             ret = self.run_screen(
                 WarningScreen,
-                title="Failed",
+                title="失败",
                 status_headline=None,
-                text=f"Unsupported card type: {Satochip_Connector.card_type} (Try again)",
+                text=f"不支持的卡片类型：{Satochip_Connector.card_type}",
                 show_back_button=True,
             )
 
         if resetStatus:
             self.run_screen(
                 LargeIconStatusScreen,
-                title="Success",
+                title="成功",
                 status_headline=None,
-                text=f"Card Factory Reset",
+                text="卡片已恢复出厂设置。",
                 show_back_button=False,
             )
         else:
             ret = self.run_screen(
                 WarningScreen,
-                title="Aborted",
+                title="已取消",
                 status_headline=None,
-                text="Factory Reset Aborted",
+                text="恢复出厂已取消。",
                 show_back_button=True,
             )
 
@@ -1919,11 +1928,11 @@ class ToolsSatochipFactoryResetView(View):
                 self.loading_screen = LoadingScreenThread(text="Sending Command")
                 ret = self.run_screen(
                     DireWarningScreen,
-                    title="Warning",
+                    title="警告",
                     status_headline=None,
-                    text="Remove and re-insert the smartcard to continue factory reset." + remaining_string,
+                    text="请拔出并重新插入智能卡，然后继续恢复出厂。" + remaining_string,
                     show_back_button=True,
-                    button_data=[ButtonOption("Card Re-Inserted")]
+                    button_data=[ButtonOption("已重新插卡")]
                 )
                 if ret == RET_CODE__BACK_BUTTON:
                     return resetStatus
@@ -1964,7 +1973,7 @@ class ToolsSatochipFactoryResetView(View):
                         self.loading_screen.stop()
                         self.run_screen(
                             WarningScreen,
-                            title="Exception",
+                            title="异常",
                             status_headline=None,
                             text=str(e)[:100],
                             show_back_button=True,
@@ -1975,9 +1984,9 @@ class ToolsSatochipFactoryResetView(View):
                         print("Factory Reset Failed (setup not done)")
                         self.run_screen(
                             WarningScreen,
-                            title="Failure",
+                            title="失败",
                             status_headline=None,
-                            text="Factory Reset Failed (setup not done)",
+                            text="恢复出厂失败：卡片尚未完成初始化。",
                             show_back_button=True,
                         )
                         #print("In addition to the factory-reset command, you also need to add the '--enablefactoryreset' argument to enable it")
@@ -1985,7 +1994,7 @@ class ToolsSatochipFactoryResetView(View):
                     if sw1 == 0x00 and sw2 == 0x00:
                         print("Card not found, retrying...")
                         Satochip_Connector.card_disconnect()
-                        remaining_string = "\nCard not found. Please re-insert and try again."
+                        remaining_string = "\n未检测到卡片，请重新插入后再试。"
                         continue
                     if sw1 == 0xFF and sw2 == 0x00:
                         Satochip_Connector.card_disconnect()
@@ -1996,14 +2005,14 @@ class ToolsSatochipFactoryResetView(View):
                         print("RESET ABORTED: you must remove card after each reset!")
                         self.run_screen(
                             WarningScreen,
-                            title="Failure",
+                            title="失败",
                             status_headline=None,
-                            text="RESET ABORTED: you must remove card after each reset!",
+                            text="恢复出厂已中止：每次操作后都必须先拔出卡片。",
                             show_back_button=True,
                         )
                         break
                     elif sw1 == 0xFF and sw2 > 0x00:
-                        remaining_string = "\nREMAINING COUNTER: " + str(sw2)
+                        remaining_string = "\n剩余次数：" + str(sw2)
                         print("Remaining counter: " + str(sw2))
                         print("Please remove and reinsert card, then confirm that you want to continue...")
                         Satochip_Connector.card_disconnect()
@@ -2012,9 +2021,9 @@ class ToolsSatochipFactoryResetView(View):
                         print("Unknown error" + str(hex(256 * sw1 + sw2)))
                         self.run_screen(
                             WarningScreen,
-                            title="Failure",
+                            title="失败",
                             status_headline=None,
-                            text="Unknown error" + str(hex(256 * sw1 + sw2)),
+                            text="未知错误：" + str(hex(256 * sw1 + sw2)),
                             show_back_button=True,
                         )
                         break
@@ -2023,9 +2032,9 @@ class ToolsSatochipFactoryResetView(View):
                         print("Instruction not supported - error code: " + str(hex(256 * sw1 + sw2)))
                         self.run_screen(
                             WarningScreen,
-                            title="Failure",
+                            title="失败",
                             status_headline=None,
-                            text="Instruction not supported - error code: " + str(hex(256 * sw1 + sw2)),
+                            text="卡片不支持该恢复命令，错误码：" + str(hex(256 * sw1 + sw2)),
                             show_back_button=True,
                         )
                         break
@@ -2059,11 +2068,11 @@ class ToolsSatochipFactoryResetView(View):
         pinRemaining = -1
         ret = self.run_screen(
                 DireWarningScreen,
-                title="Warning",
+                title="警告",
                 status_headline=None,
-                text="Are you sure that you want to perform a factory reset?",
+                text="你确定要执行恢复出厂吗？",
                 show_back_button=True,
-                button_data=[ButtonOption("Yes")]
+                button_data=[ButtonOption("确定")]
             )
         if ret == RET_CODE__BACK_BUTTON:
             return resetStatus
@@ -2075,16 +2084,16 @@ class ToolsSatochipFactoryResetView(View):
         while(doReset):
             ret = self.run_screen(
                 DireWarningScreen,
-                title="Factory Reset",
+                title="恢复出厂",
                 status_headline=None,
-                text="Enter wrong PIN multiple times to continue Factory Reset." + remaining_string,
+                text="请连续输入错误 PIN，直到进入下一步恢复出厂。" + remaining_string,
                 show_back_button=True,
-                button_data=[ButtonOption("Continue")],
+                button_data=[ButtonOption("继续")],
             )
             if ret == RET_CODE__BACK_BUTTON:
                 return resetStatus
 
-            pin = seedkeeper_utils.prompt_for_pin(self, "Enter PIN")
+            pin = seedkeeper_utils.prompt_for_pin(self, "输入 PIN")
 
             if pin is None:
                 return Destination(ToolsSmartcardMenuView)
@@ -2103,7 +2112,7 @@ class ToolsSatochipFactoryResetView(View):
                 pinRemaining = 0
                 break
             except WrongPinError as ex:
-                remaining_string = f"\n{ex.pin_left} TRIES REMAINING!"
+                remaining_string = f"\n剩余尝试次数：{ex.pin_left}"
                 print(ex)
                 print(f"pinRemaining: {ex.pin_left}")
             except Exception as ex:
@@ -2115,15 +2124,15 @@ class ToolsSatochipFactoryResetView(View):
         while(doReset):
             ret = self.run_screen(
                 DireWarningScreen,
-                title="Factory Reset",
+                title="恢复出厂",
                 status_headline=None,
-                text="Enter wrong PUK to continue Factory Reset." + remaining_string,
+                text="请连续输入错误 PUK，直到完成恢复出厂。" + remaining_string,
                 show_back_button=True,
             )
             if ret == RET_CODE__BACK_BUTTON:
                 return resetStatus
 
-            puk = seed_screens.SeedAddPassphraseScreen(title="Enter PUK").display()
+            puk = seed_screens.SeedAddPassphraseScreen(title="输入 PUK").display()
 
             if "is_back_button" in puk:
                 return resetStatus
@@ -2152,7 +2161,7 @@ class ToolsSatochipFactoryResetView(View):
                 break
 
             except WrongPinError as ex:
-                remaining_string = f"\n{ex.pin_left} TRIES REMAINING!"
+                remaining_string = f"\n剩余尝试次数：{ex.pin_left}"
                 pukRemaining = ex.pin_left
                 print(ex)
                 print(f"pinRemaining: {ex.pin_left}")
@@ -2179,7 +2188,7 @@ class ToolsSatochipChangeLabelView(View):
         if not Satochip_Connector:
             return Destination(BackStackView)
 
-        NewLabel = seed_screens.SeedAddPassphraseScreen(title="New Label").display()
+        NewLabel = seed_screens.SeedAddPassphraseScreen(title="新标签").display()
 
         if "is_back_button" in NewLabel:
             return Destination(BackStackView)
@@ -2191,18 +2200,18 @@ class ToolsSatochipChangeLabelView(View):
                 logger.info("ERROR: Set Label Failed")
                 self.run_screen(
                     WarningScreen,
-                    title="Failed",
+                    title="失败",
                     status_headline=None,
-                    text=f"Set Label Failed...",
+                    text="标签修改失败。",
                     show_back_button=True,
                 )
             else:
                 logger.info("Device Label Updated")
                 self.run_screen(
                     LargeIconStatusScreen,
-                    title="Success",
+                    title="成功",
                     status_headline=None,
-                    text=f"Label Updated",
+                    text="标签已更新",
                     show_back_button=False,
                 )
         except Exception as e:
@@ -2219,13 +2228,13 @@ class ToolsSatochipChangeLabelView(View):
         return Destination(MainMenuView)
 
 class ToolsSeedkeeperView(View):
-    VIEW_FREE_SPACE = ButtonOption("View Free Space")
-    VIEW_SECRETS = ButtonOption("View Secrets on Card")
-    IMPORT_PASSWORD = ButtonOption("Save Password to Card")
-    DELETE_SECRET = ButtonOption("Delete Secret from Card")
-    LOAD_DESCRIPTOR = ButtonOption("Load MultiSig Descriptor")
-    SAVE_DESCRIPTOR = ButtonOption("Save MultiSig Descriptor")
-    CLONE_SECRETS = ButtonOption("Clone Card Secrets")
+    VIEW_FREE_SPACE = ButtonOption("查看剩余空间")
+    VIEW_SECRETS = ButtonOption("查看卡内秘密")
+    IMPORT_PASSWORD = ButtonOption("保存密码到卡片")
+    DELETE_SECRET = ButtonOption("删除卡内秘密")
+    LOAD_DESCRIPTOR = ButtonOption("加载多签描述符")
+    SAVE_DESCRIPTOR = ButtonOption("保存多签描述符")
+    CLONE_SECRETS = ButtonOption("克隆卡内秘密")
 
     def run(self):
         button_data = [
@@ -3319,11 +3328,11 @@ class ToolsSeedkeeperSaveDescriptorView(View):
         return Destination(BackStackView)
 
 class ToolsSatochipView(View):
-    IMPORT_SEED = ButtonOption("Initialise with Seed")
-    EXPORT_XPUB = ButtonOption("Export Xpub")
-    LOAD_DESCRIPTOR = ButtonOption("Load as Descriptor")
-    LOAD_PSBT = ButtonOption("Load PSBT")
-    ADVANCED = ButtonOption("Advanced")
+    IMPORT_SEED = ButtonOption("用助记词初始化")
+    EXPORT_XPUB = ButtonOption("导出 Xpub")
+    LOAD_DESCRIPTOR = ButtonOption("加载为描述符")
+    LOAD_PSBT = ButtonOption("加载 PSBT")
+    ADVANCED = ButtonOption("高级功能")
 
     def run(self):
         button_data = [
@@ -3451,16 +3460,16 @@ class ToolsSatochipLoadPsbtView(View):
         return Destination(PSBTSelectSeedView, skip_current_view=True)
 
 class ToolsSatochipAdvancedView(View):
-    ENABLE_2FA = ButtonOption("Enable 2FA")
-    BENCHMARK = ButtonOption("Benchmark Signing")
-    BENCHMARK_MESSAGE = ButtonOption("Benchmark Message Signing")
-    BIAS_TEST = ButtonOption("Check signing bias")
+    ENABLE_2FA = ButtonOption("启用 2FA")
+    BENCHMARK = ButtonOption("签名性能测试")
+    BENCHMARK_MESSAGE = ButtonOption("消息签名性能测试")
+    BIAS_TEST = ButtonOption("检查签名偏差")
 
     def run(self):
         button_data = [self.ENABLE_2FA, self.BENCHMARK, self.BENCHMARK_MESSAGE, self.BIAS_TEST]
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title="Satochip Advanced",
+            title="Satochip 高级功能",
             is_button_text_centered=False,
             button_data=button_data,
         )
@@ -3616,16 +3625,16 @@ class ToolsSatochipBenchmarkMessageSignView(View):
 
 
 class ToolsSatochipImportSeedView(View):
-    SCAN_SEED = ButtonOption("Scan a seed", SeedSignerIconConstants.QRCODE)
-    TYPE_12WORD = ButtonOption("Enter 12-word seed", FontAwesomeIconConstants.KEYBOARD, return_data=12)
-    TYPE_15WORD = ButtonOption("Enter 15-word seed", FontAwesomeIconConstants.KEYBOARD, return_data=15)
-    TYPE_18WORD = ButtonOption("Enter 18-word seed", FontAwesomeIconConstants.KEYBOARD, return_data=18)
-    TYPE_21WORD = ButtonOption("Enter 21-word seed", FontAwesomeIconConstants.KEYBOARD, return_data=21)
-    TYPE_24WORD = ButtonOption("Enter 24-word seed", FontAwesomeIconConstants.KEYBOARD, return_data=24)
-    TYPE_ELECTRUM = ButtonOption("Enter Electrum seed", FontAwesomeIconConstants.KEYBOARD)
-    TYPE_SLIP39 = ButtonOption("SLIP-39 Shares", FontAwesomeIconConstants.KEYBOARD)
-    IMPORT_SEEDKEEPER = ButtonOption("From SeedKeeper", FontAwesomeIconConstants.LOCK)
-    CREATE = ButtonOption(" Create a seed", SeedSignerIconConstants.PLUS)
+    SCAN_SEED = ButtonOption("扫描助记词", SeedSignerIconConstants.QRCODE)
+    TYPE_12WORD = ButtonOption("输入 12 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=12)
+    TYPE_15WORD = ButtonOption("输入 15 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=15)
+    TYPE_18WORD = ButtonOption("输入 18 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=18)
+    TYPE_21WORD = ButtonOption("输入 21 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=21)
+    TYPE_24WORD = ButtonOption("输入 24 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=24)
+    TYPE_ELECTRUM = ButtonOption("输入 Electrum 助记词", FontAwesomeIconConstants.KEYBOARD)
+    TYPE_SLIP39 = ButtonOption("输入 SLIP-39 分片", FontAwesomeIconConstants.KEYBOARD)
+    IMPORT_SEEDKEEPER = ButtonOption("从 SeedKeeper 导入", FontAwesomeIconConstants.LOCK)
+    CREATE = ButtonOption("创建助记词", SeedSignerIconConstants.PLUS)
 
     def run(self):
         from seedsigner.gui.screens.screen import LoadingScreenThread
@@ -3642,12 +3651,12 @@ class ToolsSatochipImportSeedView(View):
         if status.get("is_seeded"):
             self.run_screen(
                 WarningScreen,
-                title=_("Already Seeded"),
+                title="卡片已有助记词",
                 status_headline=None,
-                text=_("Satochip card already contains a seed."),
+                text="Satochip 卡中已经存在助记词。",
                 show_back_button=False,
             )
-            return Destination(MainMenuView)
+            return _tp_post_main_destination()
 
         seeds = self.controller.storage.seeds
         button_data = []
@@ -3674,7 +3683,7 @@ class ToolsSatochipImportSeedView(View):
         
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title="Seed to Import",
+            title="选择要写入的助记词",
             button_data=button_data,
             is_button_text_centered=False,
             is_bottom_list=True,
@@ -3693,15 +3702,15 @@ class ToolsSatochipImportSeedView(View):
             if isinstance(seeds[selected_menu_num], XprvSeed):
                 self.run_screen(
                     WarningScreen,
-                    title="Unsupported",
+                    title="不支持",
                     status_headline=None,
-                    text=_("xprv cannot init Satochip.\nUse BIP39, SLIP39, or Electrum."),
+                    text="xprv 不能直接初始化 Satochip。\n请使用 BIP39、SLIP39 或 Electrum 助记词。",
                     show_back_button=False,
                 )
                 return Destination(BackStackView)
 
             try:
-                self.loading_screen = LoadingScreenThread(text="Importing Secret\n\n\n\n\n\n")
+                self.loading_screen = LoadingScreenThread(text="正在写入助记词\n\n\n\n\n\n")
                 self.loading_screen.start()
 
                 Satochip_Connector.card_bip32_import_seed(seeds[selected_menu_num].seed_bytes)
@@ -3711,9 +3720,9 @@ class ToolsSatochipImportSeedView(View):
                 logger.info("Seed Successfully Imported")
                 self.run_screen(
                     LargeIconStatusScreen,
-                    title="Success",
+                    title="成功",
                     status_headline=None,
-                    text=f"Seed Imported",
+                    text="助记词写入成功",
                     show_back_button=False,
                 )
             except Exception as e:
@@ -3721,9 +3730,9 @@ class ToolsSatochipImportSeedView(View):
                 logger.exception("Satochip Import Failed: %s", e)
                 self.run_screen(
                     WarningScreen,
-                    title="Failed",
+                    title="失败",
                     status_headline=None,
-                    text=f"Seed Import Failed",
+                    text="助记词写入失败",
                     show_back_button=False,
                 )
 
@@ -3744,7 +3753,7 @@ class ToolsSatochipImportSeedView(View):
         elif button_data[selected_menu_num] == self.TYPE_ELECTRUM:
             return Destination(SeedElectrumMnemonicStartView)
         
-        return Destination(MainMenuView)
+        return _tp_post_main_destination()
 
 class ToolsSatochipEnable2FAView(View):
     def run(self):

@@ -22,6 +22,7 @@ object TpRequestBuilder {
         txData: TxData,
         chain: WalletChain = WalletChains.DEFAULT,
         requestId: String = java.util.UUID.randomUUID().toString(),
+        derivationPath: String? = null,
     ): String {
         val txJson = JSONObject().apply {
             put("from", txData.from ?: fromAddress)
@@ -46,19 +47,21 @@ object TpRequestBuilder {
             "network" to chain.slug,
             "chain_id" to chain.chainId.toString(),
             "requestId" to requestId,
+            "path" to derivationPath.orEmpty(),
             "data" to dataJson.toString(),
         )
         return "$NAMESPACE:signTransaction-$query"
     }
 
     fun buildPersonalSignRequest(
-        address: String,
+        address: String? = null,
         message: String,
         chain: WalletChain = WalletChains.DEFAULT,
         requestId: String = java.util.UUID.randomUUID().toString(),
+        derivationPath: String? = null,
     ): String {
         val dataJson = JSONObject().apply {
-            put("address", address)
+            address?.takeIf { it.isNotBlank() }?.let { put("address", it) }
             put("message", message)
         }
         val query = buildQuery(
@@ -67,6 +70,7 @@ object TpRequestBuilder {
             "network" to chain.slug,
             "chain_id" to chain.chainId.toString(),
             "requestId" to requestId,
+            "path" to derivationPath.orEmpty(),
             "data" to dataJson.toString(),
         )
         return "$NAMESPACE:personalSign-$query"
@@ -77,6 +81,7 @@ object TpRequestBuilder {
         typedDataJson: String,
         chain: WalletChain = WalletChains.DEFAULT,
         requestId: String = java.util.UUID.randomUUID().toString(),
+        derivationPath: String? = null,
         dappName: String? = null,
         dappUrl: String? = null,
         dappSource: String? = null,
@@ -96,6 +101,7 @@ object TpRequestBuilder {
             "network" to chain.slug,
             "chain_id" to chain.chainId.toString(),
             "requestId" to requestId,
+            "path" to derivationPath.orEmpty(),
             "dappName" to dappName.orEmpty(),
             "dappUrl" to dappUrl.orEmpty(),
             "source" to dappSource.orEmpty(),

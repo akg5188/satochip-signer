@@ -20,6 +20,224 @@ from seedsigner.models.threads import BaseThread
 logger = logging.getLogger(__name__)
 
 
+_UI_TEXT_EXACT_MAP = {
+    "Success!": "成功",
+    "Success": "成功",
+    "Failed": "失败",
+    "Failure": "失败",
+    "Error": "错误",
+    "Error!": "错误",
+    "Warning": "警告",
+    "WARNING": "警告",
+    "Caution": "警告",
+    "Notice": "提示",
+    "Unavailable": "不可用",
+    "Result": "结果",
+    "Done": "完成",
+    "Continue": "继续",
+    "OK": "确定",
+    "Close": "关闭",
+    "Cancel": "取消",
+    "Back": "返回",
+    "Next": "下一步",
+    "Start": "开始",
+    "Proceed": "继续",
+    "Review": "查看",
+    "Yes": "是",
+    "No": "否",
+    "I Understand": "我明白",
+    "Try Again": "重试",
+    "Skip": "跳过",
+    "Verify": "校验",
+    "Load a seed": "导入助记词",
+    "In-Memory Seeds": "已加载助记词",
+    "Scan a seed": "扫描助记词",
+    "Use Satochip card": "使用 Satochip 卡",
+    "Enter 12-word seed": "输入 12 个单词助记词",
+    "Enter 15-word seed": "输入 15 个单词助记词",
+    "Enter 18-word seed": "输入 18 个单词助记词",
+    "Enter 21-word seed": "输入 21 个单词助记词",
+    "Enter 24-word seed": "输入 24 个单词助记词",
+    "Enter Electrum seed": "输入 Electrum 助记词",
+    "Enter Aezeed seed": "输入 Aezeed 助记词",
+    "SLIP-39 Shares": "SLIP-39 分片",
+    "Select Secret": "选择秘密",
+    "Select Share": "选择分片",
+    "Select PSBT": "选择 PSBT",
+    "Select File": "选择文件",
+    "No Secrets to Load": "没有可加载的秘密",
+    "No Keys": "没有密钥",
+    "No Keys Loaded": "没有已加载的密钥",
+    "No Descriptors": "没有描述符",
+    "No Secrets Found": "没有找到秘密",
+    "No Backups Found": "没有找到备份",
+    "Loading Seed": "正在加载助记词",
+    "Listing Seeds": "正在列出助记词",
+    "Listing Secrets": "正在列出秘密",
+    "Loading Secret": "正在加载秘密",
+    "Combining Shares": "正在合并分片",
+    "Processing...": "正在处理...",
+    "Sending Command": "正在发送命令",
+    "Aezeed support": "Aezeed 支持",
+    "Electrum warning": "Electrum 提示",
+    "Load Share": "导入分片",
+    "Enter share": "输入分片",
+    "Scan share": "扫描分片",
+    "Combine shares": "合并分片",
+    "Num Shares": "分片数量",
+    "Threshold": "恢复阈值",
+    "SeedKeeper": "SeedKeeper",
+    "Smartcard Tools": "智能卡工具",
+    "Common Functions": "通用功能",
+    "Satochip Functions": "Satochip 功能",
+    "SeedKeeper Functions": "SeedKeeper 功能",
+    "DIY Tools": "DIY 工具",
+    "Card Info": "卡片信息",
+    "Genuine Check": "真伪检查",
+    "Factory Reset Card": "恢复出厂",
+    "New PIN": "新 PIN",
+    "Invalid PIN": "PIN 无效",
+    "PIN Updated": "PIN 已更新",
+    "NFC Policy": "NFC 策略",
+    "NFC Enabled": "NFC 已启用",
+    "NFC Disabled": "NFC 已禁用",
+    "NFC Blocked": "NFC 已锁定",
+    "View Free Space": "查看剩余空间",
+    "View Secrets on Card": "查看卡内秘密",
+    "Save Password to Card": "保存密码到卡片",
+    "Delete Secret from Card": "删除卡内秘密",
+    "Load MultiSig Descriptor": "加载多签描述符",
+    "Save MultiSig Descriptor": "保存多签描述符",
+    "Clone Card Secrets": "克隆卡内秘密",
+    "Initialise with Seed": "用助记词初始化",
+    "Export Xpub": "导出 Xpub",
+    "Load as Descriptor": "加载为描述符",
+    "Load PSBT": "加载 PSBT",
+    "Advanced": "高级功能",
+    "Satochip Advanced": "Satochip 高级功能",
+    "Enable 2FA": "启用 2FA",
+    "Benchmark Signing": "签名性能测试",
+    "Benchmark Message Signing": "消息签名性能测试",
+    "Check signing bias": "检查签名偏差",
+    "Scan PSBT": "扫描 PSBT",
+    "Verify Addr": "验证地址",
+    "Address Explorer": "地址浏览器",
+    "Sign Message": "签名消息",
+    "Backup Seed": "备份助记词",
+    "Discard Seed": "删除助记词",
+    "Discard Seed?": "删除助记词？",
+    "Keep Seed": "保留助记词",
+    "Discard": "删除",
+    "View Seed Words": "查看助记词",
+    "Export as SeedQR": "导出为 SeedQR",
+    "Export as Plaintext QR": "导出为明文二维码",
+    "To SeedKeeper": "写入 SeedKeeper",
+    "Regenerate Shares": "重新生成分片",
+    "Single Sig": "单签",
+    "Multisig": "多签",
+    "BIP-85 Child Seed": "BIP-85 子助记词",
+    "Verify Address": "验证地址",
+    "Wallet Export": "钱包导出",
+    "Export Failed": "导出失败",
+    "Scan Descriptor": "扫描描述符",
+    "Return to PSBT": "返回 PSBT",
+    "Load SeedKeeper": "从 SeedKeeper 加载",
+    "ValueError": "数据格式错误",
+    "New Label": "新标签",
+    "Secret Label": "秘密标签",
+    "Secret Text": "秘密内容",
+    "Descriptor Label": "描述符标签",
+    "Seed Label": "助记词标签",
+    "Password Name": "密码名称",
+    "Passphrase": "口令",
+    "Secret Name": "秘密名称",
+    "Text to Encode": "要编码的文本",
+    "Input Encryption Key": "输入加密密钥",
+    "Current Admin PIN": "当前管理员 PIN",
+    "New Admin PIN": "新管理员 PIN",
+    "Current User PIN": "当前用户 PIN",
+    "New User PIN": "新用户 PIN",
+    "Admin PIN": "管理员 PIN",
+    "User PIN": "用户 PIN",
+    "View Card Info": "查看卡片信息",
+    "Edit passphrase": "修改口令",
+    "Discard passphrase": "丢弃口令",
+    "Done": "完成",
+    "Scan & Append Another": "扫描并继续追加",
+    "Generate QR code": "生成二维码",
+    "Edit text": "编辑文本",
+    "Discard text": "丢弃文本",
+    "Transcribe mode": "誊写模式",
+    "FullScreen mode": "全屏模式",
+    "Confirm SeedQR": "校验 SeedQR",
+}
+
+_UI_TEXT_SUBSTRING_REPLACEMENTS = [
+    ("No BIP39 Secrets to Load from Seedkeeper", "SeedKeeper 中没有可加载的 BIP39 助记词。"),
+    ("No SLIP39 Shares on SeedKeeper", "SeedKeeper 中没有可加载的 SLIP-39 分片。"),
+    ("These tools load data from the microSD card and may expose loaded secrets.", "这些工具会从 microSD 卡读取数据，可能暴露已加载的秘密。"),
+    ("These tools read from the microSD card and may leak loaded secrets.", "这些工具会从 microSD 卡读取数据，可能泄露已加载的秘密。"),
+    ("These tools write data to the microSD card and may expose loaded secrets.", "这些工具会向 microSD 卡写入数据，可能暴露已加载的秘密。"),
+    ("Card is genuine", "卡片为正品"),
+    ("Card is NOT genuine", "卡片不是正品"),
+    ("Genuine check failed:", "真伪检查失败："),
+    ("Invalid PIN entered, select another and try again.", "输入的 PIN 无效，请重新输入后再试。"),
+    ("Once blocked, NFC can only be re-enabled via Factory Reset", "一旦锁定 NFC，只能通过恢复出厂重新启用。"),
+    ("NFC policy applied successfully!", "NFC 策略已成功应用。"),
+    ("Cannot set the NFC policy through the NFC interface, use contact interface instead", "无法通过 NFC 接口修改 NFC 策略，请改用接触式读卡器。"),
+    ("Cannot set the NFC policy: NFC interface is BLOCKED, a factory reset is required to reenable NFC!", "无法修改 NFC 策略：NFC 已锁定，必须恢复出厂后才能重新启用。"),
+    ("Type:", "类型："),
+    ("Version:", "版本："),
+    ("Remaining PIN tries:", "PIN 剩余次数："),
+    ("Setup:", "初始化："),
+    ("UID:", "UID："),
+    ("NFC:", "NFC："),
+    ("Done", "已完成"),
+    ("Not done", "未完成"),
+    ("(seeded)", "（已写入助记词）"),
+    ("(unseeded)", "（未写入助记词）"),
+    ("Enabled", "已启用"),
+    ("Disabled", "已禁用"),
+    ("Blocked", "已锁定"),
+    ("Your current passphrase entry will be erased", "当前口令输入将被清除。"),
+    ("Your current key entry will be erased", "当前密钥输入将被清除。"),
+    ("Your current mnemonic ID entry will be erased", "当前助记词 ID 输入将被清除。"),
+    ("Backups do not include your passphrase.", "备份内容不包含你的口令。"),
+    ("Optionally scan your transcribed SeedQR to confirm that it reads back correctly.", "你也可以扫描誊写后的 SeedQR，确认回读结果是否正确。"),
+]
+
+
+def _localize_ui_text(text: str) -> str:
+    if not isinstance(text, str) or not text:
+        return text
+
+    if text in _UI_TEXT_EXACT_MAP:
+        return _UI_TEXT_EXACT_MAP[text]
+
+    localized = text
+
+    seed_word_match = re.fullmatch(r"Seed Word #(\d+)", localized)
+    if seed_word_match:
+        return f"第 {seed_word_match.group(1)} 个单词"
+
+    verify_word_match = re.fullmatch(r"Verify Word #(\d+)", localized)
+    if verify_word_match:
+        return f"验证第 {verify_word_match.group(1)} 个单词"
+
+    share_word_match = re.fullmatch(r"Share Word #(\d+)", localized)
+    if share_word_match:
+        return f"第 {share_word_match.group(1)} 个分片单词"
+
+    child_match = re.fullmatch(r"Child #(\d+)", localized)
+    if child_match:
+        return f"子助记词 #{child_match.group(1)}"
+
+    for source, target in _UI_TEXT_SUBSTRING_REPLACEMENTS:
+        localized = localized.replace(source, target)
+
+    return localized
+
+
 
 # TODO: Remove all pixel hard coding
 class GUIConstants:
@@ -416,6 +634,8 @@ class TextArea(BaseComponent):
             self.font_name = GUIConstants.get_body_font_name()
         if not self.font_size:
             self.font_size = GUIConstants.get_body_font_size()
+
+        self.text = _localize_ui_text(self.text)
 
         super().__post_init__()
 
@@ -1390,7 +1610,10 @@ class Button(BaseComponent):
         
         if not self.font_size:
             self.font_size = GUIConstants.get_button_font_size()
-        
+
+        self.text = _localize_ui_text(self.text)
+        self.active_text = _localize_ui_text(self.active_text)
+
         super().__post_init__()
 
         if not self.width:
@@ -1705,7 +1928,9 @@ class TopNav(BaseComponent):
         
         if not self.font_size:
             self.font_size = GUIConstants.get_top_nav_title_font_size()
-        
+
+        self.text = _localize_ui_text(self.text)
+
         super().__post_init__()
         if not self.width:
             self.width = self.canvas_width

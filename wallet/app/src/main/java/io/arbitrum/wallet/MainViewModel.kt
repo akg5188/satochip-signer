@@ -36,6 +36,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val PREFS_NAME = "satochip_multi_wallet"
         private const val AUTO_APPROVE_WALLETCONNECT = true
+        private const val ADDRESS_DISCOVERY_MESSAGE_PREFIX = "tp-watch-address-discovery:"
     }
 
     private val prefs = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -65,6 +66,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setActiveTab(tab: WalletTab) = _uiState.update { it.copy(activeTab = tab) }
     fun setNewAddressInput(value: String) = _uiState.update { it.copy(newAddressInput = value) }
+    fun setEvmDerivationPath(value: String) {
+        _uiState.update { it.copy(evmDerivationPath = value) }
+        WalletStorage.writeEvmDerivationPath(prefs, value)
+    }
+    fun setBitcoinImportInput(value: String) = _uiState.update { it.copy(bitcoinImportInput = value) }
     fun setTransferTo(value: String) = _uiState.update { it.copy(transferTo = value) }
     fun setTransferAmount(value: String) = _uiState.update { it.copy(transferAmount = value) }
     fun setTransferToken(value: String) = _uiState.update { it.copy(transferToken = value) }
@@ -221,6 +227,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 request = request,
                                 selectedAddress = address,
                                 activeChainId = _uiState.value.selectedChainId,
+                                derivationPath = _uiState.value.evmDerivationPath,
                             )
                         ) {
                             is WalletConnectPreparedRequest.ImmediateResult -> {
@@ -313,12 +320,220 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         emitBrowserAccountsChanged()
     }
 
+    fun prepareDerivedAddressImport() {
+        val state = _uiState.value
+        val path = normalizeDerivationPath(state.evmDerivationPath)
+            ?: return setError("派生路径格式错误，请使用 m/44'/60'/0'/0/0 这种格式")
+        val chain = WalletChains.require(state.selectedChainId)
+        val payload = TpRequestBuilder.buildPersonalSignRequest(
+            address = null,
+            message = "$ADDRESS_DISCOVERY_MESSAGE_PREFIX${System.currentTimeMillis()}",
+            chain = chain,
+            requestId = "discover-address-${System.currentTimeMillis()}",
+            derivationPath = path,
+        )
+        prepareRelayRequest(
+            payload = payload,
+            explicitResponseType = PendingResponseType.IMPORT_WATCH_ADDRESS,
+            explicitTitle = "${chain.shortName} 派生地址导入",
+        )
+        _uiState.update {
+            it.copy(
+                evmDerivationPath = path,
+                info = "已生成派生地址导入二维码，请让树莓派扫描后再把结果扫回手机。",
+                error = "",
+            )
+        }
+        WalletStorage.writeEvmDerivationPath(prefs, path)
+    }
+
     fun selectAddress(address: String) {
         _uiState.update { it.copy(selectedAddress = address, error = "", info = "") }
         persistAddresses()
         loadBalances()
         refreshHyperliquid(silent = true)
         emitBrowserAccountsChanged()
+    }
+
+    fun importBitcoinWatchAccount() {
+        val parsed = parseBitcoinWatchAccountImport(_uiState.value.bitcoinImportInput)
+            ?: return setError("请输入有效的 xpub / ypub / zpub / tpub / upub / vpub，或直接粘贴 get-xpub 输出")
+
+        val now = System.currentTimeMillis()
+        _uiState.update { state ->
+            val existing = state.bitcoinWatchAccounts.firstOrNull { it.xpub == parsed.xpub }
+            if (existing != null) {
+                state.copy(
+                    bitcoinImportInput = "",
+                    bitcoinPrototypeStatus = defaultBitcoinPrototypeStatus(state.bitcoinWatchAccounts.size),
+                    info = "BTC 观察账户已存在：${existing.label}",
+                    error = "",
+                )
+            } else {
+                val account = enrichBitcoinWatchAccount(
+                    BitcoinWatchAccount(
+                    id = UUID.randomUUID().toString(),
+                    label = parsed.defaultLabel,
+                    xpub = parsed.xpub,
+                    prefix = parsed.prefix,
+                    networkLabel = parsed.networkLabel,
+                    scriptTypeLabel = parsed.scriptTypeLabel,
+                    accountPathHint = parsed.accountPathHint,
+                    importedAt = now,
+                    )
+                )
+                if (account.derivationError.isNotBlank()) {
+                    return@update state.copy(
+                        error = account.derivationError,
+                        info = "",
+                    )
+                }
+                val accounts = listOf(account) + state.bitcoinWatchAccounts
+                state.copy(
+                    bitcoinImportInput = "",
+                    bitcoinWatchAccounts = accounts,
+                    bitcoinPrototypeStatus = defaultBitcoinPrototypeStatus(accounts.size),
+                    info = "已导入 BTC 观察账户：${account.label}",
+                    error = "",
+                )
+            }
+        }
+        persistBitcoinWatchAccounts()
+    }
+
+    fun removeBitcoinWatchAccount(accountId: String) {
+        _uiState.update { state ->
+            val accounts = state.bitcoinWatchAccounts.filterNot { it.id == accountId }
+            state.copy(
+                bitcoinWatchAccounts = accounts,
+                bitcoinPrototypeStatus = defaultBitcoinPrototypeStatus(accounts.size),
+                info = "BTC 观察账户原型已删除",
+                error = "",
+            )
+        }
+        persistBitcoinWatchAccounts()
+    }
+
+    fun syncBitcoinWatchAccount(accountId: String) {
+        val current = _uiState.value.bitcoinWatchAccounts.firstOrNull { it.id == accountId }
+            ?: return setError("未找到 BTC 观察账户")
+        _uiState.update { state ->
+            state.copy(
+                bitcoinWatchAccounts = state.bitcoinWatchAccounts.map { account ->
+                    if (account.id == accountId) account.copy(syncing = true, lastSyncStatus = "正在同步链上状态...") else account
+                },
+                error = "",
+            )
+        }
+        viewModelScope.launch {
+            runCatching { BitcoinTransferService.syncAccount(current) }
+                .onSuccess { snapshot ->
+                    updateBitcoinWatchAccount(accountId) { account ->
+                        account.copy(
+                            balanceSats = snapshot.balanceSats,
+                            utxoCount = snapshot.utxoCount,
+                            nextReceiveAddress = snapshot.nextReceiveAddress,
+                            nextChangeAddress = snapshot.nextChangeAddress,
+                            lastSyncStatus = snapshot.status,
+                            lastSyncAt = System.currentTimeMillis(),
+                            syncing = false,
+                        )
+                    }
+                    _uiState.update {
+                        it.copy(
+                            info = "BTC 账户已同步：${current.label}",
+                            error = "",
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    updateBitcoinWatchAccount(accountId) { account ->
+                        account.copy(
+                            syncing = false,
+                            lastSyncStatus = "同步失败：${error.message ?: "未知错误"}",
+                        )
+                    }
+                    setError("BTC 账户同步失败: ${error.message}")
+                }
+        }
+    }
+
+    fun prepareBitcoinTransfer(
+        accountId: String,
+        destinationAddress: String,
+        amountText: String,
+        feeRateText: String?,
+    ) {
+        val account = _uiState.value.bitcoinWatchAccounts.firstOrNull { it.id == accountId }
+            ?: return setError("未找到 BTC 观察账户")
+        viewModelScope.launch {
+            runCatching {
+                BitcoinTransferService.prepareTransfer(
+                    account = account,
+                    destinationAddress = destinationAddress,
+                    amountText = amountText,
+                    feeRateText = feeRateText,
+                )
+            }.onSuccess { prepared ->
+                val bundle = RelayQrCodec.buildRelayPayloads(prepared.requestPayload)
+                val qr = generateQrBitmap(bundle.payloads.first())
+                updateBitcoinWatchAccount(accountId) {
+                    it.copy(
+                        balanceSats = prepared.snapshot.balanceSats,
+                        utxoCount = prepared.snapshot.utxoCount,
+                        nextReceiveAddress = prepared.snapshot.nextReceiveAddress,
+                        nextChangeAddress = prepared.snapshot.nextChangeAddress,
+                        lastSyncStatus = prepared.snapshot.status,
+                        lastSyncAt = System.currentTimeMillis(),
+                        syncing = false,
+                    )
+                }
+                _uiState.update {
+                    it.copy(
+                        requestTitle = "BTC 转账待树莓派签名",
+                        requestSummary = buildString {
+                            appendLine("账户: ${account.label}")
+                            appendLine("收款地址: ${prepared.destinationAddress}")
+                            appendLine("发送金额: ${formatBitcoinSats(prepared.amountSats)}")
+                            appendLine("矿工费: ${formatBitcoinSats(prepared.feeSats)}")
+                            appendLine("输入数: ${prepared.inputCount}")
+                            if (prepared.changeSats > 0 && prepared.changeAddress != null) {
+                                appendLine("找零: ${formatBitcoinSats(prepared.changeSats)}")
+                                appendLine("找零地址: ${prepared.changeAddress}")
+                            }
+                        }.trim(),
+                        transferInfo = buildString {
+                            appendLine("BTC 账户: ${account.label}")
+                            appendLine("to: ${prepared.destinationAddress}")
+                            appendLine("amount: ${formatBitcoinSats(prepared.amountSats)}")
+                            appendLine("fee: ${formatBitcoinSats(prepared.feeSats)}")
+                            appendLine("inputs: ${prepared.inputCount}")
+                        }.trim(),
+                        dappInfo = "BTC 观察账户 -> 树莓派 PSBT 冷签 -> 手机广播",
+                        relayHint = if (bundle.payloads.size > 1) {
+                            "已生成 ${bundle.payloads.size} 张 BTC PSBT 二维码，将自动轮播给树莓派扫描。签名完成后，再把树莓派回显的 tx 二维码扫回手机广播。"
+                        } else {
+                            "已生成 1 张 BTC PSBT 二维码。让树莓派扫描签名后，再把它回显的 tx 二维码扫回手机广播。"
+                        },
+                        signQrPages = bundle.payloads,
+                        signQrPageIndex = 0,
+                        signQrBitmap = qr,
+                        pendingResponseType = PendingResponseType.BROADCAST_BTC_TX,
+                        preparedBitcoinAccountId = accountId,
+                        preparedRequestChainId = null,
+                        txHash = "",
+                        txHashChainId = null,
+                        lastSignature = "",
+                        lastSignatureAddress = "",
+                        error = "",
+                        info = "BTC 转账请求已准备好，请让树莓派扫描当前二维码。",
+                        activeTab = WalletTab.HOME,
+                    )
+                }
+            }.onFailure { error ->
+                setError("BTC 转账准备失败: ${error.message}")
+            }
+        }
     }
 
     fun removeAddress(address: String) {
@@ -496,6 +711,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             typedDataJson = approval.typedDataJson,
             chain = WalletChains.ARBITRUM,
             requestId = "hyperliquid-approve-${approval.nonce}",
+            derivationPath = _uiState.value.evmDerivationPath,
             dappName = "Hyperliquid",
             dappUrl = "https://app.hyperliquid.xyz",
             dappSource = "Hyperliquid native trade panel",
@@ -633,9 +849,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val request = if (token.address == null) {
-                    buildNativeTransferRequest(chain, from, to, amount)
+                    buildNativeTransferRequest(chain, from, to, amount, state.evmDerivationPath)
                 } else {
-                    buildTokenTransferRequest(chain, from, to, amount, token)
+                    buildTokenTransferRequest(chain, from, to, amount, token, state.evmDerivationPath)
                 }
                 prepareRelayRequest(
                     payload = request,
@@ -753,12 +969,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onResponseScanResult(payload: String) {
         val parsed = TpResponseParser.parse(payload)
-        if (parsed.isError || (parsed.rawTransaction == null && parsed.signature == null)) {
+        if (parsed.isError || (parsed.rawTransaction == null && parsed.signature == null && parsed.bitcoinTxHex == null)) {
             return setError("无法解析树莓派结果")
         }
 
         viewModelScope.launch {
             when {
+                parsed.bitcoinTxHex != null -> {
+                    val accountId = _uiState.value.preparedBitcoinAccountId
+                        ?: return@launch setError("当前没有待广播的 BTC 请求")
+                    val account = _uiState.value.bitcoinWatchAccounts.firstOrNull { it.id == accountId }
+                        ?: return@launch setError("未找到对应的 BTC 账户")
+                    try {
+                        val txid = BitcoinTransferService.broadcastTransaction(account.prefix, parsed.bitcoinTxHex)
+                        _uiState.update {
+                            it.copy(
+                                signQrBitmap = null,
+                                signQrPages = emptyList(),
+                                signQrPageIndex = 0,
+                                pendingResponseType = null,
+                                preparedBitcoinAccountId = null,
+                                requestTitle = "",
+                                requestSummary = "",
+                                transferInfo = "",
+                                dappInfo = "",
+                                relayHint = "",
+                                error = "",
+                                info = "BTC 交易已广播：$txid",
+                                requestInput = "",
+                            )
+                        }
+                        syncBitcoinWatchAccount(accountId)
+                    } catch (e: Exception) {
+                        setError("BTC 广播失败: ${e.message}")
+                    }
+                }
+
                 parsed.rawTransaction != null -> {
                     val browserRequest = pendingInjectedBrowserRequest
                     if (browserRequest != null && browserRequest.method.equals("eth_signTransaction", ignoreCase = true)) {
@@ -785,6 +1031,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 signQrPages = emptyList(),
                                 signQrPageIndex = 0,
                                 pendingResponseType = null,
+                                preparedBitcoinAccountId = null,
                                 preparedRequestChainId = null,
                                 requestTitle = "",
                                 requestSummary = "",
@@ -844,6 +1091,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 signQrPages = emptyList(),
                                 signQrPageIndex = 0,
                                 pendingResponseType = null,
+                                preparedBitcoinAccountId = null,
                                 preparedRequestChainId = null,
                                 requestTitle = "",
                                 requestSummary = "",
@@ -870,6 +1118,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         handleHyperliquidApprovalResult(parsed.signature)
                         return@launch
                     }
+                    val currentResponseType = _uiState.value.pendingResponseType
                     val browserRequest = pendingInjectedBrowserRequest
                     if (browserRequest != null) {
                         emitBrowserResolve(
@@ -903,20 +1152,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     _uiState.update {
                         it.copy(
-                            lastSignature = if (browserRequest != null) "" else parsed.signature,
-                            lastSignatureAddress = if (browserRequest != null) "" else parsed.address.orEmpty(),
+                            lastSignature = if (browserRequest != null || currentResponseType == PendingResponseType.IMPORT_WATCH_ADDRESS) "" else parsed.signature,
+                            lastSignatureAddress = if (browserRequest != null || currentResponseType == PendingResponseType.IMPORT_WATCH_ADDRESS) "" else parsed.address.orEmpty(),
                             signQrBitmap = null,
                             signQrPages = emptyList(),
                             signQrPageIndex = 0,
                             pendingResponseType = null,
+                            preparedBitcoinAccountId = null,
                             preparedRequestChainId = null,
                             error = "",
                             info = when {
+                                currentResponseType == PendingResponseType.IMPORT_WATCH_ADDRESS -> "树莓派地址已返回"
                                 pendingRequest != null -> "签名结果已返回给 WalletConnect"
                                 browserRequest != null -> "签名结果已返回给 Hyperliquid 页面"
                                 else -> "签名结果已返回"
                             },
                         )
+                    }
+                    if (currentResponseType == PendingResponseType.IMPORT_WATCH_ADDRESS) {
+                        val imported = normalizeAddress(parsed.address)
+                            ?: return@launch setError("树莓派未返回有效地址")
+                        addAddress(imported)
+                        _uiState.update {
+                            it.copy(
+                                info = "已从树莓派导入观察地址: ${shortAddress(imported)}",
+                                error = "",
+                            )
+                        }
                     }
                 }
             }
@@ -949,6 +1211,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 dappInfo = "",
                 relayHint = "",
                 preparedRequestChainId = null,
+                preparedBitcoinAccountId = null,
                 signQrPages = emptyList(),
                 signQrPageIndex = 0,
                 signQrBitmap = null,
@@ -1024,6 +1287,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val selectedChain = WalletChains.byId(WalletStorage.readSelectedChainId(prefs))?.chainId
             ?: WalletChains.DEFAULT.chainId
         val contacts = WalletStorage.readContacts(prefs, ::normalizeAddress)
+        val evmDerivationPath = WalletStorage.readEvmDerivationPath(prefs)
+        val bitcoinWatchAccounts = WalletStorage.readBitcoinWatchAccounts(prefs).map(::enrichBitcoinWatchAccount)
         hyperliquidAgentsByAccount.clear()
         WalletStorage.readHyperliquidAgents(prefs, ::normalizeAddress).forEach { agent ->
             hyperliquidAgentsByAccount[agent.accountAddress.lowercase()] = agent
@@ -1034,6 +1299,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 addresses = addresses,
                 selectedAddress = effectiveSelected,
+                evmDerivationPath = evmDerivationPath,
+                bitcoinWatchAccounts = bitcoinWatchAccounts,
+                bitcoinPrototypeStatus = defaultBitcoinPrototypeStatus(bitcoinWatchAccounts.size),
                 selectedChainId = selectedChain,
                 transferToken = WalletChains.require(selectedChain).preferredTransferSymbol(),
                 contacts = contacts,
@@ -1061,6 +1329,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun persistContacts() {
         WalletStorage.writeContacts(prefs, _uiState.value.contacts)
+    }
+
+    private fun persistBitcoinWatchAccounts() {
+        WalletStorage.writeBitcoinWatchAccounts(prefs, _uiState.value.bitcoinWatchAccounts)
+    }
+
+    private fun updateBitcoinWatchAccount(
+        accountId: String,
+        transform: (BitcoinWatchAccount) -> BitcoinWatchAccount,
+    ) {
+        _uiState.update { state ->
+            state.copy(
+                bitcoinWatchAccounts = state.bitcoinWatchAccounts.map { account ->
+                    if (account.id == accountId) transform(account) else account
+                }
+            )
+        }
+        persistBitcoinWatchAccounts()
     }
 
     private fun persistActivity() {
@@ -1107,6 +1393,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         from: String,
         to: String,
         amount: String,
+        derivationPath: String,
     ): String {
         val (maxPriority, maxFee) = EvmRpc.getBlockGasParams(chain)
         val nonce = EvmRpc.getNonce(chain, from)
@@ -1134,6 +1421,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 type = 2,
             ),
             chain = chain,
+            derivationPath = derivationPath,
         )
     }
 
@@ -1143,6 +1431,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         to: String,
         amount: String,
         token: TokenInfo,
+        derivationPath: String,
     ): String {
         val tokenAddress = token.address ?: error("该资产不是 ERC20")
         val (maxPriority, maxFee) = EvmRpc.getBlockGasParams(chain)
@@ -1173,6 +1462,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 type = 2,
             ),
             chain = chain,
+            derivationPath = derivationPath,
         )
     }
 
@@ -1236,6 +1526,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "已生成 1 张静态二维码，可直接给树莓派扫描。"
                     },
                     preparedRequestChainId = chain.chainId,
+                    preparedBitcoinAccountId = null,
                     signQrPages = bundle.payloads,
                     signQrPageIndex = 0,
                     signQrBitmap = qr,
@@ -1274,7 +1565,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 _uiState.update {
                     it.copy(
-                        info = "已接收 WalletConnect 配对链接。请回 DApp 点击连接/签名。",
+                        info = "已接收 WalletConnect 配对链接。若当前已选观察地址，会在收到提案后自动批准连接。",
                         error = "",
                         activeTab = focusTab,
                     )
@@ -1300,6 +1591,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     request = request,
                     selectedAddress = address,
                     activeChainId = _uiState.value.selectedChainId,
+                    derivationPath = _uiState.value.evmDerivationPath,
                 )
             ) {
                 is WalletConnectPreparedRequest.ImmediateResult -> {
@@ -1768,6 +2060,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (address.length != 42) return null
         if (!address.removePrefix("0x").all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) return null
         return address
+    }
+
+    private fun normalizeDerivationPath(raw: String?): String? {
+        val value = raw.orEmpty().trim()
+        if (value.isBlank()) return DEFAULT_EVM_DERIVATION_PATH
+        if (!value.startsWith("m")) return null
+        if (value == "m") return value
+        val segments = value.split("/")
+        if (segments.first() != "m") return null
+        val valid = segments.drop(1).all { segment ->
+            val cleaned = segment.removeSuffix("'").removeSuffix("h").removeSuffix("H")
+            cleaned.isNotBlank() && cleaned.all(Char::isDigit)
+        }
+        return value.takeIf { valid }
+    }
+
+    private fun shortAddress(address: String): String {
+        return if (address.length <= 14) address else "${address.take(8)}...${address.takeLast(6)}"
     }
 
     private fun setError(message: String) {

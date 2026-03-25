@@ -28,6 +28,7 @@ object WalletConnectRequestCodec {
         request: WalletConnectPendingRequest,
         selectedAddress: String,
         activeChainId: Long,
+        derivationPath: String,
     ): WalletConnectPreparedRequest {
         val activeChain = WalletChains.require(activeChainId)
         return when (request.method.lowercase()) {
@@ -54,6 +55,7 @@ object WalletConnectRequestCodec {
                 request = request,
                 selectedAddress = selectedAddress,
                 activeChainId = activeChainId,
+                derivationPath = derivationPath,
                 title = "WalletConnect 交易签名",
                 responseType = PendingResponseType.BROADCAST_TX,
             )
@@ -61,12 +63,13 @@ object WalletConnectRequestCodec {
                 request = request,
                 selectedAddress = selectedAddress,
                 activeChainId = activeChainId,
+                derivationPath = derivationPath,
                 title = "WalletConnect 交易签名",
                 responseType = PendingResponseType.RETURN_RAW_TRANSACTION,
             )
-            "personal_sign", "eth_sign" -> preparePersonalSign(request, selectedAddress, activeChainId)
+            "personal_sign", "eth_sign" -> preparePersonalSign(request, selectedAddress, activeChainId, derivationPath)
             "eth_signtypeddata", "eth_signtypeddata_v3", "eth_signtypeddata_v4" ->
-                prepareTypedDataSign(request, selectedAddress, activeChainId)
+                prepareTypedDataSign(request, selectedAddress, activeChainId, derivationPath)
             else -> throw IllegalArgumentException("暂不支持的 WalletConnect 方法: ${request.method}")
         }
     }
@@ -75,6 +78,7 @@ object WalletConnectRequestCodec {
         request: WalletConnectPendingRequest,
         selectedAddress: String,
         activeChainId: Long,
+        derivationPath: String,
         title: String,
         responseType: PendingResponseType,
     ): WalletConnectPreparedRequest.RelayToPi {
@@ -153,6 +157,7 @@ object WalletConnectRequestCodec {
             ),
             chain = chain,
             requestId = request.requestId.toString(),
+            derivationPath = derivationPath,
         )
         return WalletConnectPreparedRequest.RelayToPi(
             title = title,
@@ -166,6 +171,7 @@ object WalletConnectRequestCodec {
         request: WalletConnectPendingRequest,
         selectedAddress: String,
         activeChainId: Long,
+        derivationPath: String,
     ): WalletConnectPreparedRequest.RelayToPi {
         val array = JSONArray(request.params)
         require(array.length() > 0) { "消息签名参数为空" }
@@ -190,6 +196,7 @@ object WalletConnectRequestCodec {
             message = message,
             chain = chain,
             requestId = request.requestId.toString(),
+            derivationPath = derivationPath,
         )
         return WalletConnectPreparedRequest.RelayToPi(
             title = "WalletConnect 消息签名",
@@ -203,6 +210,7 @@ object WalletConnectRequestCodec {
         request: WalletConnectPendingRequest,
         selectedAddress: String,
         activeChainId: Long,
+        derivationPath: String,
     ): WalletConnectPreparedRequest.RelayToPi {
         val array = JSONArray(request.params)
         require(array.length() >= 2) { "TypedData 参数不足" }
@@ -238,6 +246,7 @@ object WalletConnectRequestCodec {
             typedDataJson = typedData,
             chain = chain,
             requestId = request.requestId.toString(),
+            derivationPath = derivationPath,
         )
         return WalletConnectPreparedRequest.RelayToPi(
             title = "WalletConnect TypedData 签名",

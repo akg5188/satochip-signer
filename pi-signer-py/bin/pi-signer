@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -14,6 +15,7 @@ from types import SimpleNamespace
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 DEFAULT_PATH = "m/44'/60'/0'/0/0"
+DEFAULT_BTC_XTYPE = "zpub"
 DEFAULT_TIMEOUT_SEC = 25
 
 SECP256K1_P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
@@ -25,6 +27,15 @@ SECP256K1_HALF_N = SECP256K1_N >> 1
 VENDOR_DIR = Path(__file__).resolve().parents[1] / "vendor"
 if VENDOR_DIR.is_dir():
     sys.path.insert(0, str(VENDOR_DIR))
+
+SOURCE_ROOT_CANDIDATES = [
+    Path("/opt/src"),
+    Path(__file__).resolve().parents[2] / "src",
+    Path(__file__).resolve().parents[2] / "seedsigner-os" / "opt" / "rootfs-overlay" / "opt" / "src",
+]
+for candidate in SOURCE_ROOT_CANDIDATES:
+    if candidate.is_dir():
+        sys.path.insert(0, str(candidate))
 
 try:
     from smartcard.System import readers as pcsc_readers
@@ -1420,6 +1431,12 @@ class UnlockOutcome:
 
 
 @dataclass
+class XpubOutcome:
+    xpub: str
+    derivation_path: str
+
+
+@dataclass
 class CardStatus:
     needs_2fa: bool
     is_seeded: bool
@@ -1435,6 +1452,117 @@ class SigningOutcome:
     digest_label: str
     result_hex: str
     result_label: str
+
+
+@dataclass
+class PsbtSignedInputDetail:
+    input_index: int
+    derivation_path: str
+    script_type: str
+
+
+@dataclass
+class PsbtSigningOutcome:
+    signed_psbt_bytes: bytes
+    signed_psbt_base64: str
+    extracted_tx_hex: Optional[str]
+    signed_inputs: List[PsbtSignedInputDetail]
+    total_inputs: int
+    skipped_inputs: int
+
+
+@dataclass(frozen=True)
+class BitcoinXpubType:
+    label: str
+    xtype: str
+    default_path: str
+    network_label: str
+    script_type_label: str
+    is_mainnet: bool
+
+
+BITCOIN_XPUB_TYPES: Dict[str, BitcoinXpubType] = {
+    "xpub": BitcoinXpubType("xpub", "standard", "m/44'/0'/0'", "mainnet", "p2pkh", True),
+    "ypub": BitcoinXpubType("ypub", "p2wpkh-p2sh", "m/49'/0'/0'", "mainnet", "p2sh-p2wpkh", True),
+    "zpub": BitcoinXpubType("zpub", "p2wpkh", "m/84'/0'/0'", "mainnet", "p2wpkh", True),
+    "tpub": BitcoinXpubType("tpub", "standard", "m/44'/1'/0'", "testnet", "p2pkh", False),
+    "upub": BitcoinXpubType("upub", "p2wpkh-p2sh", "m/49'/1'/0'", "testnet", "p2sh-p2wpkh", False),
+    "vpub": BitcoinXpubType("vpub", "p2wpkh", "m/84'/1'/0'", "testnet", "p2wpkh", False),
+}
+
+
+def parse_bitcoin_xpub_type(label: str) -> BitcoinXpubType:
+    xtype = BITCOIN_XPUB_TYPES.get(label.strip().lower())
+    if xtype is None:
+        supported = ", ".join(sorted(BITCOIN_XPUB_TYPES))
+        raise CliError(f"不支持的 --xtype: {label} (支持: {supported})")
+    return xtype
+
+
+def normalize_bip32_path_string(path: Optional[str]) -> str:
+    if path is None:
+        return "m"
+    text = path.strip()
+    if text.startswith("m/"):
+        text = text[2:]
+    text = text.replace("H", "'").replace("h", "'")
+    if text == "" or text == "m":
+        return "m"
+    return "m/" + text
+
+
+def format_derivation_path(indices: Sequence[int]) -> str:
+    path = "m"
+    for index in indices:
+        hardened = bool(index & 0x80000000)
+        value = index & 0x7FFFFFFF
+        suffix = "'" if hardened else ""
+        path += f"/{value}{suffix}"
+    return path
+
+
+def describe_psbt_script_type(inp: object) -> str:
+    try:
+        if getattr(inp, "witness_script", None) is not None:
+            return "p2wsh"
+        redeem_script = getattr(inp, "redeem_script", None)
+        if redeem_script is not None:
+            script_type = redeem_script.script_type()
+            if script_type == "p2wpkh":
+                return "p2sh-p2wpkh"
+            if script_type == "p2wsh":
+                return "p2sh-p2wsh"
+            return "p2sh"
+        utxo = getattr(inp, "utxo", None)
+        if utxo is None or getattr(utxo, "script_pubkey", None) is None:
+            return "unknown"
+        return utxo.script_pubkey.script_type()
+    except Exception:
+        return "unknown"
+
+
+def encode_der_signature(r: int, s: int) -> bytes:
+    def encode_int(value: int) -> bytes:
+        raw = value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
+        if raw[0] & 0x80:
+            raw = b"\x00" + raw
+        return raw
+
+    r_raw = encode_int(r)
+    s_raw = encode_int(s)
+    seq = b"\x02" + bytes([len(r_raw)]) + r_raw + b"\x02" + bytes([len(s_raw)]) + s_raw
+    return b"\x30" + bytes([len(seq)]) + seq
+
+
+def load_embit_runtime():
+    try:
+        from embit import ec as embit_ec  # type: ignore
+        from embit.finalizer import finalize_psbt  # type: ignore
+        from embit.psbt import PSBT  # type: ignore
+        from embit.transaction import SIGHASH  # type: ignore
+    except Exception as exc:
+        raise CliError(f"缺少 Bitcoin/PSBT 依赖 embit: {exc}") from exc
+    return PSBT, embit_ec, finalize_psbt, SIGHASH
 
 
 def connect_pcsc(reader_hint: Optional[str], timeout_seconds: int) -> ConnectedCard:
@@ -2019,6 +2147,150 @@ class SatochipSigner:
             return self._sign_typed_data(card, request, pubkey, signer_address, connector)
         raise stage_error("51", "未知请求类型")
 
+    def export_bip32_xpub(
+        self,
+        card: ConnectedCard,
+        derivation_path: str,
+        pin: str,
+        xtype: BitcoinXpubType,
+    ) -> XpubOutcome:
+        connector = self._prepare_connector(card, pin)
+        path = normalize_bip32_path_string(derivation_path)
+        try:
+            xpub = connector.card_bip32_get_xpub(path, xtype.xtype, xtype.is_mainnet)
+        except Exception as exc:
+            raise stage_error("53", f"导出 xpub 失败: {exc}") from exc
+        return XpubOutcome(xpub=xpub, derivation_path=path)
+
+    def sign_psbt_with_card(
+        self,
+        card: ConnectedCard,
+        psbt_bytes: bytes,
+        pin: str,
+    ) -> PsbtSigningOutcome:
+        PSBT, embit_ec, finalize_psbt, SIGHASH = load_embit_runtime()
+        connector = self._prepare_connector(card, pin)
+
+        try:
+            psbt = PSBT.parse(psbt_bytes)
+        except Exception as exc:
+            raise CliError(f"PSBT 解析失败: {exc}") from exc
+
+        signed_inputs: List[PsbtSignedInputDetail] = []
+        skipped_inputs = 0
+
+        for index, inp in enumerate(psbt.inputs):
+            if inp.final_scriptsig is not None or inp.final_scriptwitness is not None:
+                skipped_inputs += 1
+                continue
+
+            if getattr(inp, "taproot_internal_key", None) is not None or getattr(inp, "taproot_bip32_derivations", {}):
+                raise CliError("暂不支持 Taproot PSBT 输入，请先在 Electrum 中改用非 Taproot 账户")
+
+            if len(inp.bip32_derivations) == 0:
+                skipped_inputs += 1
+                continue
+
+            input_signed = False
+            for pubkey, derivation in inp.bip32_derivations.items():
+                path = format_derivation_path(derivation.derivation)
+                try:
+                    key, _chaincode = connector.card_bip32_get_extendedkey(path)
+                    card_pub = embit_ec.PublicKey.parse(key.get_public_key_bytes(compressed=True))
+                except Exception:
+                    continue
+
+                if card_pub != pubkey:
+                    continue
+                if pubkey in inp.partial_sigs:
+                    input_signed = True
+                    break
+
+                sighash_type = inp.sighash_type
+                if sighash_type is None:
+                    sighash_type = SIGHASH.ALL
+                if sighash_type == SIGHASH.DEFAULT:
+                    sighash_type = SIGHASH.ALL
+
+                try:
+                    tx_hash = psbt.sighash(index, sighash=sighash_type)
+                    response, sw1, sw2 = connector.card_sign_transaction_hash(0xFF, list(tx_hash), None)
+                except Exception as exc:
+                    raise CliError(f"卡签名失败 [input={index} path={path}]: {exc}") from exc
+
+                if sw1 != 0x90 or sw2 != 0x00:
+                    raise CliError(f"卡签名失败 [input={index} path={path}]: SW=0x{sw1:02X}{sw2:02X}")
+
+                r, s = decode_der_signature(bytes(response))
+                sig_der = encode_der_signature(r, s)
+                inp.partial_sigs[pubkey] = sig_der + bytes([sighash_type & 0xFF])
+                signed_inputs.append(
+                    PsbtSignedInputDetail(
+                        input_index=index,
+                        derivation_path=path,
+                        script_type=describe_psbt_script_type(inp),
+                    )
+                )
+                input_signed = True
+                break
+
+            if not input_signed:
+                skipped_inputs += 1
+
+        if not signed_inputs:
+            raise CliError(
+                "PSBT 中没有找到属于当前卡的可签输入，请确认 Electrum 导出的 PSBT 带有 BIP32 derivation 路径，并且卡内 seed 与该钱包一致"
+            )
+
+        extracted_tx_hex = None
+        try:
+            finalized = finalize_psbt(psbt)
+            if finalized is not None:
+                extracted_tx_hex = finalized.serialize().hex()
+        except Exception:
+            extracted_tx_hex = None
+
+        return PsbtSigningOutcome(
+            signed_psbt_bytes=psbt.serialize(),
+            signed_psbt_base64=psbt.to_base64(),
+            extracted_tx_hex=extracted_tx_hex,
+            signed_inputs=signed_inputs,
+            total_inputs=len(psbt.inputs),
+            skipped_inputs=skipped_inputs,
+        )
+
+    def _prepare_connector(self, card: ConnectedCard, pin: str):
+        try:
+            ensure_satochip_selected(card.connection)
+            status = card_get_status(card.connection)
+        except Exception as exc:
+            raise stage_error("50", exc) from exc
+        if not status.setup_done:
+            raise CliError("卡尚未初始化")
+        if not status.is_seeded:
+            raise CliError("卡内未导入种子/助记词")
+        if status.needs_2fa:
+            raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+
+        try:
+            connector = ensure_satochip_connector(card)
+            connector_status = connector_card_get_status(connector)
+        except Exception as exc:
+            raise stage_error("50", exc) from exc
+
+        if not connector_status.setup_done:
+            raise CliError("卡尚未初始化")
+        if not connector_status.is_seeded:
+            raise CliError("卡内未导入种子/助记词")
+        if connector_status.needs_2fa:
+            raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+
+        try:
+            connector_card_verify_pin(connector, pin)
+        except Exception as exc:
+            raise stage_error("52", exc) from exc
+        return connector
+
     def _sign_transaction(
         self,
         card: ConnectedCard,
@@ -2307,6 +2579,46 @@ def load_payload_input(options: CliOptions) -> str:
     return stdin_text
 
 
+def load_psbt_input(options: CliOptions) -> bytes:
+    psbt = options.value_or_none("psbt")
+    if psbt is not None and psbt.strip():
+        return decode_psbt_input(psbt.encode("utf-8"))
+
+    psbt_file = options.value_or_none("psbt-file")
+    if psbt_file is not None and psbt_file.strip():
+        path = Path(psbt_file)
+        if not path.is_file():
+            raise CliError(f"psbt-file 不存在: {psbt_file}")
+        return decode_psbt_input(path.read_bytes())
+
+    stdin_bytes = sys.stdin.buffer.read()
+    if not stdin_bytes:
+        raise CliError("请提供 --psbt 或 --psbt-file，或者从 stdin 输入 PSBT")
+    return decode_psbt_input(stdin_bytes)
+
+
+def decode_psbt_input(raw: bytes) -> bytes:
+    if raw.startswith(b"psbt\xff"):
+        return raw
+
+    try:
+        text = "".join(line.strip() for line in raw.decode("utf-8").splitlines() if line.strip())
+    except UnicodeDecodeError as exc:
+        raise CliError("PSBT 输入既不是原始二进制，也不是合法 Base64") from exc
+
+    if not text:
+        raise CliError("PSBT 输入为空")
+
+    try:
+        decoded = base64.b64decode(text, validate=True)
+    except Exception as exc:
+        raise CliError(f"PSBT 输入既不是原始二进制，也不是合法 Base64: {exc}") from exc
+
+    if not decoded.startswith(b"psbt\xff"):
+        raise CliError("Base64 解码后的内容不是合法 PSBT")
+    return decoded
+
+
 def normalize_payload(raw_input: str) -> str:
     lines = [line.strip() for line in raw_input.splitlines() if line.strip()]
     if not lines:
@@ -2333,6 +2645,11 @@ def normalize_payload(raw_input: str) -> str:
 def write_text_file(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def write_binary_file(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
 
 
 def write_qr_png(content: str, path: Path) -> None:
@@ -2415,6 +2732,76 @@ def run_sign(options: CliOptions) -> None:
         disconnect_card(connected)
 
 
+def run_get_xpub(options: CliOptions) -> None:
+    pin = options.required("pin")
+    xtype = parse_bitcoin_xpub_type(options.value("xtype", DEFAULT_BTC_XTYPE))
+    path = options.value("path", xtype.default_path)
+    reader = options.value_or_none("reader")
+    timeout = options.int_value("timeout-sec", DEFAULT_TIMEOUT_SEC)
+
+    connected = connect_pcsc(reader, timeout)
+    try:
+        print(f"已连接读卡器: {connected.reader_name}")
+        print(f"卡 ATR: {connected.atr_hex or 'unknown'}")
+
+        signer = SatochipSigner()
+        outcome = signer.export_bip32_xpub(connected, path, pin, xtype)
+
+        print("导出成功")
+        print(f"network: {xtype.network_label}")
+        print(f"script: {xtype.script_type_label}")
+        print(f"path: {outcome.derivation_path}")
+        print(f"{xtype.label}: {outcome.xpub}")
+    finally:
+        disconnect_card(connected)
+
+
+def run_sign_psbt(options: CliOptions) -> None:
+    pin = options.required("pin")
+    reader = options.value_or_none("reader")
+    timeout = options.int_value("timeout-sec", DEFAULT_TIMEOUT_SEC)
+    psbt_bytes = load_psbt_input(options)
+
+    connected = connect_pcsc(reader, timeout)
+    try:
+        print(f"已连接读卡器: {connected.reader_name}")
+        print(f"卡 ATR: {connected.atr_hex or 'unknown'}")
+
+        signer = SatochipSigner()
+        outcome = signer.sign_psbt_with_card(connected, psbt_bytes, pin)
+
+        raw_psbt_path = options.path_value("out-psbt", Path("signed.psbt"))
+        write_binary_file(raw_psbt_path, outcome.signed_psbt_bytes)
+
+        base64_psbt_path = options.path_value("out-psbt-base64", Path("signed.psbt.txt"))
+        write_text_file(base64_psbt_path, outcome.signed_psbt_base64 + "\n")
+
+        tx_path = options.path_value("out-tx", Path("signed.tx.hex"))
+        if outcome.extracted_tx_hex is not None:
+            write_text_file(tx_path, outcome.extracted_tx_hex + "\n")
+
+        print("PSBT 签名成功")
+        print(f"共签名输入: {len(outcome.signed_inputs)}")
+        print(f"已跳过输入: {outcome.skipped_inputs}/{outcome.total_inputs}")
+        for detail in outcome.signed_inputs:
+            print(f"  - input {detail.input_index}: {detail.script_type} path={detail.derivation_path}")
+        print(f"原始 PSBT 已写入: {raw_psbt_path.absolute()}")
+        print(f"Base64 PSBT 已写入: {base64_psbt_path.absolute()}")
+        if outcome.extracted_tx_hex is not None:
+            print(f"最终交易 Hex 已写入: {tx_path.absolute()}")
+        else:
+            print("这份 PSBT 目前只生成了已签名 PSBT，尚未抽取最终交易。")
+        print("\n----- Signed PSBT Base64 Begin -----")
+        print(outcome.signed_psbt_base64)
+        print("----- Signed PSBT Base64 End -----")
+        if outcome.extracted_tx_hex is not None:
+            print("\n----- Final Tx Hex Begin -----")
+            print(outcome.extracted_tx_hex)
+            print("----- Final Tx Hex End -----")
+    finally:
+        disconnect_card(connected)
+
+
 def print_usage() -> None:
     print(
         """
@@ -2424,10 +2811,16 @@ TP Satochip Pi Signer (Python)
   pi-signer unlock --pin <PIN> [--path <BIP32>] [--reader <关键字>] [--timeout-sec <秒>]
   pi-signer sign --pin <PIN> [--path <BIP32>] (--payload <TP字符串> | --payload-file <文件>)
                  [--reader <关键字>] [--timeout-sec <秒>] [--out response.txt] [--qr response.png]
+  pi-signer get-xpub --pin <PIN> [--xtype zpub] [--path <BIP32账户路径>] [--reader <关键字>]
+  pi-signer sign-psbt --pin <PIN> (--psbt <Base64> | --psbt-file <文件>)
+                      [--reader <关键字>] [--timeout-sec <秒>]
+                      [--out-psbt signed.psbt] [--out-psbt-base64 signed.psbt.txt] [--out-tx signed.tx.hex]
 
 例子:
   pi-signer unlock --pin 123456
   pi-signer sign --pin 123456 --payload-file request.txt --out response.txt --qr response.png
+  pi-signer get-xpub --pin 123456 --xtype zpub
+  pi-signer sign-psbt --pin 123456 --psbt-file unsigned.psbt --out-psbt signed.psbt
         """.strip()
     )
 
@@ -2446,6 +2839,12 @@ def main(argv: Sequence[str]) -> int:
             return 0
         if command == "sign":
             run_sign(options)
+            return 0
+        if command == "get-xpub":
+            run_get_xpub(options)
+            return 0
+        if command == "sign-psbt":
+            run_sign_psbt(options)
             return 0
         raise CliError(f"未知命令: {command}")
     except CliError as error:

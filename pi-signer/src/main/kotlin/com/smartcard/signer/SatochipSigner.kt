@@ -23,6 +23,11 @@ data class UnlockOutcome(
     val address: String
 )
 
+data class XpubOutcome(
+    val xpub: String,
+    val derivationPath: String
+)
+
 class SatochipSigner {
     fun unlockCard(
         channel: CardChannel,
@@ -76,6 +81,52 @@ class SatochipSigner {
             is TpSignPersonalMessageRequest -> signPersonalMessage(commandSet, request, pubkey, signerAddress)
             is TpSignTypedDataRequest -> signTypedData(commandSet, request, pubkey, signerAddress)
         }
+    }
+
+    fun exportBip32Xpub(
+        channel: CardChannel,
+        derivationPath: String,
+        pin: String,
+        xtype: Long,
+    ): XpubOutcome {
+        runCatching { Crypto.addBouncyCastleProvider() }
+
+        ensureSatochipAppletSelected(channel)
+        val commandSet = SatochipCommandSet(channel)
+        runCatching {
+            commandSet.cardVerifyPIN(pin.toByteArray(StandardCharsets.UTF_8))
+        }.getOrElse { error ->
+            throw IllegalStateException("PIN 验证失败: ${error.message}", error)
+        }
+
+        val xpub = runCatching {
+            commandSet.cardBip32GetXpub(derivationPath, xtype, null)
+        }.getOrElse { error ->
+            throw IllegalStateException("导出 xpub 失败: ${error.message}", error)
+        }
+
+        return XpubOutcome(
+            xpub = xpub,
+            derivationPath = derivationPath,
+        )
+    }
+
+    fun signPsbtWithCard(
+        channel: CardChannel,
+        psbtBytes: ByteArray,
+        pin: String,
+    ): PsbtSigningOutcome {
+        runCatching { Crypto.addBouncyCastleProvider() }
+
+        ensureSatochipAppletSelected(channel)
+        val commandSet = SatochipCommandSet(channel)
+        runCatching {
+            commandSet.cardVerifyPIN(pin.toByteArray(StandardCharsets.UTF_8))
+        }.getOrElse { error ->
+            throw IllegalStateException("PIN 验证失败: ${error.message}", error)
+        }
+
+        return BitcoinPsbtSigner(commandSet).sign(psbtBytes)
     }
 
     private fun signTransaction(

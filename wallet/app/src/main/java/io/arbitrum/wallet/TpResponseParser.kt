@@ -9,6 +9,7 @@ private val json = Json { ignoreUnknownKeys = true }
 
 data class ParsedResponse(
     val rawTransaction: String?,
+    val bitcoinTxHex: String?,
     val signature: String?,
     val address: String?,
     val isError: Boolean = false,
@@ -17,24 +18,33 @@ data class ParsedResponse(
 object TpResponseParser {
     fun parse(responsePayload: String): ParsedResponse {
         val raw = responsePayload.trim()
-        if (raw.isBlank()) return ParsedResponse(null, null, null, isError = true)
+        if (raw.isBlank()) return ParsedResponse(null, null, null, null, isError = true)
+
+        if (raw.startsWith("btctx:", ignoreCase = true)) {
+            val txHex = raw.substringAfter(':').trim()
+            return if (txHex.isBlank()) {
+                ParsedResponse(null, null, null, null, isError = true)
+            } else {
+                ParsedResponse(rawTransaction = null, bitcoinTxHex = txHex, signature = null, address = null)
+            }
+        }
 
         val dash = raw.indexOf('-')
-        if (dash <= 0) return ParsedResponse(null, null, null, isError = true)
+        if (dash <= 0) return ParsedResponse(null, null, null, null, isError = true)
 
         val queryPart = raw.substring(dash + 1).removePrefix("?")
-        val dataRaw = parseQuery(queryPart)["data"] ?: return ParsedResponse(null, null, null, isError = true)
+        val dataRaw = parseQuery(queryPart)["data"] ?: return ParsedResponse(null, null, null, null, isError = true)
         val dataObj = try {
             json.parseToJsonElement(dataRaw).jsonObject
         } catch (e: Throwable) {
-            return ParsedResponse(null, null, null, isError = true)
+            return ParsedResponse(null, null, null, null, isError = true)
         }
 
         val rawTx = dataObj["rawTransaction"]?.jsonPrimitive?.content
         val sig = dataObj["signature"]?.jsonPrimitive?.content
         val addr = dataObj["address"]?.jsonPrimitive?.content
 
-        return ParsedResponse(rawTransaction = rawTx, signature = sig, address = addr)
+        return ParsedResponse(rawTransaction = rawTx, bitcoinTxHex = null, signature = sig, address = addr)
     }
 
     private fun parseQuery(queryRaw: String): Map<String, String> {

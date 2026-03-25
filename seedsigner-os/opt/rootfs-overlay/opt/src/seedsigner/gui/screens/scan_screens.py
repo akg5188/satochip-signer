@@ -344,7 +344,6 @@ class ScanTypeEncryptionKeyScreen(BaseTopNavScreen):
     KEYBOARD__DIGITS_BUTTON_TEXT = "123"
     KEYBOARD__SYMBOLS_1_BUTTON_TEXT = "!@#"
     KEYBOARD__SYMBOLS_2_BUTTON_TEXT = "*[]"
-    KEYBOARD__SELECT_BUTTON_TEXT = "OK"
 
 
     def __post_init__(self):
@@ -508,7 +507,7 @@ class ScanTypeEncryptionKeyScreen(BaseTopNavScreen):
         )
 
         self.hw_button2 = Button(
-            text=self.KEYBOARD__SELECT_BUTTON_TEXT,
+            text=self.KEYBOARD__DIGITS_BUTTON_TEXT,
             is_text_centered=False,
             font_name=GUIConstants.FIXED_WIDTH_EMPHASIS_FONT_NAME,
             font_size=GUIConstants.get_button_font_size() + 4,
@@ -547,8 +546,9 @@ class ScanTypeEncryptionKeyScreen(BaseTopNavScreen):
         else:
             cur_keyboard = self.keyboard_abc
 
-        self.hw_button1.text = self._get_mode_button_text(cur_keyboard)
-        self.hw_button2.text = self.KEYBOARD__SELECT_BUTTON_TEXT
+        cur_button1_text, cur_button2_text = self._get_button_texts(cur_keyboard)
+        self.hw_button1.text = cur_button1_text
+        self.hw_button2.text = cur_button2_text
         self.text_entry_display.render()
         self.hw_button1.render()
         self.hw_button2.render()
@@ -561,11 +561,15 @@ class ScanTypeEncryptionKeyScreen(BaseTopNavScreen):
     def _run(self):
         cursor_position = len(self.encryptionkey)
         cur_keyboard = self.keyboard_abc
-        cur_button1_text = self._get_mode_button_text(cur_keyboard)
+        cur_button1_text, cur_button2_text = self._get_button_texts(cur_keyboard)
 
         # Start the interactive update loop
         while True:
-            input = self.hw_inputs.wait_for(HardwareButtonsConstants.ALL_KEYS)
+            input = self.hw_inputs.wait_for(
+                HardwareButtonsConstants.ALL_KEYS,
+                check_release=True,
+                release_keys=[HardwareButtonsConstants.KEY_PRESS, HardwareButtonsConstants.KEY1, HardwareButtonsConstants.KEY2, HardwareButtonsConstants.KEY3]
+            )
 
             keyboard_swap = False
 
@@ -586,20 +590,77 @@ class ScanTypeEncryptionKeyScreen(BaseTopNavScreen):
                     return dict(encryptionkey=self.encryptionkey, is_back_button=True)
 
                 # Check for keyboard swaps
-                if input in [HardwareButtonsConstants.KEY1, HardwareButtonsConstants.KEY2]:
+                if input == HardwareButtonsConstants.KEY1:
                     # First light up key1
                     self.hw_button1.is_selected = True
                     self.hw_button1.render()
-                    next_keyboard = self._get_next_keyboard(cur_keyboard)
-                    next_keyboard.set_selected_key_indices(
-                        x=cur_keyboard.selected_key["x"],
-                        y=cur_keyboard.selected_key["y"],
-                    )
-                    cur_keyboard = next_keyboard
-                    cur_button1_text = self._get_mode_button_text(cur_keyboard)
+
+                    if cur_keyboard == self.keyboard_digits:
+                        cur_button2_text = self.KEYBOARD__DIGITS_BUTTON_TEXT
+                    elif cur_keyboard == self.keyboard_symbols_1:
+                        cur_button2_text = self.KEYBOARD__SYMBOLS_1_BUTTON_TEXT
+                    elif cur_keyboard == self.keyboard_symbols_2:
+                        cur_button2_text = self.KEYBOARD__SYMBOLS_2_BUTTON_TEXT
+
+                    if cur_button1_text == self.KEYBOARD__LOWERCASE_BUTTON_TEXT:
+                        self.keyboard_abc.set_selected_key_indices(
+                            x=cur_keyboard.selected_key["x"],
+                            y=cur_keyboard.selected_key["y"],
+                        )
+                        cur_keyboard = self.keyboard_abc
+                        cur_button1_text = self.KEYBOARD__UPPERCASE_BUTTON_TEXT
+                    else:
+                        self.keyboard_ABC.set_selected_key_indices(
+                            x=cur_keyboard.selected_key["x"],
+                            y=cur_keyboard.selected_key["y"],
+                        )
+                        cur_keyboard = self.keyboard_ABC
+                        cur_button1_text = self.KEYBOARD__LOWERCASE_BUTTON_TEXT
                     cur_keyboard.render_keys()
 
                     # Show the changes; this loop will have two renders
+                    self.renderer.show_image()
+
+                    keyboard_swap = True
+                    ret_val = None
+
+                elif input == HardwareButtonsConstants.KEY2:
+                    # First light up key2
+                    self.hw_button2.is_selected = True
+                    self.hw_button2.render()
+                    self.renderer.show_image()
+
+                    # And reset for next redraw
+                    self.hw_button2.is_selected = False
+
+                    if cur_keyboard == self.keyboard_abc:
+                        cur_button1_text = self.KEYBOARD__LOWERCASE_BUTTON_TEXT
+                    elif cur_keyboard == self.keyboard_ABC:
+                        cur_button1_text = self.KEYBOARD__UPPERCASE_BUTTON_TEXT
+
+                    if cur_button2_text == self.KEYBOARD__DIGITS_BUTTON_TEXT:
+                        self.keyboard_digits.set_selected_key_indices(
+                            x=cur_keyboard.selected_key["x"],
+                            y=cur_keyboard.selected_key["y"],
+                        )
+                        cur_keyboard = self.keyboard_digits
+                        cur_button2_text = self.KEYBOARD__SYMBOLS_1_BUTTON_TEXT
+                    elif cur_button2_text == self.KEYBOARD__SYMBOLS_1_BUTTON_TEXT:
+                        self.keyboard_symbols_1.set_selected_key_indices(
+                            x=cur_keyboard.selected_key["x"],
+                            y=cur_keyboard.selected_key["y"],
+                        )
+                        cur_keyboard = self.keyboard_symbols_1
+                        cur_button2_text = self.KEYBOARD__SYMBOLS_2_BUTTON_TEXT
+                    elif cur_button2_text == self.KEYBOARD__SYMBOLS_2_BUTTON_TEXT:
+                        self.keyboard_symbols_2.set_selected_key_indices(
+                            x=cur_keyboard.selected_key["x"],
+                            y=cur_keyboard.selected_key["y"],
+                        )
+                        cur_keyboard = self.keyboard_symbols_2
+                        cur_button2_text = self.KEYBOARD__DIGITS_BUTTON_TEXT
+                    cur_keyboard.render_keys()
+
                     self.renderer.show_image()
 
                     keyboard_swap = True
@@ -679,7 +740,7 @@ class ScanTypeEncryptionKeyScreen(BaseTopNavScreen):
                 if keyboard_swap:
                     # Show the hw buttons' updated text and not active state
                     self.hw_button1.text = cur_button1_text
-                    self.hw_button2.text = self.KEYBOARD__SELECT_BUTTON_TEXT
+                    self.hw_button2.text = cur_button2_text
                     self.hw_button1.is_selected = False
                     self.hw_button2.is_selected = False
                     self.hw_button1.render()
@@ -687,27 +748,16 @@ class ScanTypeEncryptionKeyScreen(BaseTopNavScreen):
 
                 self.renderer.show_image()
 
-    def _get_mode_button_text(self, cur_keyboard):
-        if cur_keyboard == self.keyboard_abc:
-            return self.KEYBOARD__UPPERCASE_BUTTON_TEXT
+    def _get_button_texts(self, cur_keyboard):
         if cur_keyboard == self.keyboard_ABC:
-            return self.KEYBOARD__DIGITS_BUTTON_TEXT
+            return self.KEYBOARD__LOWERCASE_BUTTON_TEXT, self.KEYBOARD__DIGITS_BUTTON_TEXT
         if cur_keyboard == self.keyboard_digits:
-            return self.KEYBOARD__SYMBOLS_1_BUTTON_TEXT
+            return self.KEYBOARD__LOWERCASE_BUTTON_TEXT, self.KEYBOARD__SYMBOLS_1_BUTTON_TEXT
         if cur_keyboard == self.keyboard_symbols_1:
-            return self.KEYBOARD__SYMBOLS_2_BUTTON_TEXT
-        return self.KEYBOARD__LOWERCASE_BUTTON_TEXT
-
-    def _get_next_keyboard(self, cur_keyboard):
-        if cur_keyboard == self.keyboard_abc:
-            return self.keyboard_ABC
-        if cur_keyboard == self.keyboard_ABC:
-            return self.keyboard_digits
-        if cur_keyboard == self.keyboard_digits:
-            return self.keyboard_symbols_1
-        if cur_keyboard == self.keyboard_symbols_1:
-            return self.keyboard_symbols_2
-        return self.keyboard_abc
+            return self.KEYBOARD__LOWERCASE_BUTTON_TEXT, self.KEYBOARD__SYMBOLS_2_BUTTON_TEXT
+        if cur_keyboard == self.keyboard_symbols_2:
+            return self.KEYBOARD__LOWERCASE_BUTTON_TEXT, self.KEYBOARD__DIGITS_BUTTON_TEXT
+        return self.KEYBOARD__UPPERCASE_BUTTON_TEXT, self.KEYBOARD__DIGITS_BUTTON_TEXT
 
 
 

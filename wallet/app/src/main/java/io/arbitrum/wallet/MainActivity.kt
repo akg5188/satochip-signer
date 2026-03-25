@@ -75,8 +75,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -139,6 +142,12 @@ class MainActivity : BiometricGateActivity(), InjectedBrowserHost {
         viewModel.onRequestScanResult(text)
     }
 
+    private val bitcoinImportQrLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+        val text = result.data?.getStringExtra(QrScanActivity.EXTRA_QR_RESULT) ?: return@registerForActivityResult
+        viewModel.setBitcoinImportInput(text)
+    }
+
     private val responseQrLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
         val text = result.data?.getStringExtra(QrScanActivity.EXTRA_QR_RESULT) ?: return@registerForActivityResult
@@ -177,10 +186,18 @@ class MainActivity : BiometricGateActivity(), InjectedBrowserHost {
                     onOpenHyperliquid = ::openHyperliquid,
                     onSelectChain = viewModel::selectChain,
                     onNewAddressChange = viewModel::setNewAddressInput,
+                    onEvmDerivationPathChange = viewModel::setEvmDerivationPath,
                     onAddAddress = viewModel::addAddressFromInput,
+                    onPrepareDerivedAddressImport = viewModel::prepareDerivedAddressImport,
                     onSelectAddress = viewModel::selectAddress,
                     onRemoveAddress = viewModel::removeAddress,
                     onRefreshBalances = viewModel::refreshSelectedActivity,
+                    onBitcoinImportInputChange = viewModel::setBitcoinImportInput,
+                    onScanBitcoinWatchAccount = ::startBitcoinImportScan,
+                    onImportBitcoinWatchAccount = viewModel::importBitcoinWatchAccount,
+                    onRemoveBitcoinWatchAccount = viewModel::removeBitcoinWatchAccount,
+                    onSyncBitcoinWatchAccount = viewModel::syncBitcoinWatchAccount,
+                    onPrepareBitcoinTransfer = viewModel::prepareBitcoinTransfer,
                     onTransferToChange = viewModel::setTransferTo,
                     onTransferAmountChange = viewModel::setTransferAmount,
                     onTransferTokenChange = viewModel::setTransferToken,
@@ -297,6 +314,12 @@ class MainActivity : BiometricGateActivity(), InjectedBrowserHost {
         val intent = Intent(this, ContinuousQrScanActivity::class.java)
             .putExtra(ContinuousQrScanActivity.EXTRA_SCAN_MODE, ContinuousQrScanActivity.MODE_REQUEST)
         requestQrLauncher.launch(intent)
+    }
+
+    private fun startBitcoinImportScan() {
+        val intent = Intent(this, QrScanActivity::class.java)
+            .putExtra(QrScanActivity.EXTRA_STATUS_TEXT, "请扫描树莓派导出的 xpub / zpub 二维码")
+        bitcoinImportQrLauncher.launch(intent)
     }
 
     private fun startResponseScan() {
@@ -1018,10 +1041,18 @@ private fun WalletScreen(
     onOpenHyperliquid: () -> Unit,
     onSelectChain: (Long) -> Unit,
     onNewAddressChange: (String) -> Unit,
+    onEvmDerivationPathChange: (String) -> Unit,
     onAddAddress: () -> Unit,
+    onPrepareDerivedAddressImport: () -> Unit,
     onSelectAddress: (String) -> Unit,
     onRemoveAddress: (String) -> Unit,
     onRefreshBalances: () -> Unit,
+    onBitcoinImportInputChange: (String) -> Unit,
+    onScanBitcoinWatchAccount: () -> Unit,
+    onImportBitcoinWatchAccount: () -> Unit,
+    onRemoveBitcoinWatchAccount: (String) -> Unit,
+    onSyncBitcoinWatchAccount: (String) -> Unit,
+    onPrepareBitcoinTransfer: (String, String, String, String?) -> Unit,
     onTransferToChange: (String) -> Unit,
     onTransferAmountChange: (String) -> Unit,
     onTransferTokenChange: (String) -> Unit,
@@ -1159,9 +1190,29 @@ private fun WalletScreen(
                     chain = chain,
                     onRefreshBalances = onRefreshBalances,
                     onNewAddressChange = onNewAddressChange,
+                    onEvmDerivationPathChange = onEvmDerivationPathChange,
                     onAddAddress = onAddAddress,
+                    onPrepareDerivedAddressImport = onPrepareDerivedAddressImport,
                     onSelectAddress = onSelectAddress,
                     onRemoveAddress = onRemoveAddress,
+                )
+                TransferSection(
+                    state = state,
+                    chain = chain,
+                    onTransferToChange = onTransferToChange,
+                    onTransferAmountChange = onTransferAmountChange,
+                    onTransferTokenChange = onTransferTokenChange,
+                    onTransferAmountAll = onTransferAmountAll,
+                    onPrepareTransfer = onPrepareTransfer,
+                )
+                BitcoinPrototypeSection(
+                    state = state,
+                    onImportInputChange = onBitcoinImportInputChange,
+                    onScanImport = onScanBitcoinWatchAccount,
+                    onImportAccount = onImportBitcoinWatchAccount,
+                    onRemoveAccount = onRemoveBitcoinWatchAccount,
+                    onSyncAccount = onSyncBitcoinWatchAccount,
+                    onPrepareTransfer = onPrepareBitcoinTransfer,
                 )
                 if (WalletChains.ALL.size > 1) {
                     ChainSelectorSection(
@@ -1173,15 +1224,6 @@ private fun WalletScreen(
                     chain = chain,
                     portfolio = portfolio,
                     isLoading = state.loadingBalances,
-                )
-                TransferSection(
-                    state = state,
-                    chain = chain,
-                    onTransferToChange = onTransferToChange,
-                    onTransferAmountChange = onTransferAmountChange,
-                    onTransferTokenChange = onTransferTokenChange,
-                    onTransferAmountAll = onTransferAmountAll,
-                    onPrepareTransfer = onPrepareTransfer,
                 )
                 DappToolsSection(
                     state = state,
@@ -2156,60 +2198,116 @@ private fun WalletOverviewSection(
     chain: WalletChain,
     onRefreshBalances: () -> Unit,
     onNewAddressChange: (String) -> Unit,
+    onEvmDerivationPathChange: (String) -> Unit,
     onAddAddress: () -> Unit,
+    onPrepareDerivedAddressImport: () -> Unit,
     onSelectAddress: (String) -> Unit,
     onRemoveAddress: (String) -> Unit,
 ) {
-    WalletSectionCard {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column {
-                Text(chain.displayName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                Text("观察钱包", fontSize = 12.sp, color = Color(0xFF667085))
-            }
-            TextButton(onClick = onRefreshBalances) {
-                Text(if (state.loadingBalances) "同步中" else "刷新", fontSize = 12.sp)
-            }
-        }
+    var showManualImport by rememberSaveable { mutableStateOf(false) }
+    var showAddressManager by rememberSaveable { mutableStateOf(false) }
 
-        if (state.selectedAddress.isBlank()) {
-            Text(
-                "请添加观察地址后即可查看资产和签名",
-                modifier = Modifier.padding(top = 8.dp),
-                fontSize = 12.sp,
-                color = Color(0xFF667085),
-            )
-        }
+    WalletSectionCard {
+        SectionHeader(
+            title = chain.displayName,
+            subtitle = if (state.addresses.isEmpty()) "先从树莓派导入观察地址，再查看资产与签名" else "已接入 ${state.addresses.size} 个观察地址",
+            trailing = {
+                TextButton(onClick = onRefreshBalances) {
+                    Text(if (state.loadingBalances) "同步中" else "刷新", fontSize = 12.sp)
+                }
+            },
+        )
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedTextField(
-                value = state.newAddressInput,
-                onValueChange = onNewAddressChange,
-                placeholder = { Text("添加地址 (0x...)", fontSize = 12.sp) },
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 56.dp),
-                singleLine = true,
-            )
-            Button(onClick = onAddAddress, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text("添加", fontSize = 12.sp)
+            StatusChip(if (state.selectedAddress.isBlank()) "未选地址" else "当前地址已选")
+            StatusChip("${state.addresses.size} 个地址")
+            StatusChip(chain.shortName)
+            StatusChip("路径已固定")
+        }
+
+        Surface(
+            color = Color(0xFFF8FAFC),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("当前派生路径", fontSize = 12.sp, color = Color(0xFF667085))
+                OutlinedTextField(
+                    value = state.evmDerivationPath,
+                    onValueChange = onEvmDerivationPathChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text(DEFAULT_EVM_DERIVATION_PATH, fontSize = 12.sp) },
+                )
+                Text(
+                    if (state.selectedAddress.isBlank()) {
+                        "当前还没有 EVM 观察地址，建议直接用树莓派按这个路径导入。"
+                    } else {
+                        "当前地址: ${shortAddressLabel(state.selectedAddress, head = 10, tail = 8)}"
+                    },
+                    fontSize = 12.sp,
+                    color = Color(0xFF475467),
+                )
             }
         }
 
-        if (state.addresses.isNotEmpty()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = onPrepareDerivedAddressImport,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("从树莓派导入", fontSize = 12.sp)
+            }
+            OutlinedButton(
+                onClick = { showAddressManager = !showAddressManager },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (showAddressManager) "收起地址" else "管理地址", fontSize = 12.sp)
+            }
+        }
+
+        TextButton(onClick = { showManualImport = !showManualImport }) {
+            Text(if (showManualImport) "收起手动添加" else "手动添加地址", fontSize = 12.sp)
+        }
+
+        if (showManualImport) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = state.newAddressInput,
+                    onValueChange = onNewAddressChange,
+                    placeholder = { Text("添加地址 (0x...)", fontSize = 12.sp) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 56.dp),
+                    singleLine = true,
+                )
+                Button(onClick = onAddAddress, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("添加", fontSize = 12.sp)
+                }
+            }
+        }
+
+        if (showAddressManager && state.addresses.isNotEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 10.dp),
+                    .padding(top = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 state.addresses.forEach { address ->
@@ -2221,15 +2319,433 @@ private fun WalletOverviewSection(
                     )
                 }
             }
+        } else if (state.addresses.isEmpty()) {
+            Surface(
+                color = Color(0xFFF8FAFC),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+            ) {
+                Text(
+                    "推荐流程：设置派生路径 -> 点“从树莓派导入” -> 树莓派扫码 -> 手机扫回结果。导入后资产、转账和 WalletConnect 都会围着这个地址展开。",
+                    modifier = Modifier.padding(12.dp),
+                    fontSize = 12.sp,
+                    color = Color(0xFF667085),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BitcoinPrototypeSection(
+    state: WalletUiState,
+    onImportInputChange: (String) -> Unit,
+    onScanImport: () -> Unit,
+    onImportAccount: () -> Unit,
+    onRemoveAccount: (String) -> Unit,
+    onSyncAccount: (String) -> Unit,
+    onPrepareTransfer: (String, String, String, String?) -> Unit,
+) {
+    var showImportPanel by rememberSaveable { mutableStateOf(state.bitcoinWatchAccounts.isEmpty()) }
+    var showAccounts by rememberSaveable { mutableStateOf(false) }
+    var expandedAccountId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    WalletSectionCard {
+        SectionHeader(
+            title = "Bitcoin 观察账户",
+            subtitle = "首页只保留账户摘要，地址预览放到二级展开",
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            StatusChip("${state.bitcoinWatchAccounts.size} 个账户")
+            StatusChip("只读")
+            StatusChip("树莓派导入")
         }
 
-        if (state.addresses.isEmpty()) {
-            Text(
-                "添加地址后就能查看资产、转账和签名。",
-                fontSize = 12.sp,
-                color = Color(0xFF667085),
-                modifier = Modifier.padding(top = 10.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = { showImportPanel = !showImportPanel },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (showImportPanel) "收起导入" else "导入账户", fontSize = 12.sp)
+            }
+            OutlinedButton(
+                onClick = { showAccounts = !showAccounts },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (showAccounts) "收起账户" else "查看账户", fontSize = 12.sp)
+            }
+        }
+
+        Surface(
+            color = Color(0xFFF8FAFC),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    state.bitcoinPrototypeStatus,
+                    fontSize = 12.sp,
+                    color = Color(0xFF475467),
+                )
+                Text(
+                    "树莓派导出：pi-signer get-xpub --pin <PIN> --xtype zpub",
+                    fontSize = 11.sp,
+                    color = Color(0xFF667085),
+                )
+            }
+        }
+
+        if (showImportPanel || state.bitcoinWatchAccounts.isEmpty()) {
+            OutlinedTextField(
+                value = state.bitcoinImportInput,
+                onValueChange = onImportInputChange,
+                placeholder = {
+                    Text("粘贴 zpub / xpub，或直接扫码导入", fontSize = 12.sp)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+                maxLines = 4,
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = onScanImport, modifier = Modifier.weight(1f)) { Text("扫码导入", fontSize = 12.sp) }
+                Button(onClick = onImportAccount, modifier = Modifier.weight(1f)) { Text("导入 BTC 账户", fontSize = 12.sp) }
+            }
+        }
+
+        if (state.bitcoinWatchAccounts.isEmpty()) {
+            Surface(
+                color = Color(0xFFFEF3F2),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, Color(0xFFFECACA)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text("还没有 BTC 观察账户", fontWeight = FontWeight.Medium, color = Color(0xFF101828))
+                    Text(
+                        "先从树莓派导出 zpub，再扫码或粘贴进来。当前这版已经能做地址派生预览。",
+                        fontSize = 12.sp,
+                        color = Color(0xFF667085),
+                    )
+                }
+            }
+        } else if (showAccounts) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                state.bitcoinWatchAccounts.forEach { account ->
+                    BitcoinWatchAccountCard(
+                        account = account,
+                        expanded = expandedAccountId == account.id,
+                        onToggleExpanded = {
+                            expandedAccountId = if (expandedAccountId == account.id) null else account.id
+                        },
+                        onRemoveAccount = onRemoveAccount,
+                        onSyncAccount = onSyncAccount,
+                        onPrepareTransfer = onPrepareTransfer,
+                    )
+                }
+            }
+        } else {
+            Surface(
+                color = Color(0xFFF8FAFC),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+            ) {
+                Text(
+                    "账户和地址预览已隐藏到二级列表，点“查看账户”再展开具体地址。",
+                    modifier = Modifier.padding(12.dp),
+                    fontSize = 12.sp,
+                    color = Color(0xFF667085),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BitcoinWatchAccountCard(
+    account: BitcoinWatchAccount,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    onRemoveAccount: (String) -> Unit,
+    onSyncAccount: (String) -> Unit,
+    onPrepareTransfer: (String, String, String, String?) -> Unit,
+) {
+    val context = LocalContext.current
+    var showTransferComposer by rememberSaveable(account.id) { mutableStateOf(false) }
+    var transferTo by rememberSaveable(account.id) { mutableStateOf("") }
+    var transferAmount by rememberSaveable(account.id) { mutableStateOf("") }
+    var feeRate by rememberSaveable(account.id) { mutableStateOf("") }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color(0xFFF8FAFC),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(account.label, fontWeight = FontWeight.SemiBold, color = Color(0xFF101828))
+                    Text("${account.networkLabel} · ${account.scriptTypeLabel}", fontSize = 11.sp, color = Color(0xFF667085))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    StatusChip(label = account.prefix.uppercase())
+                    StatusChip(label = "只读")
+                    TextButton(onClick = onToggleExpanded) {
+                        Text(if (expanded) "收起" else "查看", fontSize = 11.sp)
+                    }
+                }
+            }
+
+            Text(account.accountPathHint, fontSize = 12.sp, color = Color(0xFF344054))
+            if (account.accountFingerprintHex.isNotBlank()) {
+                Text("账户指纹: ${account.accountFingerprintHex}", fontSize = 11.sp, color = Color(0xFF667085))
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = { onSyncAccount(account.id) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (account.syncing) "同步中..." else "同步余额", fontSize = 12.sp)
+                }
+                Button(
+                    onClick = { showTransferComposer = !showTransferComposer },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (showTransferComposer) "收起转账" else "发送 BTC", fontSize = 12.sp)
+                }
+            }
+
+            Surface(
+                color = Color.White,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        if (account.balanceSats > 0) "可用余额: ${formatBitcoinSats(account.balanceSats)}" else "可用余额: 未同步",
+                        fontSize = 12.sp,
+                        color = Color(0xFF101828),
+                    )
+                    Text(
+                        if (account.lastSyncStatus.isNotBlank()) account.lastSyncStatus else "点“同步余额”后会拉取链上 UTXO 和下一收款地址。",
+                        fontSize = 11.sp,
+                        color = Color(0xFF667085),
+                    )
+                    if (account.nextReceiveAddress.isNotBlank()) {
+                        Text(
+                            "下一收款地址: ${shortAddressLabel(account.nextReceiveAddress, head = 12, tail = 8)}",
+                            fontSize = 11.sp,
+                            color = Color(0xFF344054),
+                        )
+                    }
+                }
+            }
+
+            if (showTransferComposer) {
+                OutlinedTextField(
+                    value = transferTo,
+                    onValueChange = { transferTo = it },
+                    placeholder = { Text("收款 BTC 地址", fontSize = 12.sp) },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = transferAmount,
+                        onValueChange = { transferAmount = it },
+                        placeholder = { Text("数量 (BTC)", fontSize = 12.sp) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = feeRate,
+                        onValueChange = { feeRate = it },
+                        placeholder = { Text("手续费 sat/vB", fontSize = 12.sp) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                    )
+                }
+                Text(
+                    "手续费留空就用当前链上推荐值。准备后会生成树莓派扫描用的 BTC PSBT 二维码。",
+                    fontSize = 11.sp,
+                    color = Color(0xFF667085),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { showTransferComposer = false },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("取消", fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = {
+                            onPrepareTransfer(account.id, transferTo, transferAmount, feeRate.takeIf { it.isNotBlank() })
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("准备签名", fontSize = 12.sp)
+                    }
+                }
+            }
+
+            if (expanded) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        shortAddressLabel(account.xpub, head = 18, tail = 14),
+                        modifier = Modifier.weight(1f),
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        color = Color(0xFF0F172A),
+                    )
+                    TextButton(
+                        onClick = {
+                            copyPlainText(
+                                context = context,
+                                label = "btc-xpub",
+                                value = account.xpub,
+                                successMessage = "扩展公钥已复制",
+                            )
+                        }
+                    ) {
+                        Text("复制 xpub", fontSize = 11.sp)
+                    }
+                }
+                if (account.derivationError.isNotBlank()) {
+                    Text(account.derivationError, fontSize = 11.sp, color = Color(0xFFB42318))
+                } else {
+                    BitcoinAddressPreviewGroup(
+                        title = "收款地址预览",
+                        addresses = account.receivePreview,
+                    )
+                    BitcoinAddressPreviewGroup(
+                        title = "找零地址预览",
+                        addresses = account.changePreview,
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = { onRemoveAccount(account.id) }) {
+                    Text("删除", fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BitcoinAddressPreviewGroup(
+    title: String,
+    addresses: List<BitcoinDerivedAddressPreview>,
+) {
+    if (addresses.isEmpty()) return
+    val context = LocalContext.current
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            title,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = Color(0xFF101828),
+        )
+        addresses.forEach { preview ->
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color.White,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "${preview.branchLabel} #${preview.index}",
+                            fontSize = 11.sp,
+                            color = Color(0xFF475467),
+                        )
+                        TextButton(
+                            onClick = {
+                                copyPlainText(
+                                    context = context,
+                                    label = "btc-address",
+                                    value = preview.address,
+                                    successMessage = "BTC 地址已复制",
+                                )
+                            }
+                        ) {
+                            Text("复制", fontSize = 11.sp)
+                        }
+                    }
+                    SelectionContainer {
+                        Text(
+                            preview.address,
+                            fontSize = 12.sp,
+                            color = Color(0xFF0F172A),
+                        )
+                    }
+                    Text(
+                        preview.path,
+                        fontSize = 10.sp,
+                        color = Color(0xFF667085),
+                    )
+                }
+            }
         }
     }
 }
@@ -2237,6 +2753,17 @@ private fun WalletOverviewSection(
 private fun shortAddressLabel(address: String, head: Int = 8, tail: Int = 6): String {
     if (address.length <= head + tail + 3) return address
     return "${address.take(head)}...${address.takeLast(tail)}"
+}
+
+private fun copyPlainText(
+    context: Context,
+    label: String,
+    value: String,
+    successMessage: String,
+) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+    Toast.makeText(context, successMessage, Toast.LENGTH_SHORT).show()
 }
 
 private val usdFormatter: NumberFormat = NumberFormat.getCurrencyInstance(Locale.US).apply {
@@ -2565,11 +3092,33 @@ private fun DappToolsSection(
     onScanRequest: () -> Unit,
     onPickRequestFromGallery: () -> Unit,
 ) {
+    var showManualTools by rememberSaveable { mutableStateOf(false) }
+
     WalletSectionCard {
         SectionHeader(
             title = "DApp 签名工具",
-            subtitle = "支持 WalletConnect、二维码和原始请求导入",
+            subtitle = "扫码 WalletConnect 链接后，会优先按当前观察地址自动连接",
         )
+        Surface(
+            color = Color(0xFFF8FAFC),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+        ) {
+            Text(
+                "推荐直接扫 DApp 给出的二维码；如果已经选好观察地址，收到提案后会自动批准 WalletConnect 会话。",
+                modifier = Modifier.padding(12.dp),
+                fontSize = 12.sp,
+                color = Color(0xFF475467),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = onScanRequest, modifier = Modifier.weight(1f)) { Text("扫码连接", fontSize = 12.sp) }
+            OutlinedButton(onClick = onImportRequestFromClipboard, modifier = Modifier.weight(1f)) { Text("粘贴连接", fontSize = 12.sp) }
+        }
+        TextButton(onClick = { showManualTools = !showManualTools }) {
+            Text(if (showManualTools) "收起高级导入" else "高级导入", fontSize = 12.sp)
+        }
+        if (showManualTools) {
             OutlinedTextField(
                 value = state.requestInput,
                 onValueChange = onRequestInputChange,
@@ -2578,13 +3127,10 @@ private fun DappToolsSection(
                 minLines = 2,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = onScanRequest, modifier = Modifier.weight(1f)) { Text("扫码二维码", fontSize = 12.sp) }
                 OutlinedButton(onClick = onPickRequestFromGallery, modifier = Modifier.weight(1f)) { Text("相册二维码", fontSize = 12.sp) }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = onImportRequestFromClipboard, modifier = Modifier.weight(1f)) { Text("粘贴连接", fontSize = 12.sp) }
                 OutlinedButton(onClick = onImportRawRequest, modifier = Modifier.weight(1f)) { Text("解析文本", fontSize = 12.sp) }
             }
+        }
             if (state.walletConnectStatus.isNotBlank()) {
                 Text(
                     state.walletConnectStatus,

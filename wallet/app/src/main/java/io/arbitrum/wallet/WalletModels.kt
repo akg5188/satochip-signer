@@ -15,9 +15,13 @@ enum class HyperliquidOrderMode {
 
 enum class PendingResponseType {
     BROADCAST_TX,
+    BROADCAST_BTC_TX,
     SHOW_SIGNATURE,
     RETURN_RAW_TRANSACTION,
+    IMPORT_WATCH_ADDRESS,
 }
+
+const val DEFAULT_EVM_DERIVATION_PATH = "m/44'/60'/0'/0/0"
 
 enum class WalletActivityKind {
     OUTGOING_TX,
@@ -109,11 +113,46 @@ data class HyperliquidFillUi(
     val timestamp: Long,
 )
 
+data class BitcoinDerivedAddressPreview(
+    val branch: Int,
+    val branchLabel: String,
+    val index: Int,
+    val path: String,
+    val address: String,
+)
+
+data class BitcoinWatchAccount(
+    val id: String,
+    val label: String,
+    val xpub: String,
+    val prefix: String,
+    val networkLabel: String,
+    val scriptTypeLabel: String,
+    val accountPathHint: String,
+    val sourceLabel: String = "Imported from pi-signer get-xpub",
+    val importedAt: Long,
+    val accountFingerprintHex: String = "",
+    val receivePreview: List<BitcoinDerivedAddressPreview> = emptyList(),
+    val changePreview: List<BitcoinDerivedAddressPreview> = emptyList(),
+    val derivationError: String = "",
+    val balanceSats: Long = 0,
+    val utxoCount: Int = 0,
+    val nextReceiveAddress: String = "",
+    val nextChangeAddress: String = "",
+    val lastSyncStatus: String = "",
+    val lastSyncAt: Long = 0,
+    val syncing: Boolean = false,
+)
+
 data class WalletUiState(
     val activeTab: WalletTab = WalletTab.HOME,
     val newAddressInput: String = "",
     val addresses: List<String> = emptyList(),
     val selectedAddress: String = "",
+    val evmDerivationPath: String = DEFAULT_EVM_DERIVATION_PATH,
+    val bitcoinImportInput: String = "",
+    val bitcoinWatchAccounts: List<BitcoinWatchAccount> = emptyList(),
+    val bitcoinPrototypeStatus: String = defaultBitcoinPrototypeStatus(0),
     val browserAuthorized: Boolean = false,
     val selectedChainId: Long = WalletChains.DEFAULT.chainId,
     val chainPortfolios: Map<Long, ChainPortfolioUi> = emptyMap(),
@@ -142,6 +181,7 @@ data class WalletUiState(
     val signQrPageIndex: Int = 0,
     val signQrBitmap: Bitmap? = null,
     val pendingResponseType: PendingResponseType? = null,
+    val preparedBitcoinAccountId: String? = null,
     val txHash: String = "",
     val txHashChainId: Long? = null,
     val lastSignature: String = "",

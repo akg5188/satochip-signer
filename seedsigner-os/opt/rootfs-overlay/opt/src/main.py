@@ -52,7 +52,8 @@ def main(sys_argv=None):
 
     logger.info(f"Starting SeedSigner with: {args.__dict__}")
 
-    # Get the one and only Controller instance and start our main loop
+    # Keep the device in the trimmed TP-only runtime to avoid the broader
+    # SeedSigner UI path that is unstable on this customized image.
     tp_only_mode = True
     initial_destination = None
     if args.iotest:
@@ -62,9 +63,9 @@ def main(sys_argv=None):
         tp_only_mode = False
     else:
         os.environ["TP_ONLY_MODE"] = "1"
-        from seedsigner.views.tp_views import ToolsTpSignerScanView
+        from seedsigner.views.tp_views import ToolsTpHomeView
 
-        initial_destination = Destination(ToolsTpSignerScanView, clear_history=True)
+        initial_destination = Destination(ToolsTpHomeView, clear_history=True)
 
     Controller.get_instance().start(
         initial_destination=initial_destination,

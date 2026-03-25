@@ -1,6 +1,7 @@
 import os
 import math
 import logging
+import re
 import time
 
 from dataclasses import dataclass, field
@@ -19,6 +20,146 @@ from seedsigner.models.settings import SettingsConstants
 from seedsigner.models.threads import BaseThread, ThreadsafeCounter
 
 logger = logging.getLogger(__name__)
+
+
+_UI_TEXT_EXACT_MAP = {
+    "Success!": "成功",
+    "Success": "成功",
+    "Failed": "失败",
+    "Error": "错误",
+    "Caution": "警告",
+    "Warning": "警告",
+    "Privacy Leak!": "隐私风险",
+    "Classified Info!": "敏感信息",
+    "I Understand": "我明白",
+    "Continue": "继续",
+    "OK": "确定",
+    "Done": "完成",
+    "Next": "下一步",
+    "Scan": "扫描",
+    "Close": "关闭",
+    "Yes": "是",
+    "No": "否",
+    "Smartcard Tools": "智能卡工具",
+    "Common Functions": "通用功能",
+    "Satochip Functions": "Satochip 功能",
+    "SeedKeeper Functions": "SeedKeeper 功能",
+    "DIY Tools": "DIY 工具",
+    "Common Tools": "通用工具",
+    "Device Filter": "设备筛选",
+    "Card Info": "卡片信息",
+    "Genuine Check": "真伪检查",
+    "Change PIN": "更改 PIN",
+    "Change Label": "修改标签",
+    "Change NFC Policy": "修改 NFC 策略",
+    "Factory Reset Card": "恢复出厂",
+    "NFC Policy": "NFC 策略",
+    "NFC Enabled": "NFC 已启用",
+    "NFC Disabled": "NFC 已禁用",
+    "NFC Blocked": "NFC 已锁定",
+    "New PIN": "新 PIN",
+    "PIN Updated": "PIN 已更新",
+    "Invalid PIN": "PIN 无效",
+    "Label Updated": "标签已更新",
+    "View Free Space": "查看剩余空间",
+    "View Secrets on Card": "查看卡内秘密",
+    "Save Password to Card": "保存密码到卡片",
+    "Delete Secret from Card": "删除卡内秘密",
+    "Load MultiSig Descriptor": "加载多签描述符",
+    "Save MultiSig Descriptor": "保存多签描述符",
+    "Clone Card Secrets": "克隆卡内秘密",
+    "Initialise with Seed": "用助记词初始化",
+    "Export Xpub": "导出 Xpub",
+    "Load as Descriptor": "加载为描述符",
+    "Load PSBT": "加载 PSBT",
+    "Advanced": "高级功能",
+    "Enable 2FA": "启用 2FA",
+    "Benchmark Signing": "签名性能测试",
+    "Benchmark Message Signing": "消息签名性能测试",
+    "Check signing bias": "检查签名偏差",
+    "Select PSBT": "选择 PSBT",
+    "View Seed Words": "查看助记词",
+    "Export as SeedQR": "导出为 SeedQR",
+    "Export as Plaintext QR": "导出为明文二维码",
+    "To SeedKeeper": "写入 SeedKeeper",
+    "Regenerate Shares": "重新生成分片",
+    "Backup Seed": "备份助记词",
+    "Scan PSBT": "扫描 PSBT",
+    "Verify Addr": "验证地址",
+    "Address Explorer": "地址浏览器",
+    "Sign Message": "签名消息",
+    "Discard Seed": "删除助记词",
+    "Single Sig": "单签",
+    "Multisig": "多签",
+    "Keep Seed": "保留助记词",
+    "Discard": "删除",
+    "SeedKeeper": "SeedKeeper",
+    "Select Secret": "选择秘密",
+    "No Secrets to Load": "没有可加载的秘密",
+    "Loading Seed": "正在加载助记词",
+    "Loading Secret": "正在加载秘密",
+    "Listing Seeds": "正在列出助记词",
+    "Listing Secrets": "正在列出秘密",
+    "Insert Source Card": "插入源卡",
+    "Insert Destination Card": "插入目标卡",
+    "Clone Failed": "克隆失败",
+    "Clone Another Card?": "继续克隆另一张卡？",
+}
+
+_UI_TEXT_SUBSTRING_REPLACEMENTS = [
+    ("These tools load data from the microSD card and may expose loaded secrets.", "这些工具会从 microSD 卡读取数据，可能暴露已加载的秘密。"),
+    ("No BIP39 Secrets to Load from Seedkeeper", "SeedKeeper 中没有可加载的 BIP39 助记词。"),
+    ("No SLIP39 Shares on SeedKeeper", "SeedKeeper 中没有 SLIP-39 分片。"),
+    ("No PSBT files found in psbt/.", "在 `psbt/` 目录中没有找到 PSBT 文件。"),
+    ("Genuine check failed:", "真伪检查失败："),
+    ("Card is genuine", "卡片为正品"),
+    ("Card is NOT genuine", "卡片不是正品"),
+    ("Card changed during retry; re-enter PIN for this card.", "重试时检测到卡片已更换，请重新为当前卡片输入 PIN。"),
+    ("Invalid PIN entered, select another and try again.", "输入的 PIN 无效，请重新输入后再试。"),
+    ("Once blocked, NFC can only be re-enabled via Factory Reset", "一旦锁定 NFC，只能通过恢复出厂重新启用。"),
+    ("NFC policy applied successfully!", "NFC 策略已成功应用。"),
+    ("Cannot set the NFC policy through the NFC interface, use contact interface instead", "无法通过 NFC 接口修改 NFC 策略，请改用接触式读卡器。"),
+    ("Cannot set the NFC policy: NFC interface is BLOCKED, a factory reset is required to reenable NFC!", "无法修改 NFC 策略：NFC 已锁定，必须恢复出厂后才能重新启用。"),
+    ("Set Label Failed...", "标签修改失败。"),
+    ("Type:", "类型："),
+    ("Version:", "版本："),
+    ("Remaining PIN tries:", "PIN 剩余次数："),
+    ("Setup:", "初始化："),
+    ("Done", "已完成"),
+    ("Not done", "未完成"),
+    ("(seeded)", "（已写入助记词）"),
+    ("(unseeded)", "（未写入助记词）"),
+    ("Enabled", "已启用"),
+    ("Disabled", "已禁用"),
+    ("Blocked", "已锁定"),
+]
+
+
+def _localize_ui_text(text: str) -> str:
+    if not isinstance(text, str) or not text:
+        return text
+
+    if text in _UI_TEXT_EXACT_MAP:
+        return _UI_TEXT_EXACT_MAP[text]
+
+    localized = text
+
+    seed_word_match = re.fullmatch(r"Seed Word #(\d+)", localized)
+    if seed_word_match:
+        return f"第 {seed_word_match.group(1)} 个单词"
+
+    verify_word_match = re.fullmatch(r"Verify Word #(\d+)", localized)
+    if verify_word_match:
+        return f"验证第 {verify_word_match.group(1)} 个单词"
+
+    child_match = re.fullmatch(r"Child #(\d+)", localized)
+    if child_match:
+        return f"子助记词 #{child_match.group(1)}"
+
+    for source, target in _UI_TEXT_SUBSTRING_REPLACEMENTS:
+        localized = localized.replace(source, target)
+
+    return localized
 
 
 # Must be huge numbers to avoid conflicting with the selected_button returned by the

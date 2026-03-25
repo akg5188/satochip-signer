@@ -673,7 +673,27 @@ class Controller(Singleton):
         logger.exception(e)
 
         if os.environ.get("TP_ONLY_MODE") == "1":
-            return Destination(UnhandledExceptionView, view_args={"error": [" ", " ", "99"]}, clear_history=True)
+            line_info = None
+            for i in range(len(traceback.format_exc().splitlines()) - 1, 0, -1):
+                traceback_line = traceback.format_exc().splitlines()[i]
+                if ", line " in traceback_line:
+                    line_info = traceback_line.split("/")[-1].replace("\"", "").replace("line ", "")
+                    break
+            exception_msg = str(e).strip()
+            if "wait_for()" in exception_msg and "unexpected keyword argument" in exception_msg:
+                detail = "按键输入模块不兼容，请重新刷写固件。"
+            elif isinstance(e, ValueError):
+                if exception_msg:
+                    detail = f"操作失败\n数据格式错误：{exception_msg}"
+                else:
+                    detail = "操作失败\n助记词处理失败，请返回重试。"
+            elif exception_msg:
+                detail = f"操作失败\n{exception_msg}"
+            elif line_info:
+                detail = f"操作失败\n{line_info}"
+            else:
+                detail = "操作失败\n错误 99"
+            return Destination(UnhandledExceptionView, view_args={"error": [" ", " ", detail]}, clear_history=True)
 
         # The final exception output line is:
         # "foo.bar.ExceptionType: The exception message"

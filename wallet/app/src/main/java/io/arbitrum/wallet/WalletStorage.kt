@@ -8,9 +8,11 @@ object WalletStorage {
     private const val KEY_ADDRESSES = "addresses"
     private const val KEY_SELECTED_ADDRESS = "selected_address"
     private const val KEY_SELECTED_CHAIN_ID = "selected_chain_id"
+    private const val KEY_EVM_DERIVATION_PATH = "evm_derivation_path"
     private const val KEY_CONTACTS = "contacts"
     private const val KEY_ACTIVITY = "activity"
     private const val KEY_HYPERLIQUID_AGENTS = "hyperliquid_agents"
+    private const val KEY_BITCOIN_WATCH_ACCOUNTS = "bitcoin_watch_accounts"
 
     fun readAddresses(prefs: SharedPreferences, normalizer: (String?) -> String?): List<String> {
         val raw = prefs.getString(KEY_ADDRESSES, null)
@@ -45,6 +47,17 @@ object WalletStorage {
 
     fun writeSelectedChainId(prefs: SharedPreferences, chainId: Long) {
         prefs.edit().putLong(KEY_SELECTED_CHAIN_ID, chainId).apply()
+    }
+
+    fun readEvmDerivationPath(prefs: SharedPreferences): String {
+        return prefs.getString(KEY_EVM_DERIVATION_PATH, DEFAULT_EVM_DERIVATION_PATH)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_EVM_DERIVATION_PATH
+    }
+
+    fun writeEvmDerivationPath(prefs: SharedPreferences, path: String) {
+        prefs.edit().putString(KEY_EVM_DERIVATION_PATH, path).apply()
     }
 
     fun readContacts(prefs: SharedPreferences, normalizer: (String?) -> String?): List<TransferContact> {
@@ -139,6 +152,55 @@ object WalletStorage {
             }
         }
         prefs.edit().putString(KEY_ACTIVITY, array.toString()).apply()
+    }
+
+    fun readBitcoinWatchAccounts(prefs: SharedPreferences): List<BitcoinWatchAccount> {
+        val raw = prefs.getString(KEY_BITCOIN_WATCH_ACCOUNTS, null)
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            buildList {
+                val array = JSONArray(raw)
+                for (index in 0 until array.length()) {
+                    val obj = array.optJSONObject(index) ?: continue
+                    val xpub = obj.optString("xpub").trim()
+                    if (xpub.isBlank()) continue
+                    add(
+                        BitcoinWatchAccount(
+                            id = obj.optString("id").ifBlank { "btc-account-$index" },
+                            label = obj.optString("label").ifBlank { "BTC account ${index + 1}" },
+                            xpub = xpub,
+                            prefix = obj.optString("prefix").ifBlank { xpub.take(4).lowercase() },
+                            networkLabel = obj.optString("networkLabel").ifBlank { "Bitcoin" },
+                            scriptTypeLabel = obj.optString("scriptTypeLabel").ifBlank { "Unknown" },
+                            accountPathHint = obj.optString("accountPathHint"),
+                            sourceLabel = obj.optString("sourceLabel").ifBlank { "Imported from pi-signer get-xpub" },
+                            importedAt = obj.optLong("importedAt"),
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun writeBitcoinWatchAccounts(prefs: SharedPreferences, accounts: List<BitcoinWatchAccount>) {
+        val array = JSONArray().apply {
+            accounts.sortedByDescending { it.importedAt }.forEach { account ->
+                put(
+                    JSONObject().apply {
+                        put("id", account.id)
+                        put("label", account.label)
+                        put("xpub", account.xpub)
+                        put("prefix", account.prefix)
+                        put("networkLabel", account.networkLabel)
+                        put("scriptTypeLabel", account.scriptTypeLabel)
+                        put("accountPathHint", account.accountPathHint)
+                        put("sourceLabel", account.sourceLabel)
+                        put("importedAt", account.importedAt)
+                    }
+                )
+            }
+        }
+        prefs.edit().putString(KEY_BITCOIN_WATCH_ACCOUNTS, array.toString()).apply()
     }
 
     fun readHyperliquidAgents(prefs: SharedPreferences, normalizer: (String?) -> String?): List<HyperliquidAgentRecord> {

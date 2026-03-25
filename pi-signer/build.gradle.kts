@@ -20,6 +20,7 @@ application {
 dependencies {
     implementation(project(":satochip-lib"))
 
+    implementation("fr.acinq.bitcoin:bitcoin-kmp-jvm:0.21.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("org.web3j:crypto:4.9.8") {
         exclude(group = "org.bouncycastle", module = "bcprov-jdk18on")
