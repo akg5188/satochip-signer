@@ -9,6 +9,7 @@ APP_SETTINGS_TEMPLATE="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/default-settin
 APP_SETTINGS_TARGET="$APP_DIR/src/settings.json"
 L10N_SRC="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/app-assets/seedsigner-translations/l10n"
 L10N_DST="$APP_DIR/src/seedsigner/resources/seedsigner-translations/l10n"
+ZH_MO_REL="seedsigner-os/opt/rootfs-overlay/opt/src/seedsigner/resources/seedsigner-translations/l10n/zh_Hans_CN/LC_MESSAGES/messages.mo"
 ASCII_BASE="${TP_ASCII_BASE:-$HOME/tp-signer-ascii}"
 ASCII_ROOT="${TP_ASCII_ROOT:-$ASCII_BASE/root}"
 ASCII_BUILD_DIR="${TP_BUILD_DIR:-$ASCII_BASE/output}"
@@ -60,6 +61,12 @@ cd "$APP_DIR"
 )
 else
   echo "Skipping compile_catalog: $APP_DIR/setup.py not found"
+  # Keep the tracked compiled Chinese catalog in place when the upstream
+  # compile step is unavailable; otherwise every build dirties the repo and
+  # the target may silently lose translated UI strings.
+  if git -C "$ROOT_DIR" ls-files --error-unmatch "$ZH_MO_REL" >/dev/null 2>&1; then
+    git -C "$ROOT_DIR" show "HEAD:$ZH_MO_REL" > "$ROOT_DIR/$ZH_MO_REL"
+  fi
 fi
 
 cd "$ASCII_ROOT/seedsigner-os/opt"
