@@ -10,6 +10,7 @@ from embit.networks import NETWORKS
 from typing import List
 
 from seedsigner.helpers.secure_delete import wipe_bytes, wipe_string, wipe_list
+from seedsigner.models.mnemonic_steel import WORDLIST as BIP39_ENGLISH_WORDLIST
 from seedsigner.models.settings import SettingsConstants
 from seedsigner.models import aezeed
 
@@ -47,7 +48,7 @@ class Seed:
     def get_wordlist(wordlist_language_code: str = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH) -> List[str]:
         # TODO: Support other BIP-39 wordlist languages!
         if wordlist_language_code == SettingsConstants.WORDLIST_LANGUAGE__ENGLISH:
-            return bip39.WORDLIST
+            return BIP39_ENGLISH_WORDLIST
         else:
             raise Exception(f"Unrecognized wordlist_language_code {wordlist_language_code}")
 
@@ -204,6 +205,48 @@ class Seed:
     def __eq__(self, other):
         if isinstance(other, Seed):
             return self.seed_bytes == other.seed_bytes
+        return False
+
+
+class TransientWordSeed(Seed):
+    """
+    A lightweight in-memory word container for TP-only steel workflows.
+
+    It preserves the entered 12 BIP39 words without requiring checksum-valid seed
+    material, so users can continue chaining custom arithmetic transforms.
+    """
+
+    def _generate_seed(self):
+        self.seed_bytes = None
+        self.master_secret = None
+
+    def get_fingerprint(self, network: str = SettingsConstants.MAINNET) -> str:
+        """
+        RAW 助记词没有可派生的真实 BIP32 指纹，这里给一个稳定的显示用摘要，
+        方便在“已加载助记词”里区分不同条目。
+        """
+        return hashlib.sha256(self.mnemonic_str.encode("utf-8")).hexdigest()[:8]
+
+    @property
+    def seedqr_supported(self) -> bool:
+        return False
+
+    @property
+    def bip85_supported(self) -> bool:
+        return False
+
+    def get_root(self, network: str = SettingsConstants.MAINNET):
+        raise InvalidSeedException("TransientWordSeed")
+
+    def get_xpub(self, wallet_path: str = '/', network: str = SettingsConstants.MAINNET):
+        raise InvalidSeedException("TransientWordSeed")
+
+    def get_bip85_child_mnemonic(self, bip85_index: int, bip85_num_words: int, network: str = SettingsConstants.MAINNET):
+        raise InvalidSeedException("TransientWordSeed")
+
+    def __eq__(self, other):
+        if isinstance(other, TransientWordSeed):
+            return self.mnemonic_list == other.mnemonic_list
         return False
 
 

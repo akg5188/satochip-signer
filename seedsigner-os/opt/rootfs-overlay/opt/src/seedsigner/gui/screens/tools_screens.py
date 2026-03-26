@@ -69,6 +69,31 @@ class ToolsNetworkInfoScreen(ButtonListScreen):
 
 
 @dataclass
+class ToolsFormattedTextScreen(ButtonListScreen):
+    text: str = ""
+    text_font_name: str = GUIConstants.FIXED_WIDTH_FONT_NAME
+    text_is_centered: bool = False
+    allow_text_overflow: bool = True
+
+    def __post_init__(self):
+        self.is_bottom_list = True
+        if not self.button_data:
+            self.button_data = [ButtonOption(_("Done"))]
+        super().__post_init__()
+
+        start_y = self.top_nav.height + GUIConstants.COMPONENT_PADDING
+        end_y = self.buttons[0].screen_y - GUIConstants.COMPONENT_PADDING
+        self.components.append(TextArea(
+            text=self.text,
+            is_text_centered=self.text_is_centered,
+            allow_text_overflow=self.allow_text_overflow,
+            font_name=self.text_font_name,
+            screen_y=start_y,
+            height=end_y - start_y,
+        ))
+
+
+@dataclass
 class ToolsBatteryCalibrationIntroScreen(ButtonListScreen):
     def __post_init__(self):
         self.title = _("Battery Calibration")
@@ -223,6 +248,8 @@ class ToolsImageEntropyLivePreviewScreen(BaseScreen):
         instructions_font = Fonts.get_font(GUIConstants.get_body_font_name(), GUIConstants.get_button_font_size())
         last_entropy_check = 0
         entropy_val = 0.0
+        capture_hold_started_at = None
+        capture_hold_seconds = 0.45
 
         while True:
             if self.hw_inputs.check_for_low(HardwareButtonsConstants.KEY_LEFT):
@@ -299,29 +326,34 @@ class ToolsImageEntropyLivePreviewScreen(BaseScreen):
                         anchor="lt",
                     )
 
-            # Check for ANYCLICK to take final entropy image
-            if self.hw_inputs.check_for_low(keys=HardwareButtonsConstants.KEYS__ANYCLICK):
-                # Have to manually update last input time since we're not in a wait_for loop
-                self.hw_inputs.update_last_input_time()
-                final_image = self.camera.read_video_stream(as_image=True)
-                self.camera.stop_video_stream_mode()
+            # Long-press the joystick press button to capture.
+            if self.hw_inputs.check_for_low(HardwareButtonsConstants.KEY_PRESS):
+                if capture_hold_started_at is None:
+                    capture_hold_started_at = time.time()
+                elif time.time() - capture_hold_started_at >= capture_hold_seconds:
+                    # Have to manually update last input time since we're not in a wait_for loop
+                    self.hw_inputs.update_last_input_time()
+                    final_image = self.camera.read_video_stream(as_image=True)
+                    self.camera.stop_video_stream_mode()
 
-                with self.renderer.lock:
-                    self.renderer.draw.text(
-                        xy=(
-                            int(self.renderer.canvas_width/2),
-                            self.renderer.canvas_height - GUIConstants.EDGE_PADDING
-                        ),
-                        text=_("Capturing image..."),
-                        fill=GUIConstants.ACCENT_COLOR,
-                        font=instructions_font,
-                        stroke_width=4,
-                        stroke_fill=GUIConstants.BACKGROUND_COLOR,
-                        anchor="ms"
-                    )
-                    self.renderer.show_image()
+                    with self.renderer.lock:
+                        self.renderer.draw.text(
+                            xy=(
+                                int(self.renderer.canvas_width/2),
+                                self.renderer.canvas_height - GUIConstants.EDGE_PADDING
+                            ),
+                            text=_("Capturing image..."),
+                            fill=GUIConstants.ACCENT_COLOR,
+                            font=instructions_font,
+                            stroke_width=4,
+                            stroke_fill=GUIConstants.BACKGROUND_COLOR,
+                            anchor="ms"
+                        )
+                        self.renderer.show_image()
 
-                return (preview_images, final_image)
+                    return (preview_images, final_image)
+            else:
+                capture_hold_started_at = None
 
             # If we're still here, it's just another preview frame loop
             with self.renderer.lock:
@@ -330,7 +362,7 @@ class ToolsImageEntropyLivePreviewScreen(BaseScreen):
                         int(self.renderer.canvas_width/2),
                         self.renderer.canvas_height - GUIConstants.EDGE_PADDING
                     ),
-                    text="< " + _("back") + "  |  " + _("click a button"),  # TODO: Render with UI elements instead of text
+                    text="< " + _("back") + "  |  " + _("长按摇杆拍照"),
                     fill=GUIConstants.BODY_FONT_COLOR,
                     font=instructions_font,
                     stroke_width=4,
@@ -731,6 +763,8 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
 
     # Only used by the screenshot generator
     initial_keyboard: str = None
+    steel_entry_mode: bool = False
+    digits_entry_mode: bool = False
 
     KEYBOARD__LOWERCASE_BUTTON_TEXT = "abc"
     KEYBOARD__UPPERCASE_BUTTON_TEXT = "ABC"
@@ -782,7 +816,8 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
                 Keyboard.KEY_CURSOR_RIGHT,
                 Keyboard.KEY_BACKSPACE
             ],
-            auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT]
+            auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
+            additional_keys_match_background=True,
         )
 
         self.keyboard_ABC = Keyboard(
@@ -803,6 +838,7 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
                 Keyboard.KEY_BACKSPACE
             ],
             auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
+            additional_keys_match_background=True,
             render_now=False
         )
 
@@ -810,7 +846,7 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
             draw=self.renderer.draw,
             charset=keys_number,
             rows=3,
-            cols=5,
+            cols=8,
             rect=(
                 GUIConstants.COMPONENT_PADDING,
                 keyboard_start_y,
@@ -818,11 +854,13 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
                 self.canvas_height - GUIConstants.EDGE_PADDING
             ),
             additional_keys=[
+                Keyboard.KEY_SPACE_2,
                 Keyboard.KEY_CURSOR_LEFT,
                 Keyboard.KEY_CURSOR_RIGHT,
                 Keyboard.KEY_BACKSPACE
             ],
             auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
+            additional_keys_match_background=True,
             render_now=False
         )
 
@@ -844,6 +882,7 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
                 Keyboard.KEY_BACKSPACE
             ],
             auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
+            additional_keys_match_background=True,
             render_now=False
         )
 
@@ -865,6 +904,53 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
                 Keyboard.KEY_BACKSPACE
             ],
             auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
+            additional_keys_match_background=True,
+            render_now=False
+        )
+
+        self.keyboard_steel = Keyboard(
+            draw=self.renderer.draw,
+            charset="0123456789+-*/",
+            selected_char="0",
+            rows=2,
+            cols=10,
+            rect=(
+                GUIConstants.COMPONENT_PADDING,
+                keyboard_start_y,
+                self.canvas_width - GUIConstants.COMPONENT_PADDING - self.right_panel_buttons_width,
+                self.canvas_height - GUIConstants.EDGE_PADDING
+            ),
+            additional_keys=[
+                Keyboard.KEY_SPACE_2,
+                Keyboard.KEY_CURSOR_LEFT,
+                Keyboard.KEY_CURSOR_RIGHT,
+                Keyboard.KEY_BACKSPACE
+            ],
+            auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
+            additional_keys_match_background=True,
+            render_now=False
+        )
+
+        self.keyboard_digits_entry = Keyboard(
+            draw=self.renderer.draw,
+            charset=keys_number,
+            selected_char="0",
+            rows=2,
+            cols=8,
+            rect=(
+                GUIConstants.COMPONENT_PADDING,
+                keyboard_start_y,
+                self.canvas_width - GUIConstants.COMPONENT_PADDING - self.right_panel_buttons_width,
+                self.canvas_height - GUIConstants.EDGE_PADDING
+            ),
+            additional_keys=[
+                Keyboard.KEY_SPACE_2,
+                Keyboard.KEY_CURSOR_LEFT,
+                Keyboard.KEY_CURSOR_RIGHT,
+                Keyboard.KEY_BACKSPACE
+            ],
+            auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
+            additional_keys_match_background=True,
             render_now=False
         )
 
@@ -923,21 +1009,7 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
     def _render(self):
         super()._render()
 
-        # Change from the default lowercase keyboard for the screenshot generator
-        if self.initial_keyboard == self.KEYBOARD__UPPERCASE_BUTTON_TEXT:
-            cur_keyboard = self.keyboard_ABC
-
-        elif self.initial_keyboard == self.KEYBOARD__DIGITS_BUTTON_TEXT:
-            cur_keyboard = self.keyboard_digits
-
-        elif self.initial_keyboard == self.KEYBOARD__SYMBOLS_1_BUTTON_TEXT:
-            cur_keyboard = self.keyboard_symbols_1
-
-        elif self.initial_keyboard == self.KEYBOARD__SYMBOLS_2_BUTTON_TEXT:
-            cur_keyboard = self.keyboard_symbols_2
-        
-        else:
-            cur_keyboard = self.keyboard_abc
+        cur_keyboard = self._get_initial_keyboard()
 
         cur_button1_text, cur_button2_text = self._get_button_texts(cur_keyboard)
         self.hw_button1.text = cur_button1_text
@@ -951,9 +1023,25 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
         self.renderer.show_image()
 
 
+    def _get_initial_keyboard(self):
+        if self.steel_entry_mode:
+            return self.keyboard_steel
+        if self.digits_entry_mode:
+            return self.keyboard_digits_entry
+        if self.initial_keyboard == self.KEYBOARD__UPPERCASE_BUTTON_TEXT:
+            return self.keyboard_ABC
+        if self.initial_keyboard == self.KEYBOARD__DIGITS_BUTTON_TEXT:
+            return self.keyboard_digits
+        if self.initial_keyboard == self.KEYBOARD__SYMBOLS_1_BUTTON_TEXT:
+            return self.keyboard_symbols_1
+        if self.initial_keyboard == self.KEYBOARD__SYMBOLS_2_BUTTON_TEXT:
+            return self.keyboard_symbols_2
+        return self.keyboard_abc
+
+
     def _run(self):
         cursor_position = len(self.textToEncode)
-        cur_keyboard = self.keyboard_abc
+        cur_keyboard = self._get_initial_keyboard()
         cur_button1_text, cur_button2_text = self._get_button_texts(cur_keyboard)
 
         # Start the interactive update loop
@@ -972,7 +1060,7 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
                 if input == HardwareButtonsConstants.KEY3:
                     # Save!
                     # First light up key3
-                    if len(self.textToEncode) > 0:
+                    if len(self.textToEncode) > 0 or self.steel_entry_mode or self.digits_entry_mode:
                         self.hw_button3.is_selected = True
                         self.hw_button3.render()
                         self.renderer.show_image()
@@ -983,6 +1071,9 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
                     return dict(textToEncode=self.textToEncode, is_back_button=True)
 
                 # Check for keyboard swaps
+                if (self.steel_entry_mode or self.digits_entry_mode) and input in [HardwareButtonsConstants.KEY1, HardwareButtonsConstants.KEY2]:
+                    continue
+
                 if input == HardwareButtonsConstants.KEY1:
                     # First light up key1
                     self.hw_button1.is_selected = True
@@ -1141,6 +1232,8 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
                 self.renderer.show_image()
 
     def _get_button_texts(self, cur_keyboard):
+        if self.steel_entry_mode or self.digits_entry_mode:
+            return "", ""
         if cur_keyboard == self.keyboard_ABC:
             return self.KEYBOARD__LOWERCASE_BUTTON_TEXT, self.KEYBOARD__DIGITS_BUTTON_TEXT
         if cur_keyboard == self.keyboard_digits:

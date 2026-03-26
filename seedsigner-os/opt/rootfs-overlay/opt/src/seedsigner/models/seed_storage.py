@@ -17,6 +17,12 @@ class SeedStorage:
         self._pending_slip39_shares: List[List[str]] = []
         self._slip39_share_length: int | None = None
         self._slip39_first_share = None
+        self._steel_encrypted_mnemonic: List[str] = []
+        self._steel_shift_values: List[int] = []
+        self._steel_shift_operators: List[str] = []
+        self._steel_shift_operator: str | None = None
+        self._steel_plate_groups: List[str] = []
+        self._steel_source_fingerprint: str | None = None
 
 
     def set_pending_seed(self, seed: Seed):
@@ -214,3 +220,59 @@ class SeedStorage:
         g = self._slip39_first_share.group_threshold
         m = self._slip39_first_share.member_threshold
         return m * g if g > 1 else m
+
+    """Steel backup cache handling"""
+
+    def has_steel_encrypted_mnemonic(self) -> bool:
+        return len(self._steel_encrypted_mnemonic) > 0
+
+    def set_steel_encrypted_mnemonic(
+        self,
+        words: List[str],
+        shift_values: List[int] | None = None,
+        shift_operators: List[str] | None = None,
+        shift_operator: str | None = None,
+        source_fingerprint: str | None = None,
+    ):
+        self.clear_steel_cache()
+        self._steel_encrypted_mnemonic = list(words)
+        self._steel_shift_values = list(shift_values or [])
+        self._steel_shift_operators = list(shift_operators or [])
+        self._steel_shift_operator = shift_operator
+        self._steel_source_fingerprint = source_fingerprint
+
+    def get_steel_encrypted_mnemonic(self) -> List[str]:
+        return list(self._steel_encrypted_mnemonic)
+
+    def set_steel_plate_groups(self, groups: List[str]):
+        wipe_list(self._steel_plate_groups)
+        self._steel_plate_groups = list(groups)
+
+    def get_steel_plate_groups(self) -> List[str]:
+        return list(self._steel_plate_groups)
+
+    def get_steel_shift_values(self) -> List[int]:
+        return list(self._steel_shift_values)
+
+    def get_steel_shift_operators(self) -> List[str]:
+        if self._steel_shift_operators:
+            return list(self._steel_shift_operators)
+        if self._steel_shift_operator and self._steel_shift_values:
+            return [self._steel_shift_operator] * len(self._steel_shift_values)
+        return []
+
+    def get_steel_shift_operator(self) -> str | None:
+        return self._steel_shift_operator
+
+    def get_steel_source_fingerprint(self) -> str | None:
+        return self._steel_source_fingerprint
+
+    def clear_steel_cache(self):
+        wipe_list(self._steel_encrypted_mnemonic)
+        wipe_list(self._steel_plate_groups)
+        self._steel_encrypted_mnemonic = []
+        self._steel_plate_groups = []
+        self._steel_shift_values = []
+        self._steel_shift_operators = []
+        self._steel_shift_operator = None
+        self._steel_source_fingerprint = None

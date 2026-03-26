@@ -49,10 +49,18 @@ mkdir -p "$(dirname "$L10N_DST")"
 rm -rf "$L10N_DST"
 cp -a "$L10N_SRC" "$L10N_DST"
 cp "$APP_SETTINGS_TEMPLATE" "$APP_SETTINGS_TARGET"
+# Purge host-generated Python caches from the overlay so target runtime never
+# prefers stale .pyc files over the source we are trying to ship.
+find "$APP_DIR/src" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "$APP_DIR/src" -type f -name '*.pyc' -delete
+if [[ -f "$APP_DIR/setup.py" ]]; then
 (
 cd "$APP_DIR"
   python3 setup.py compile_catalog
 )
+else
+  echo "Skipping compile_catalog: $APP_DIR/setup.py not found"
+fi
 
 cd "$ASCII_ROOT/seedsigner-os/opt"
 if [ -d /tmp/mtools-local/root/usr/bin ]; then

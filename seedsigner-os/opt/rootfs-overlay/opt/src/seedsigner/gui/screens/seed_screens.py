@@ -482,7 +482,8 @@ class SeedWordsScreen(WarningEdgesMixin, ButtonListScreen):
 
 
     def __post_init__(self):
-        self.title = f"助记词：{self.page_index + 1}/{self.num_pages}"
+        if not self.title or self.title == "Screen Title":
+            self.title = f"助记词：{self.page_index + 1}/{self.num_pages}"
         super().__post_init__()
 
         words_per_page = len(self.words)

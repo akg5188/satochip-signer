@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>钢板打孔记录卡 A4</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 0;
+    }
+
+    :root {
+      --page-width: 210mm;
+      --page-height: 297mm;
+      --card-width: 85.6mm;
+      --card-height: 54mm;
+      --page-padding-x: 16.6mm;
+      --page-padding-y: 9.5mm;
+      --card-gap-x: 5.2mm;
+      --card-gap-y: 1.5mm;
+      --card-padding-x: 2.4mm;
+      --card-padding-y: 3.2mm;
+      --column-gap: 1.4mm;
+      --row-gap: 1.25mm;
+      --label-width: 6.0mm;
+      --label-font-size: 4.7mm;
+      --circle-size: 2.7mm;
+      --circle-gap: 0.25mm;
+      --circle-border: 0.25mm;
+      --marker-size: 2mm;
+      --marker-offset-x: 0.2mm;
+      --marker-offset-y: 0.2mm;
+      --cut-line: #d0d0d0;
+      --ink: #1f1f1f;
+      --paper: #ffffff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: #f5f5f5;
+      color: var(--ink);
+      font-family: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 10mm 0;
+    }
+
+    .sheet {
+      width: var(--page-width);
+      height: var(--page-height);
+      background: var(--paper);
+      padding: var(--page-padding-y) var(--page-padding-x);
+      display: grid;
+      grid-template-columns: repeat(2, var(--card-width));
+      grid-auto-rows: var(--card-height);
+      gap: var(--card-gap-y) var(--card-gap-x);
+      overflow: hidden;
+      box-shadow: 0 0 0.8mm rgba(0, 0, 0, 0.12);
+    }
+
+    .card {
+      position: relative;
+      width: var(--card-width);
+      height: var(--card-height);
+      padding: var(--card-padding-y) var(--card-padding-x);
+      border: 0.25mm dashed var(--cut-line);
+      border-radius: 1.6mm;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      column-gap: var(--column-gap);
+      overflow: hidden;
+      background: var(--paper);
+    }
+
+    .column {
+      display: grid;
+      grid-template-rows: repeat(6, 1fr);
+      row-gap: var(--row-gap);
+      align-content: stretch;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: var(--label-width) 1fr;
+      align-items: center;
+      min-height: 0;
+    }
+
+    .label {
+      font-size: var(--label-font-size);
+      line-height: 1;
+      text-align: left;
+      letter-spacing: -0.05mm;
+      white-space: nowrap;
+    }
+
+    .circles {
+      display: flex;
+      align-items: center;
+      gap: var(--circle-gap);
+      min-width: 0;
+    }
+
+    .circle {
+      width: var(--circle-size);
+      height: var(--circle-size);
+      border: var(--circle-border) solid #6a6a6a;
+      border-radius: 50%;
+      background: transparent;
+      flex: 0 0 auto;
+    }
+
+    .marker {
+      position: absolute;
+      width: var(--marker-size);
+      height: var(--marker-size);
+      background: #111;
+      border-radius: 0.25mm;
+      pointer-events: none;
+    }
+
+    .marker--tl {
+      left: var(--marker-offset-x);
+      top: var(--marker-offset-y);
+    }
+
+    .marker--tr {
+      right: var(--marker-offset-x);
+      top: var(--marker-offset-y);
+    }
+
+    .marker--bl {
+      left: var(--marker-offset-x);
+      bottom: var(--marker-offset-y);
+    }
+
+    .marker--br {
+      right: var(--marker-offset-x);
+      bottom: var(--marker-offset-y);
+    }
+
+    @media print {
+      html,
+      body {
+        background: var(--paper);
+        padding: 0;
+      }
+
+      .sheet {
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="sheet" id="sheet"></main>
+
+  <script>
+    const sheet = document.getElementById("sheet");
+    const cardsPerPage = 10;
+    const circlesPerRow = 11;
+
+    function createRow(labelNumber) {
+      const row = document.createElement("div");
+      row.className = "row";
+
+      const label = document.createElement("div");
+      label.className = "label";
+      label.textContent = `${labelNumber}.`;
+
+      const circles = document.createElement("div");
+      circles.className = "circles";
+
+      for (let i = 0; i < circlesPerRow; i += 1) {
+        const circle = document.createElement("span");
+        circle.className = "circle";
+        circles.appendChild(circle);
+      }
+
+      row.appendChild(label);
+      row.appendChild(circles);
+      return row;
+    }
+
+    function createColumn(startNumber) {
+      const column = document.createElement("div");
+      column.className = "column";
+
+      for (let i = 0; i < 6; i += 1) {
+        column.appendChild(createRow(startNumber + i));
+      }
+
+      return column;
+    }
+
+    function createCard() {
+      const card = document.createElement("section");
+      card.className = "card";
+      ["tl", "tr", "bl", "br"].forEach((position) => {
+        const marker = document.createElement("span");
+        marker.className = `marker marker--${position}`;
+        card.appendChild(marker);
+      });
+      card.appendChild(createColumn(1));
+      card.appendChild(createColumn(7));
+      return card;
+    }
+
+    for (let i = 0; i < cardsPerPage; i += 1) {
+      sheet.appendChild(createCard());
+    }
+  </script>
+</body>
+</html>

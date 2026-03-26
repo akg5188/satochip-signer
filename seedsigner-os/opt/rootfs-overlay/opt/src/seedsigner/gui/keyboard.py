@@ -41,32 +41,32 @@ class Keyboard:
 
     KEY_SPACE = {
         "code": "SPACE",
-        "letter": SeedSignerIconConstants.SPACE,
-        "font": ICON_KEY_FONT,
+        "letter": "␣",
+        "font": REGULAR_KEY_FONT,
         "size": 1,
     }
     KEY_SPACE_2 = {
         "code": "SPACE",
-        "letter": SeedSignerIconConstants.SPACE,
-        "font": ICON_KEY_FONT,
+        "letter": "␣",
+        "font": REGULAR_KEY_FONT,
         "size": 2,
     }
     KEY_SPACE_3 = {
         "code": "SPACE",
-        "letter": SeedSignerIconConstants.SPACE,
-        "font": ICON_KEY_FONT,
+        "letter": "␣",
+        "font": REGULAR_KEY_FONT,
         "size": 3,
     }
     KEY_SPACE_4 = {
         "code": "SPACE",
-        "letter": SeedSignerIconConstants.SPACE,
-        "font": ICON_KEY_FONT,
+        "letter": "␣",
+        "font": REGULAR_KEY_FONT,
         "size": 4,
     }
     KEY_SPACE_5 = {
         "code": "SPACE",
-        "letter": SeedSignerIconConstants.SPACE,
-        "font": ICON_KEY_FONT,
+        "letter": "␣",
+        "font": REGULAR_KEY_FONT,
         "size": 5,
     }
     KEY_CURSOR_LEFT = {
@@ -140,8 +140,12 @@ class Keyboard:
                 font_color = "black"
             else:
                 if self.is_additional_key:
-                    rect_color = "#000"
-                    font_color = "#999"
+                    if self.keyboard.additional_keys_match_background:
+                        rect_color = self.keyboard.background_color
+                        font_color = "#FFFFFF"
+                    else:
+                        rect_color = "#000"
+                        font_color = "#999"
                 else:
                     rect_color = self.keyboard.background_color
                     font_color = "#e8e8e8"
@@ -183,7 +187,8 @@ class Keyboard:
                  additional_keys=[KEY_BACKSPACE],
                  auto_wrap=[WRAP_TOP, WRAP_BOTTOM, WRAP_LEFT, WRAP_RIGHT],
                  render_now=True,
-                 highlight_color: str = GUIConstants.ACCENT_COLOR):
+                 highlight_color: str = GUIConstants.ACCENT_COLOR,
+                 additional_keys_match_background: bool = False):
         """
             `auto_wrap` specifies which edges the keyboard is allowed to loop back when
             navigating past the end.
@@ -200,6 +205,7 @@ class Keyboard:
         self.deactivated_background_color = GUIConstants.BACKGROUND_COLOR
         self.additional_key_deactivated_background_color = GUIConstants.BACKGROUND_COLOR
         self.highlight_color = highlight_color
+        self.additional_keys_match_background = additional_keys_match_background
 
         # Does the specified layout work?
         additional_key_spaces = 0
@@ -646,4 +652,3 @@ class TextEntryDisplay(TextEntryDisplayConstants):
 
         # Paste the display onto the main canvas
         self.canvas.paste(image, (self.rect[0], self.rect[1]))
-

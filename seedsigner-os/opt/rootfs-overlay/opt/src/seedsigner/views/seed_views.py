@@ -38,7 +38,7 @@ from seedsigner.helpers.tapsigner_backup import (
 )
 from seedsigner.models.encode_qr import CompactSeedQrEncoder, GenericStaticQrEncoder, SeedQrEncoder, SpecterXPubQrEncoder, StaticXpubQrEncoder, UrXpubQrEncoder
 from seedsigner.models.qr_type import QRType
-from seedsigner.models.seed import Seed, AezeedSeed, Slip39Seed, ElectrumSeed, XprvSeed, InvalidSeedException, SeedWordsUnavailableException
+from seedsigner.models.seed import Seed, AezeedSeed, Slip39Seed, ElectrumSeed, XprvSeed, InvalidSeedException, SeedWordsUnavailableException, TransientWordSeed
 from seedsigner.models.settings import Settings, SettingsConstants
 from seedsigner.models.settings_definition import SettingsDefinition
 from seedsigner.models.threads import BaseThread, ThreadsafeCounter
@@ -66,6 +66,8 @@ class SeedsMenuView(View):
 
     @staticmethod
     def get_seed_type_label(seed: Seed) -> str:
+        if isinstance(seed, TransientWordSeed):
+            return "RAW"
         if isinstance(seed, Slip39Seed):
             return "SLIP39"
         if isinstance(seed, XprvSeed):
@@ -78,7 +80,9 @@ class SeedsMenuView(View):
 
 
     def run(self):
-        if not self.seeds:
+        has_steel_cache = self.controller.storage.has_steel_encrypted_mnemonic()
+
+        if not self.seeds and not has_steel_cache:
             # Nothing to do here unless we have a seed loaded
             if os.environ.get("TP_ONLY_MODE") == "1":
                 from seedsigner.views.tp_views import ToolsTpSeedToolsView
@@ -93,6 +97,12 @@ class SeedsMenuView(View):
                     SeedSignerIconConstants.FINGERPRINT,
                 )
             )
+        if has_steel_cache:
+            source_fp = self.controller.storage.get_steel_source_fingerprint()
+            label = "钢板二次加密缓存"
+            if source_fp:
+                label = f"{label} ({source_fp})"
+            button_data.append(ButtonOption(label, SeedSignerIconConstants.FINGERPRINT))
         button_data.append(self.LOAD)
 
         selected_menu_num = self.run_screen(
@@ -106,7 +116,14 @@ class SeedsMenuView(View):
             return Destination(BackStackView)
 
         elif len(self.seeds) > 0 and selected_menu_num < len(self.seeds):
+            if os.environ.get("TP_ONLY_MODE") == "1":
+                from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+                return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": selected_menu_num})
             return Destination(SeedOptionsView, view_args={"seed_num": selected_menu_num})
+
+        elif has_steel_cache and selected_menu_num == len(self.seeds):
+            from seedsigner.views.tp_views import ToolsTpSteelCipherOptionsView
+            return Destination(ToolsTpSteelCipherOptionsView)
 
         elif button_data[selected_menu_num] == self.LOAD:
             return Destination(LoadSeedView)
@@ -1083,6 +1100,8 @@ class SeedMnemonicEntryView(View):
             except InvalidSeedException as e:
                 if self.controller.storage.pending_is_aezeed and str(e) == "InvalidPassphraseError":
                     return Destination(SeedAezeedPassphraseModeView)
+                if os.environ.get("TP_ONLY_MODE") == "1":
+                    return Destination(SeedMnemonicRawReviewView)
                 return Destination(SeedMnemonicInvalidView)
 
             pending_seed = self.controller.storage.get_pending_seed()
@@ -1091,7 +1110,8 @@ class SeedMnemonicEntryView(View):
 
             if os.environ.get("TP_ONLY_MODE") == "1" and not self.controller.resume_main_flow:
                 seed_num = self.controller.storage.finalize_pending_seed()
-                return Destination(SeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
+                from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+                return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
 
             return Destination(SeedFinalizeView)
 
@@ -1128,6 +1148,71 @@ class SeedMnemonicInvalidView(View):
                 return Destination(ToolsTpSeedToolsView, clear_history=True)
             return Destination(MainMenuView)
 
+
+
+class SeedMnemonicRawReviewView(View):
+    NEXT = ButtonOption("下一页")
+    REENTER = ButtonOption("重新输入")
+    IMPORT_RAW = ButtonOption("按原样导入")
+
+    def __init__(self, page_index: int = 0):
+        super().__init__()
+        self.page_index = page_index
+
+    def run(self):
+        mnemonic = self.controller.storage.pending_mnemonic
+        if not mnemonic:
+            return Destination(LoadSeedView, clear_history=True)
+
+        words_per_page = 4
+        num_pages = max(1, (len(mnemonic) + words_per_page - 1) // words_per_page)
+        words = mnemonic[self.page_index * words_per_page:(self.page_index + 1) * words_per_page]
+        button_data = [self.NEXT] if self.page_index < num_pages - 1 else [self.REENTER, self.IMPORT_RAW]
+
+        selected_menu_num = seed_screens.SeedWordsScreen(
+            title=f"检查加密助记词：{self.page_index + 1}/{num_pages}",
+            words=words,
+            page_index=self.page_index,
+            num_pages=num_pages,
+            button_data=button_data,
+        ).display()
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            if self.page_index > 0:
+                return Destination(
+                    SeedMnemonicRawReviewView,
+                    view_args=dict(page_index=self.page_index - 1),
+                    clear_history=True,
+                )
+            return Destination(
+                SeedMnemonicEntryView,
+                view_args=dict(cur_word_index=len(mnemonic) - 1),
+                clear_history=True,
+            )
+
+        selected = button_data[selected_menu_num]
+        if selected == self.NEXT:
+            return Destination(
+                SeedMnemonicRawReviewView,
+                view_args=dict(page_index=self.page_index + 1),
+            )
+
+        if selected == self.REENTER:
+            return Destination(
+                SeedMnemonicEntryView,
+                view_args=dict(cur_word_index=0),
+                clear_history=True,
+            )
+
+        self.controller.storage.set_pending_seed(TransientWordSeed(mnemonic))
+        self.controller.storage.discard_pending_mnemonic()
+        seed_num = self.controller.storage.finalize_pending_seed()
+
+        if os.environ.get("TP_ONLY_MODE") == "1":
+            from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+            return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
+
+        return Destination(SeedsMenuView, clear_history=True)
 
 
 class SeedFinalizeView(View):
@@ -1173,7 +1258,8 @@ class SeedFinalizeView(View):
     def run(self):
         if os.environ.get("TP_ONLY_MODE") == "1" and not self.controller.resume_main_flow:
             seed_num = self.controller.storage.finalize_pending_seed()
-            return Destination(SeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
+            from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+            return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
 
         button_data = [self.FINALIZE]
         #self.TYPE_PASSPHRASE.button_label = self.seed.passphrase_label
@@ -1632,6 +1718,9 @@ class SeedDiscardView(View):
         if button_data[selected_menu_num] == self.KEEP:
             # Use skip_current_view=True to prevent BACK from landing on this warning screen
             if self.seed_num is not None:
+                if os.environ.get("TP_ONLY_MODE") == "1":
+                    from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+                    return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": self.seed_num}, skip_current_view=True)
                 return Destination(SeedOptionsView, view_args={"seed_num": self.seed_num}, skip_current_view=True)
             else:
                 return Destination(SeedFinalizeView, skip_current_view=True)
@@ -1642,7 +1731,7 @@ class SeedDiscardView(View):
             else:
                 self.controller.storage.clear_pending_seed()
             if os.environ.get("TP_ONLY_MODE") == "1":
-                if self.controller.storage.seeds:
+                if self.controller.storage.seeds or self.controller.storage.has_steel_encrypted_mnemonic():
                     return Destination(SeedsMenuView, clear_history=True)
                 from seedsigner.views.tp_views import ToolsTpSeedToolsView
                 return Destination(ToolsTpSeedToolsView, clear_history=True)
@@ -2932,6 +3021,9 @@ class SeedWordsBackupTestPromptView(View):
             if isinstance(seed, Slip39Seed) and self.share_index is not None and self.share_index < len(seed.mnemonic_list) - 1:
                 return Destination(SeedWordsWarningView, view_args=dict(seed_num=self.seed_num, share_index=self.share_index + 1))
             if self.seed_num is not None:
+                if os.environ.get("TP_ONLY_MODE") == "1":
+                    from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+                    return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num))
                 return Destination(SeedOptionsView, view_args=dict(seed_num=self.seed_num))
             else:
                 return Destination(SeedFinalizeView)
@@ -3119,6 +3211,9 @@ class SeedWordsBackupTestSuccessView(View):
             seed = self.controller.get_seed(self.seed_num)
             if isinstance(seed, Slip39Seed) and self.share_index is not None and self.share_index < len(seed.mnemonic_list) - 1:
                 return Destination(SeedWordsWarningView, view_args={"seed_num": self.seed_num, "share_index": self.share_index + 1})
+            if os.environ.get("TP_ONLY_MODE") == "1":
+                from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+                return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
             return Destination(SeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
         else:
             seed = self.controller.storage.get_pending_seed()

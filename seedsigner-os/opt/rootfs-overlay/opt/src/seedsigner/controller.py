@@ -626,6 +626,7 @@ class Controller(Singleton):
         # Wipe sensitive in-memory data
         self.storage.seeds = []
         self.storage.clear_pending_seed()
+        self.storage.clear_steel_cache()
         if self._storage2:
             self._storage2.clear_encryptedqr()
 
@@ -680,8 +681,23 @@ class Controller(Singleton):
                     line_info = traceback_line.split("/")[-1].replace("\"", "").replace("line ", "")
                     break
             exception_msg = str(e).strip()
+            lowered = exception_msg.lower()
             if "wait_for()" in exception_msg and "unexpected keyword argument" in exception_msg:
                 detail = "按键输入模块不兼容，请重新刷写固件。"
+            elif (
+                "nocardexception" in lowered
+                or "cardconnectionexception" in lowered
+                or "no card found" in lowered
+                or "please insert card" in lowered
+                or "removed card" in lowered
+                or "reader" in lowered and "smartcard" in lowered
+            ):
+                try:
+                    from seedsigner.helpers import seedkeeper_utils
+                    seedkeeper_utils.disconnect_smartcard_connections(self)
+                except Exception:
+                    pass
+                detail = "读卡器或智能卡已断开，请重新插入后回到首页再试。"
             elif isinstance(e, ValueError):
                 if exception_msg:
                     detail = f"操作失败\n数据格式错误：{exception_msg}"

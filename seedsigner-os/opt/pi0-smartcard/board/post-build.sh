@@ -111,3 +111,8 @@ find "${TARGET_DIR}" -name '.DS_Store' -print0 | xargs -0 --no-run-if-empty rm -
 SOURCE_DATE_EPOCH=1 PYTHONHASHSEED=0 ${HOST_DIR}/bin/python3.12 \
   "${BUILD_DIR}/python3-3.12.10/Lib/compileall.py" \
   -f --invalidation-mode=checked-hash "${TARGET_DIR}/opt/src"
+
+# Keep the app runtime deterministic: always ship our application as plain .py
+# sources so stale bytecode can never shadow freshly edited recovery logic.
+find "${TARGET_DIR}/opt/src" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "${TARGET_DIR}/opt/src" -type f -name '*.pyc' -delete
