@@ -35,6 +35,13 @@ raw_from_dist_sha="$(xz -dc "$DIST_IMG" | sha256sum | awk '{print $1}')"
 info_raw_sha="$(awk -F= '/^raw_image_sha256=/{print $2}' "$DIST_INFO")"
 [[ "$info_raw_sha" == "$raw_from_dist_sha" ]] || fail "build-info raw_image_sha256 mismatch"
 
+info_repo_dirty="$(awk -F= '/^repo_dirty=/{print $2}' "$DIST_INFO")"
+[[ "$info_repo_dirty" == "0" ]] || fail "Pi firmware build-info repo_dirty must be 0"
+
+info_package_script="$(awk -F= '/^package_script=/{print $2}' "$DIST_INFO")"
+[[ "$info_package_script" != "manual-low-impact-xz" ]] || \
+  fail "Pi firmware build-info still uses obsolete manual-low-impact-xz package_script"
+
 for key in \
   source_snapshot_build_commit_time \
   repo_head \

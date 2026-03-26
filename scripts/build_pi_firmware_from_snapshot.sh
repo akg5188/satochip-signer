@@ -10,6 +10,7 @@ DIST_INFO="${DIST_INFO:-$DIST_DIR/system-update-latest.build-info.txt}"
 SNAPSHOT_DIR="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt"
 SNAPSHOT_TIME_FILE="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt/src/.build_commit_time"
 NFC_BINDINGS_FILE="$ROOT_DIR/seedsigner-os/opt/external-packages/nfc-bindings/nfc-bindings.mk"
+XZ_THREADS="${XZ_THREADS:-1}"
 
 mkdir -p "$DIST_DIR"
 
@@ -54,7 +55,7 @@ snapshot_tree_sha="$(
 nfc_bindings_sha="$(sha256sum "$NFC_BINDINGS_FILE" | awk '{print $1}')"
 
 tmp_img="$(mktemp "$DIST_DIR/.system-update-latest.img.xz.XXXXXX")"
-xz -T0 -9 -c "$RAW_IMG" > "$tmp_img"
+ionice -c3 nice -n 19 xz -T"$XZ_THREADS" -9 -c "$RAW_IMG" > "$tmp_img"
 mv "$tmp_img" "$DIST_IMG"
 
 dist_sha="$(sha256sum "$DIST_IMG" | awk '{print $1}')"

@@ -17,6 +17,47 @@ require_file() {
   [[ -f "$path" ]] || fail "Missing required file: $path"
 }
 
+check_pi_firmware_artifact() {
+  local artifact="$1"
+  local sha_file="$2"
+  local info_file="$3"
+
+  require_file "$artifact"
+  require_file "$sha_file"
+  require_file "$info_file"
+
+  local expected_sha
+  local actual_sha
+  expected_sha="$(awk 'NR==1 {print $1}' "$sha_file")"
+  actual_sha="$(sha256sum "$artifact" | awk '{print $1}')"
+  [[ "$expected_sha" == "$actual_sha" ]] || fail "sha256 mismatch for $artifact"
+
+  local info_sha
+  info_sha="$(awk -F= '/^compressed_image_sha256=/{print $2}' "$info_file")"
+  [[ "$info_sha" == "$actual_sha" ]] || fail "build-info mismatch for $artifact"
+
+  local info_raw_sha
+  local raw_sha
+  info_raw_sha="$(awk -F= '/^raw_image_sha256=/{print $2}' "$info_file")"
+  raw_sha="$(xz -dc "$artifact" | sha256sum | awk '{print $1}')"
+  [[ "$info_raw_sha" == "$raw_sha" ]] || fail "raw image sha mismatch for $artifact"
+
+  grep -q '^repo_head=' "$info_file" || fail "Missing repo_head in $info_file"
+  grep -q '^repo_dirty=' "$info_file" || fail "Missing repo_dirty in $info_file"
+  grep -q '^runtime_snapshot_tree_sha256=' "$info_file" || fail "Missing runtime_snapshot_tree_sha256 in $info_file"
+  grep -q '^nfc_bindings_mk_sha256=' "$info_file" || fail "Missing nfc_bindings_mk_sha256 in $info_file"
+  grep -q '^build_script=' "$info_file" || fail "Missing build_script in $info_file"
+  grep -q '^package_script=' "$info_file" || fail "Missing package_script in $info_file"
+
+  local repo_dirty
+  repo_dirty="$(awk -F= '/^repo_dirty=/{print $2}' "$info_file")"
+  [[ "$repo_dirty" == "0" ]] || fail "Pi firmware build-info repo_dirty must be 0"
+
+  local package_script
+  package_script="$(awk -F= '/^package_script=/{print $2}' "$info_file")"
+  [[ "$package_script" != "manual-low-impact-xz" ]] || fail "Pi firmware build-info still uses obsolete manual-low-impact-xz package_script"
+}
+
 check_artifact() {
   local artifact="$1"
   local sha_file="$2"
@@ -65,6 +106,11 @@ check_optional_artifact() {
 require_file "$ROOT_DIR/card-applet/prebuilt/SatoChip-3.0.4.cap"
 require_file "$ROOT_DIR/card-applet/prebuilt/SHA256SUMS.txt"
 ( cd "$ROOT_DIR/card-applet/prebuilt" && sha256sum -c SHA256SUMS.txt >/dev/null )
+
+check_pi_firmware_artifact \
+  "$ROOT_DIR/dist/system-update-latest.img.xz" \
+  "$ROOT_DIR/dist/system-update-latest.img.xz.sha256" \
+  "$ROOT_DIR/dist/system-update-latest.build-info.txt"
 
 check_artifact \
   "$ROOT_DIR/dist/tp-qr-relay-android-latest.apk" \
