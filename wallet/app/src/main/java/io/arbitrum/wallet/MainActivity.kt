@@ -35,6 +35,7 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -63,6 +64,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -85,6 +87,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -101,7 +104,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import com.journeyapps.barcodescanner.BarcodeEncoder
 import java.math.BigDecimal
+import java.math.BigInteger
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -145,7 +154,7 @@ class MainActivity : BiometricGateActivity(), InjectedBrowserHost {
     private val bitcoinImportQrLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
         val text = result.data?.getStringExtra(QrScanActivity.EXTRA_QR_RESULT) ?: return@registerForActivityResult
-        viewModel.setBitcoinImportInput(text)
+        viewModel.importBitcoinWatchAccountFromPayload(text)
     }
 
     private val responseQrLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -198,11 +207,7 @@ class MainActivity : BiometricGateActivity(), InjectedBrowserHost {
                     onRemoveBitcoinWatchAccount = viewModel::removeBitcoinWatchAccount,
                     onSyncBitcoinWatchAccount = viewModel::syncBitcoinWatchAccount,
                     onPrepareBitcoinTransfer = viewModel::prepareBitcoinTransfer,
-                    onTransferToChange = viewModel::setTransferTo,
-                    onTransferAmountChange = viewModel::setTransferAmount,
-                    onTransferTokenChange = viewModel::setTransferToken,
-                    onTransferAmountAll = viewModel::transferAllTokens,
-                    onPrepareTransfer = viewModel::prepareTransfer,
+                    onPrepareTransferRequest = viewModel::prepareTransferRequest,
                     onRequestInputChange = viewModel::setRequestInput,
                     onImportRawRequest = viewModel::importRawRequest,
                     onImportRequestFromClipboard = ::importRequestFromClipboard,
@@ -1053,11 +1058,7 @@ private fun WalletScreen(
     onRemoveBitcoinWatchAccount: (String) -> Unit,
     onSyncBitcoinWatchAccount: (String) -> Unit,
     onPrepareBitcoinTransfer: (String, String, String, String?) -> Unit,
-    onTransferToChange: (String) -> Unit,
-    onTransferAmountChange: (String) -> Unit,
-    onTransferTokenChange: (String) -> Unit,
-    onTransferAmountAll: () -> Unit,
-    onPrepareTransfer: () -> Unit,
+    onPrepareTransferRequest: (String, String, String) -> Unit,
     onRequestInputChange: (String) -> Unit,
     onImportRawRequest: () -> Unit,
     onImportRequestFromClipboard: () -> Unit,
@@ -1087,8 +1088,31 @@ private fun WalletScreen(
     }
 
     val chain = WalletChains.require(state.selectedChainId)
-    val portfolio = state.chainPortfolios[state.selectedChainId]
     val context = LocalContext.current
+    val latestError by rememberUpdatedState(state.error)
+    val latestInfo by rememberUpdatedState(state.info)
+    var homeSelectedAssetId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    BackHandler(enabled = state.activeTab != WalletTab.HOME || homeSelectedAssetId != null) {
+        when {
+            homeSelectedAssetId != null -> homeSelectedAssetId = null
+            state.activeTab != WalletTab.HOME -> onSelectTab(WalletTab.HOME)
+        }
+    }
+
+    LaunchedEffect(state.error) {
+        if (state.error.isNotBlank()) {
+            delay(5000)
+            if (latestError.isNotBlank()) onClearError()
+        }
+    }
+
+    LaunchedEffect(state.info) {
+        if (state.info.isNotBlank()) {
+            delay(5000)
+            if (latestInfo.isNotBlank()) onClearInfo()
+        }
+    }
 
     if (state.activeTab == WalletTab.DISCOVER) {
         LaunchedEffect(Unit) {
@@ -1120,7 +1144,6 @@ private fun WalletScreen(
                 title = "错误",
                 message = state.error,
                 background = Color(0xFFFFE4E6),
-                onDismiss = onClearError,
             )
         }
         if (state.info.isNotBlank()) {
@@ -1128,7 +1151,6 @@ private fun WalletScreen(
                 title = "提示",
                 message = state.info,
                 background = Color(0xFFE0F2FE),
-                onDismiss = onClearInfo,
             )
         }
 
@@ -1185,56 +1207,49 @@ private fun WalletScreen(
 
         when (state.activeTab) {
             WalletTab.HOME -> {
-                WalletOverviewSection(
+                AssetsHubSection(
                     state = state,
                     chain = chain,
+                    selectedAssetId = homeSelectedAssetId,
+                    onSelectedAssetChange = { homeSelectedAssetId = it },
+                    onPrepareTransferRequest = onPrepareTransferRequest,
+                    onSyncBitcoinWatchAccount = onSyncBitcoinWatchAccount,
+                    onPrepareBitcoinTransfer = onPrepareBitcoinTransfer,
                     onRefreshBalances = onRefreshBalances,
-                    onNewAddressChange = onNewAddressChange,
-                    onEvmDerivationPathChange = onEvmDerivationPathChange,
-                    onAddAddress = onAddAddress,
-                    onPrepareDerivedAddressImport = onPrepareDerivedAddressImport,
-                    onSelectAddress = onSelectAddress,
-                    onRemoveAddress = onRemoveAddress,
                 )
-                TransferSection(
-                    state = state,
-                    chain = chain,
-                    onTransferToChange = onTransferToChange,
-                    onTransferAmountChange = onTransferAmountChange,
-                    onTransferTokenChange = onTransferTokenChange,
-                    onTransferAmountAll = onTransferAmountAll,
-                    onPrepareTransfer = onPrepareTransfer,
-                )
-                BitcoinPrototypeSection(
-                    state = state,
-                    onImportInputChange = onBitcoinImportInputChange,
-                    onScanImport = onScanBitcoinWatchAccount,
-                    onImportAccount = onImportBitcoinWatchAccount,
-                    onRemoveAccount = onRemoveBitcoinWatchAccount,
-                    onSyncAccount = onSyncBitcoinWatchAccount,
-                    onPrepareTransfer = onPrepareBitcoinTransfer,
-                )
-                if (WalletChains.ALL.size > 1) {
-                    ChainSelectorSection(
-                        selectedChainId = state.selectedChainId,
-                        onSelectChain = onSelectChain,
+                if (homeSelectedAssetId == null) {
+                    WatchWalletHubSection(
+                        state = state,
+                        chain = chain,
+                        onNewAddressChange = onNewAddressChange,
+                        onEvmDerivationPathChange = onEvmDerivationPathChange,
+                        onAddAddress = onAddAddress,
+                        onPrepareDerivedAddressImport = onPrepareDerivedAddressImport,
+                        onSelectAddress = onSelectAddress,
+                        onRemoveAddress = onRemoveAddress,
+                        onImportInputChange = onBitcoinImportInputChange,
+                        onScanImport = onScanBitcoinWatchAccount,
+                        onImportAccount = onImportBitcoinWatchAccount,
+                        onRemoveAccount = onRemoveBitcoinWatchAccount,
+                        onSyncAccount = onSyncBitcoinWatchAccount,
+                    )
+                    if (WalletChains.ALL.size > 1) {
+                        ChainSelectorSection(
+                            selectedChainId = state.selectedChainId,
+                            onSelectChain = onSelectChain,
+                        )
+                    }
+                    DappToolsSection(
+                        state = state,
+                        onRequestInputChange = onRequestInputChange,
+                        onImportRawRequest = onImportRawRequest,
+                        onImportRequestFromClipboard = onImportRequestFromClipboard,
+                        onApproveWalletConnectProposal = onApproveWalletConnectProposal,
+                        onRejectWalletConnectProposal = onRejectWalletConnectProposal,
+                        onScanRequest = onScanRequest,
+                        onPickRequestFromGallery = onPickRequestFromGallery,
                     )
                 }
-                PortfolioSection(
-                    chain = chain,
-                    portfolio = portfolio,
-                    isLoading = state.loadingBalances,
-                )
-                DappToolsSection(
-                    state = state,
-                    onRequestInputChange = onRequestInputChange,
-                    onImportRawRequest = onImportRawRequest,
-                    onImportRequestFromClipboard = onImportRequestFromClipboard,
-                    onApproveWalletConnectProposal = onApproveWalletConnectProposal,
-                    onRejectWalletConnectProposal = onRejectWalletConnectProposal,
-                    onScanRequest = onScanRequest,
-                    onPickRequestFromGallery = onPickRequestFromGallery,
-                )
             }
 
             WalletTab.ACTIVITY -> {
@@ -1242,7 +1257,6 @@ private fun WalletScreen(
                     state = state,
                     chain = chain,
                     onRefresh = onRefreshBalances,
-                    onOpenUrl = onOpenUrl,
                 )
             }
 
@@ -2041,17 +2055,18 @@ private fun BrowserFloatingBanner(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = background,
+        color = background.copy(alpha = 0.08f).compositeOver(Color.White),
         shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, background.copy(alpha = 0.18f).compositeOver(Color(0xFFE5E7EB))),
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(title, color = Color.White, fontWeight = FontWeight.Bold)
-            Text(message, color = Color.White, fontSize = 12.sp)
+            Text(title, color = Color(0xFF111827), fontWeight = FontWeight.Bold)
+            Text(message, color = Color(0xFF667085), fontSize = 12.sp)
             TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
-                Text("关闭", color = Color.White)
+                Text("关闭", color = Color(0xFF5B43B4))
             }
         }
     }
@@ -2067,21 +2082,21 @@ private fun BrowserActionBanner(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = Color(0xE6111827),
+        color = Color.White,
         shape = RoundedCornerShape(22.dp),
-        border = BorderStroke(1.dp, Color(0xFF1F2937)),
+        border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(title, color = Color.White, fontWeight = FontWeight.Bold)
-            Text(message, color = Color(0xFFE2E8F0), fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            Text(title, color = Color(0xFF111827), fontWeight = FontWeight.Bold)
+            Text(message, color = Color(0xFF667085), fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (actionLabel != null && onAction != null) {
-                    Button(onClick = onAction) { Text(actionLabel) }
+                    OutlinedButton(onClick = onAction) { Text(actionLabel) }
                 }
-                TextButton(onClick = onDismiss) { Text("关闭") }
+                TextButton(onClick = onDismiss) { Text("关闭", color = Color(0xFF5B43B4)) }
             }
         }
     }
@@ -2105,8 +2120,8 @@ private fun WalletTabs(activeTab: WalletTab, onSelectTab: (WalletTab) -> Unit) {
 
 @Composable
 private fun WalletTabItem(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val background = if (selected) Color(0xFF0F172A) else Color.Transparent
-    val contentColor = if (selected) Color.White else Color(0xFF475467)
+    val background = if (selected) Color(0xFFF8FAFC) else Color.Transparent
+    val contentColor = if (selected) Color(0xFF344054) else Color(0xFF667085)
     Box(
         modifier = modifier,
     ) {
@@ -2114,6 +2129,11 @@ private fun WalletTabItem(label: String, selected: Boolean, modifier: Modifier =
             modifier = Modifier
                 .fillMaxWidth()
                 .background(background, RoundedCornerShape(14.dp))
+                .border(
+                    width = if (selected) 1.dp else 0.dp,
+                    color = if (selected) Color(0xFFE5E7EB) else Color.Transparent,
+                    shape = RoundedCornerShape(14.dp),
+                )
                 .clickable(onClick = onClick)
                 .padding(vertical = 11.dp),
             contentAlignment = Alignment.Center,
@@ -2140,8 +2160,8 @@ private fun WalletSectionCard(
         border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
             content = content,
         )
     }
@@ -2150,7 +2170,7 @@ private fun WalletSectionCard(
 @Composable
 private fun SectionHeader(
     title: String,
-    subtitle: String,
+    subtitle: String? = null,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     Row(
@@ -2162,8 +2182,10 @@ private fun SectionHeader(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Text(title, fontWeight = FontWeight.Bold, color = Color(0xFF101828))
-            Text(subtitle, fontSize = 12.sp, color = Color(0xFF667085))
+            Text(title, fontWeight = FontWeight.Bold, color = Color(0xFF101828), fontSize = 15.sp)
+            if (!subtitle.isNullOrBlank()) {
+                Text(subtitle, fontSize = 11.sp, color = Color(0xFF667085))
+            }
         }
         if (trailing != null) {
             Box(contentAlignment = Alignment.CenterEnd) { trailing() }
@@ -2174,13 +2196,13 @@ private fun SectionHeader(
 @Composable
 private fun StatusChip(
     label: String,
-    background: Color = Color(0xFFF8FAFC),
-    contentColor: Color = Color(0xFF344054),
+    background: Color = Color.White,
+    contentColor: Color = Color(0xFF5B43B4),
 ) {
     Surface(
         color = background,
         shape = RoundedCornerShape(999.dp),
-        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+        border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
     ) {
         Text(
             label,
@@ -2189,6 +2211,1054 @@ private fun StatusChip(
             color = contentColor,
             fontWeight = FontWeight.Medium,
         )
+    }
+}
+
+@Composable
+private fun tpPrimaryButtonColors() = ButtonDefaults.buttonColors(
+    containerColor = Color.White,
+    contentColor = Color(0xFF5B43B4),
+    disabledContainerColor = Color(0xFFFCFCFD),
+    disabledContentColor = Color(0xFFA495D6),
+)
+
+private enum class HomeSectionMode {
+    EVM,
+    BTC,
+}
+
+@Composable
+private fun SegmentedModeTabs(
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(999.dp))
+            .border(1.dp, Color(0xFFE5E7EB), RoundedCornerShape(999.dp))
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        options.forEachIndexed { index, label ->
+            val selected = index == selectedIndex
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .background(
+                        color = if (selected) Color(0xFFF8FAFC) else Color.Transparent,
+                        shape = RoundedCornerShape(999.dp),
+                    )
+                    .border(
+                        width = if (selected) 1.dp else 0.dp,
+                        color = if (selected) Color(0xFFE5E7EB) else Color.Transparent,
+                        shape = RoundedCornerShape(999.dp),
+                    )
+                    .clickable { onSelect(index) }
+                    .padding(vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (selected) Color(0xFF344054) else Color(0xFF667085),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WatchWalletHubSection(
+    state: WalletUiState,
+    chain: WalletChain,
+    onNewAddressChange: (String) -> Unit,
+    onEvmDerivationPathChange: (String) -> Unit,
+    onAddAddress: () -> Unit,
+    onPrepareDerivedAddressImport: () -> Unit,
+    onSelectAddress: (String) -> Unit,
+    onRemoveAddress: (String) -> Unit,
+    onImportInputChange: (String) -> Unit,
+    onScanImport: () -> Unit,
+    onImportAccount: () -> Unit,
+    onRemoveAccount: (String) -> Unit,
+    onSyncAccount: (String) -> Unit,
+) {
+    var mode by rememberSaveable { mutableStateOf(HomeSectionMode.EVM) }
+    var showManualImport by rememberSaveable { mutableStateOf(false) }
+    var showAddressManager by rememberSaveable { mutableStateOf(false) }
+    var showBitcoinImportPanel by rememberSaveable { mutableStateOf(state.bitcoinWatchAccounts.isEmpty()) }
+    var showBitcoinAccounts by rememberSaveable { mutableStateOf(state.bitcoinWatchAccounts.isNotEmpty()) }
+    var expandedAccountId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    WalletSectionCard {
+        SectionHeader(
+            title = "观察钱包",
+            trailing = {
+                val label = if (mode == HomeSectionMode.EVM) {
+                    if (state.addresses.isEmpty()) "未连接" else "${state.addresses.size} 个地址"
+                } else {
+                    if (state.bitcoinWatchAccounts.isEmpty()) "未导入" else "${state.bitcoinWatchAccounts.size} 个账户"
+                }
+                StatusChip(label)
+            },
+        )
+
+        SegmentedModeTabs(
+            options = listOf(chain.shortName, "BTC"),
+            selectedIndex = if (mode == HomeSectionMode.EVM) 0 else 1,
+            onSelect = { mode = if (it == 0) HomeSectionMode.EVM else HomeSectionMode.BTC },
+        )
+
+        if (mode == HomeSectionMode.EVM) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = state.evmDerivationPath,
+                    onValueChange = onEvmDerivationPathChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("派生路径", fontSize = 11.sp) },
+                    placeholder = { Text(DEFAULT_EVM_DERIVATION_PATH, fontSize = 11.sp) },
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onPrepareDerivedAddressImport,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("连接树莓派", fontSize = 11.sp)
+                }
+                OutlinedButton(onClick = { showAddressManager = !showAddressManager }, modifier = Modifier.weight(1f)) {
+                    Text(if (showAddressManager) "收起地址" else "管理地址", fontSize = 11.sp)
+                }
+                OutlinedButton(onClick = { showManualImport = !showManualImport }, modifier = Modifier.weight(1f)) {
+                    Text(if (showManualImport) "收起手动" else "手动添加", fontSize = 11.sp)
+                }
+            }
+
+            if (showManualImport) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = state.newAddressInput,
+                        onValueChange = onNewAddressChange,
+                        placeholder = { Text("添加地址 (0x...)", fontSize = 11.sp) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                    )
+                    OutlinedButton(onClick = onAddAddress) {
+                        Text("添加", fontSize = 11.sp)
+                    }
+                }
+            }
+
+            if (showAddressManager && state.addresses.isNotEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    state.addresses.forEach { address ->
+                        AddressListItem(
+                            address = address,
+                            isSelected = address.equals(state.selectedAddress, ignoreCase = true),
+                            onSelect = { onSelectAddress(address) },
+                            onRemove = { onRemoveAddress(address) },
+                        )
+                    }
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onScanImport,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("扫码导入", fontSize = 11.sp)
+                }
+                OutlinedButton(onClick = { showBitcoinImportPanel = !showBitcoinImportPanel }, modifier = Modifier.weight(1f)) {
+                    Text(if (showBitcoinImportPanel) "收起粘贴" else "粘贴导入", fontSize = 11.sp)
+                }
+                OutlinedButton(onClick = { showBitcoinAccounts = !showBitcoinAccounts }, modifier = Modifier.weight(1f)) {
+                    Text(if (showBitcoinAccounts) "收起账户" else "查看账户", fontSize = 11.sp)
+                }
+            }
+
+            if (showBitcoinImportPanel || state.bitcoinWatchAccounts.isEmpty()) {
+                OutlinedTextField(
+                    value = state.bitcoinImportInput,
+                    onValueChange = onImportInputChange,
+                    placeholder = { Text("粘贴 zpub / xpub", fontSize = 11.sp) },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 3,
+                )
+                OutlinedButton(
+                    onClick = onImportAccount,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("导入账户", fontSize = 11.sp)
+                }
+            }
+
+            if (showBitcoinAccounts && state.bitcoinWatchAccounts.isNotEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    state.bitcoinWatchAccounts.forEach { account ->
+                        BitcoinWatchAccountCard(
+                            account = account,
+                            expanded = expandedAccountId == account.id,
+                            onToggleExpanded = {
+                                expandedAccountId = if (expandedAccountId == account.id) null else account.id
+                            },
+                            onRemoveAccount = onRemoveAccount,
+                            onSyncAccount = onSyncAccount,
+                            showBalanceSummary = false,
+                            showSyncSummary = false,
+                            showTransferAction = false,
+                            onPrepareTransfer = { _, _, _, _ -> },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private data class CombinedAssetEntry(
+    val id: String,
+    val symbol: String,
+    val title: String,
+    val subtitle: String,
+    val amountLabel: String,
+    val usdLabel: String?,
+    val isBitcoin: Boolean,
+    val token: TokenInfo? = null,
+    val asset: AssetBalanceUi? = null,
+    val btcAccount: BitcoinWatchAccount? = null,
+)
+
+private enum class AssetActionMode {
+    RECEIVE,
+    SEND,
+}
+
+private enum class TransferInputMode {
+    ASSET,
+    USD,
+}
+
+private data class TransactionDetailField(
+    val label: String,
+    val value: String,
+    val copyable: Boolean = false,
+)
+
+private data class TransactionDetailUi(
+    val title: String,
+    val amountLabel: String,
+    val statusLabel: String,
+    val fields: List<TransactionDetailField>,
+)
+
+private fun formatAbsoluteTimestamp(timestamp: Long): String {
+    return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
+}
+
+private fun formatGwei(value: BigInteger?): String? {
+    if (value == null) return null
+    val decimal = BigDecimal(value).divide(BigDecimal.TEN.pow(9), 9, java.math.RoundingMode.DOWN).stripTrailingZeros()
+    return "${decimal.toPlainString()} Gwei"
+}
+
+private fun isBitcoinActivity(item: WalletActivityItem): Boolean {
+    return item.amountLabel.contains("BTC", ignoreCase = true) ||
+        item.title.contains("BTC", ignoreCase = true) ||
+        item.externalUrl.contains("blockstream.info")
+}
+
+private fun buildFallbackTransactionDetail(item: WalletActivityItem, chain: WalletChain): TransactionDetailUi {
+    val fields = buildList {
+        add(TransactionDetailField("网络", WalletChains.require(item.chainId.takeIf { it != 0L } ?: chain.chainId).shortName))
+        if (item.subtitle.isNotBlank()) add(TransactionDetailField("对方", item.subtitle, copyable = true))
+        if (item.detail.isNotBlank()) add(TransactionDetailField("说明", item.detail))
+        if (item.txHash.isNotBlank()) add(TransactionDetailField("交易哈希", item.txHash, copyable = true))
+        add(TransactionDetailField("时间", formatAbsoluteTimestamp(item.timestamp)))
+    }
+    return TransactionDetailUi(
+        title = item.title,
+        amountLabel = item.amountLabel,
+        statusLabel = item.statusLabel.ifBlank { "链上记录" },
+        fields = fields,
+    )
+}
+
+private suspend fun resolveTransactionDetail(
+    item: WalletActivityItem,
+    chain: WalletChain,
+): TransactionDetailUi {
+    if (item.txHash.isBlank()) return buildFallbackTransactionDetail(item, chain)
+    return if (isBitcoinActivity(item)) {
+        val detail = BitcoinTransferService.fetchTransactionDetail(item.externalUrl, item.txHash) ?: return buildFallbackTransactionDetail(item, chain)
+        TransactionDetailUi(
+            title = item.title,
+            amountLabel = item.amountLabel,
+            statusLabel = detail.statusLabel,
+            fields = buildList {
+                add(TransactionDetailField("付款方", detail.fromSummary, copyable = true))
+                add(TransactionDetailField("收款方", detail.toSummary, copyable = true))
+                add(TransactionDetailField("矿工费", formatBitcoinSats(detail.feeSats)))
+                detail.blockHeight?.let { add(TransactionDetailField("区块高度", it.toString(), copyable = true)) }
+                detail.confirmations?.let { add(TransactionDetailField("确认数", it.toString())) }
+                add(TransactionDetailField("时间", formatAbsoluteTimestamp(detail.timestamp)))
+                add(TransactionDetailField("输入 / 输出", "${detail.inputCount} / ${detail.outputCount}"))
+                add(TransactionDetailField("大小 / 权重", "${detail.size} bytes / ${detail.weight} wu"))
+                add(TransactionDetailField("交易哈希", detail.txid, copyable = true))
+            },
+        )
+    } else {
+        val detail = EvmRpc.getTransactionDetail(chain, item.txHash) ?: return buildFallbackTransactionDetail(item, chain)
+        TransactionDetailUi(
+            title = item.title,
+            amountLabel = item.amountLabel,
+            statusLabel = detail.statusLabel,
+            fields = buildList {
+                add(TransactionDetailField("付款方", detail.fromAddress.ifBlank { "-" }, copyable = detail.fromAddress.isNotBlank()))
+                add(TransactionDetailField("收款方", detail.toAddress.ifBlank { "-" }, copyable = detail.toAddress.isNotBlank()))
+                detail.feeWei?.let { add(TransactionDetailField("网络费", "${BigDecimal(it).divide(BigDecimal.TEN.pow(18), 18, java.math.RoundingMode.DOWN).stripTrailingZeros().toPlainString()} ${chain.nativeSymbol}")) }
+                detail.gasUsed?.let { gasUsed ->
+                    val gasLimit = detail.gasLimit?.toString() ?: "-"
+                    add(TransactionDetailField("Gas Used / Limit", "${gasUsed} / $gasLimit"))
+                }
+                formatGwei(detail.baseFeePerGas)?.let { add(TransactionDetailField("Base Fee", it)) }
+                formatGwei(detail.priorityFeePerGas)?.let { add(TransactionDetailField("Priority Fee", it)) }
+                formatGwei(detail.maxFeePerGas)?.let { add(TransactionDetailField("Max Fee", it)) }
+                detail.nonce?.let { add(TransactionDetailField("Nonce", it.toString())) }
+                detail.blockNumber?.let { add(TransactionDetailField("区块高度", it.toString(), copyable = true)) }
+                detail.confirmations?.let { add(TransactionDetailField("确认数", it.toString())) }
+                add(TransactionDetailField("时间", formatAbsoluteTimestamp(detail.timestamp)))
+                if (detail.methodLabel.isNotBlank()) add(TransactionDetailField("方法", detail.methodLabel))
+                detail.transferSummary.forEachIndexed { index, line ->
+                    add(TransactionDetailField("转账 ${index + 1}", line))
+                }
+                if (detail.dataInput.isNotBlank()) add(TransactionDetailField("数据输入", detail.dataInput, copyable = true))
+                add(TransactionDetailField("交易哈希", detail.txHash, copyable = true))
+            },
+        )
+    }
+}
+
+@Composable
+private fun AssetsHubSection(
+    state: WalletUiState,
+    chain: WalletChain,
+    selectedAssetId: String?,
+    onSelectedAssetChange: (String?) -> Unit,
+    onPrepareTransferRequest: (String, String, String) -> Unit,
+    onSyncBitcoinWatchAccount: (String) -> Unit,
+    onPrepareBitcoinTransfer: (String, String, String, String?) -> Unit,
+    onRefreshBalances: () -> Unit,
+) {
+    val context = LocalContext.current
+    val evmAssets = (state.chainPortfolios[state.selectedChainId]?.assets ?: emptyList()).map { asset ->
+        CombinedAssetEntry(
+            id = "evm:${asset.symbol}",
+            symbol = asset.symbol,
+            title = asset.symbol,
+            subtitle = asset.name,
+            amountLabel = asset.amount,
+            usdLabel = formatUsdAmount(asset.usdAmount),
+            isBitcoin = false,
+            token = chain.tokens.firstOrNull { it.symbol.equals(asset.symbol, ignoreCase = true) },
+            asset = asset,
+        )
+    }
+    val btcAssets = state.bitcoinWatchAccounts.map { account ->
+        CombinedAssetEntry(
+            id = "btc:${account.id}",
+            symbol = "BTC",
+            title = "BTC",
+            subtitle = account.scriptTypeLabel,
+            amountLabel = formatBitcoinSats(account.balanceSats),
+            usdLabel = formatUsdAmount(bitcoinBalanceUsd(account.balanceSats, account.priceUsd)),
+            isBitcoin = true,
+            btcAccount = account,
+        )
+    }
+    val assets = btcAssets + evmAssets
+    var actionMode by rememberSaveable(selectedAssetId) { mutableStateOf<AssetActionMode?>(null) }
+    var transferInputMode by rememberSaveable(selectedAssetId) { mutableStateOf(TransferInputMode.ASSET) }
+    var receiveInputMode by rememberSaveable(selectedAssetId) { mutableStateOf(TransferInputMode.ASSET) }
+    var selectedHistoryItem by remember(selectedAssetId) { mutableStateOf<WalletActivityItem?>(null) }
+    var sendTo by rememberSaveable(selectedAssetId) { mutableStateOf("") }
+    var sendAmount by rememberSaveable(selectedAssetId) { mutableStateOf("") }
+    var receiveAmount by rememberSaveable(selectedAssetId) { mutableStateOf("") }
+    var feeRate by rememberSaveable(selectedAssetId) { mutableStateOf("") }
+    val transferScanLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
+        val text = result.data?.getStringExtra(QrScanActivity.EXTRA_QR_RESULT) ?: return@rememberLauncherForActivityResult
+        val target = extractTransferTargetFromQr(text)
+        if (target.isNotBlank()) {
+            sendTo = target
+        }
+    }
+
+    LaunchedEffect(assets.map { it.id }) {
+        if (selectedAssetId != null && assets.none { it.id == selectedAssetId }) {
+            onSelectedAssetChange(null)
+        }
+    }
+
+    val selected = assets.firstOrNull { it.id == selectedAssetId }
+    BackHandler(enabled = selected != null) {
+        if (selectedHistoryItem != null) {
+            selectedHistoryItem = null
+        } else if (actionMode != null) {
+            actionMode = null
+        } else {
+            onSelectedAssetChange(null)
+        }
+    }
+    LaunchedEffect(selectedAssetId, selected?.btcAccount?.id, selected?.btcAccount?.recentActivity?.size, selected?.btcAccount?.syncing) {
+        val btcAccount = selected?.btcAccount
+        if (btcAccount != null && !btcAccount.syncing && btcAccount.recentActivity.isEmpty()) {
+            onSyncBitcoinWatchAccount(btcAccount.id)
+        }
+    }
+    val recentItems = remember(state.activityItems, selectedAssetId, state.bitcoinWatchAccounts) {
+        val chosen = selected
+        when {
+            chosen == null -> emptyList()
+            chosen.isBitcoin -> chosen.btcAccount?.recentActivity.orEmpty()
+            else -> state.activityItems.filter { item ->
+                item.chainId == chain.chainId && (
+                    item.title.contains(chosen.symbol, ignoreCase = true) ||
+                        item.amountLabel.contains(chosen.symbol, ignoreCase = true) ||
+                        item.subtitle.contains(chosen.symbol, ignoreCase = true)
+                    )
+            }
+        }
+    }
+    LaunchedEffect(selectedAssetId, selected?.symbol, selected?.isBitcoin, recentItems.size) {
+        if (selected != null && !selected.isBitcoin && recentItems.isEmpty()) {
+            onRefreshBalances()
+        }
+    }
+
+    WalletSectionCard {
+        SectionHeader(title = "资产")
+        if (assets.isEmpty()) {
+            Text("暂无资产", fontSize = 12.sp, color = Color(0xFF667085))
+            return@WalletSectionCard
+        }
+
+        if (selected == null) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                assets.forEach { entry ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onSelectedAssetChange(entry.id)
+                                actionMode = null
+                            },
+                        color = Color.White,
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(entry.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF111827))
+                                Text(entry.subtitle, fontSize = 11.sp, color = Color(0xFF667085))
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(entry.amountLabel, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Color(0xFF111827))
+                                    Text(entry.usdLabel ?: "--", fontSize = 11.sp, color = Color(0xFF667085))
+                                }
+                                Text(">", fontSize = 14.sp, color = Color(0xFF98A2B3))
+                            }
+                        }
+                    }
+                }
+            }
+            return@WalletSectionCard
+        }
+
+        selected.let { entry ->
+            val priceUsd = if (entry.isBitcoin) entry.btcAccount?.priceUsd else entry.asset?.priceUsd
+            val receiveAddress = if (entry.isBitcoin) entry.btcAccount?.nextReceiveAddress.orEmpty() else state.selectedAddress
+            val resolvedReceiveAssetAmount = convertTransferInputToAssetAmount(receiveAmount, priceUsd, receiveInputMode)
+            val resolvedSendAssetAmount = convertTransferInputToAssetAmount(sendAmount, priceUsd, transferInputMode)
+            val receivePreviewText = when {
+                receiveAmount.isBlank() -> null
+                receiveInputMode == TransferInputMode.ASSET -> formatUsdAmount(calculateAssetUsd(receiveAmount, priceUsd))
+                else -> resolvedReceiveAssetAmount?.let { "$it ${entry.symbol}" }
+            }
+            val sendPreviewText = when {
+                sendAmount.isBlank() -> null
+                transferInputMode == TransferInputMode.ASSET -> formatUsdAmount(calculateAssetUsd(sendAmount, priceUsd))
+                else -> resolvedSendAssetAmount?.let { "$it ${entry.symbol}" }
+            }
+            val receiveQrPayload = buildReceiveQrPayload(
+                entry = entry,
+                chain = chain,
+                address = receiveAddress,
+                amountAsset = if (receiveInputMode == TransferInputMode.ASSET) receiveAmount.trim().takeIf { it.isNotBlank() } else resolvedReceiveAssetAmount,
+            )
+            val receiveQrBitmap = remember(receiveQrPayload) { generateInlineQrBitmap(receiveQrPayload) }
+
+            when (actionMode) {
+                null -> {
+                    Surface(
+                        color = Color.White,
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    onSelectedAssetChange(null)
+                                    actionMode = null
+                                },
+                            ) {
+                                Text("返回资产", fontSize = 11.sp, color = Color(0xFF5B43B4))
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(entry.title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF111827))
+                                    Text(entry.subtitle, fontSize = 11.sp, color = Color(0xFF667085))
+                                }
+                                Column(
+                                    horizontalAlignment = Alignment.End,
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(entry.amountLabel, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF111827))
+                                    Text(entry.usdLabel ?: "--", fontSize = 12.sp, color = Color(0xFF667085))
+                                }
+                            }
+                            if (entry.isBitcoin && entry.btcAccount != null) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        entry.btcAccount.lastSyncStatus.ifBlank { "点击同步后拉取链上余额和交易记录" },
+                                        modifier = Modifier.weight(1f),
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF667085),
+                                    )
+                                    OutlinedButton(onClick = { onSyncBitcoinWatchAccount(entry.btcAccount.id) }) {
+                                        Text("同步", fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedButton(
+                                    onClick = { actionMode = AssetActionMode.RECEIVE },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text("收款", fontSize = 11.sp)
+                                }
+                                OutlinedButton(
+                                    onClick = { actionMode = AssetActionMode.SEND },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text("转账", fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    }
+
+                    if (selectedHistoryItem == null) {
+                        Text("全部交易记录", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Color(0xFF111827))
+                        AssetHistoryList(
+                            items = recentItems,
+                            chain = chain,
+                            onOpenDetail = { selectedHistoryItem = it },
+                        )
+                    } else {
+                        TransactionDetailCard(
+                            item = selectedHistoryItem!!,
+                            chain = chain,
+                            onBack = { selectedHistoryItem = null },
+                        )
+                    }
+                }
+
+                AssetActionMode.RECEIVE -> {
+                    Surface(
+                        color = Color.White,
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            TextButton(onClick = { actionMode = null }) {
+                                Text("返回 ${entry.title}", fontSize = 11.sp, color = Color(0xFF5B43B4))
+                            }
+                            Text("收款 ${entry.title}", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF111827))
+                            if (receiveAddress.isBlank()) {
+                                Text(
+                                    if (entry.isBitcoin) "先同步这个 BTC 账户，才能拿到收款地址。" else "先连接观察地址，才能查看收款地址。",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF667085),
+                                )
+                                if (entry.isBitcoin) {
+                                    OutlinedButton(
+                                        onClick = { entry.btcAccount?.id?.let(onSyncBitcoinWatchAccount) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text("同步地址", fontSize = 11.sp)
+                                    }
+                                }
+                            } else {
+                                SegmentedModeTabs(
+                                    options = listOf("按币", "按美元"),
+                                    selectedIndex = if (receiveInputMode == TransferInputMode.ASSET) 0 else 1,
+                                    onSelect = { receiveInputMode = if (it == 0) TransferInputMode.ASSET else TransferInputMode.USD },
+                                )
+                                OutlinedTextField(
+                                    value = receiveAmount,
+                                    onValueChange = { receiveAmount = it },
+                                    label = { Text(if (receiveInputMode == TransferInputMode.ASSET) "收款数量" else "收款美元", fontSize = 11.sp) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                )
+                                if (receivePreviewText != null) {
+                                    Text(receivePreviewText, fontSize = 11.sp, color = Color(0xFF667085))
+                                }
+                                receiveQrBitmap?.let { bitmap ->
+                                    Surface(
+                                        color = Color.White,
+                                        shape = RoundedCornerShape(14.dp),
+                                        border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 12.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            Image(
+                                                bitmap = bitmap.asImageBitmap(),
+                                                contentDescription = "${entry.symbol} 收款二维码",
+                                                modifier = Modifier.size(184.dp),
+                                            )
+                                            Text("扫码收款", fontSize = 11.sp, color = Color(0xFF667085))
+                                        }
+                                    }
+                                }
+                                SelectionContainer {
+                                    Text(receiveAddress, fontSize = 12.sp, color = Color(0xFF0F172A))
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            copyPlainText(
+                                                context = context,
+                                                label = "receive-address",
+                                                value = receiveAddress,
+                                                successMessage = "地址已复制",
+                                            )
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        Text("复制地址", fontSize = 11.sp)
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            copyPlainText(
+                                                context = context,
+                                                label = "receive-qr-payload",
+                                                value = receiveQrPayload,
+                                                successMessage = "收款二维码内容已复制",
+                                            )
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        Text("复制二维码内容", fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                AssetActionMode.SEND -> {
+                    Surface(
+                        color = Color.White,
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            TextButton(onClick = { actionMode = null }) {
+                                Text("返回 ${entry.title}", fontSize = 11.sp, color = Color(0xFF5B43B4))
+                            }
+                            Text("转账 ${entry.title}", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF111827))
+                            SegmentedModeTabs(
+                                options = listOf("按币", "按美元"),
+                                selectedIndex = if (transferInputMode == TransferInputMode.ASSET) 0 else 1,
+                                onSelect = { transferInputMode = if (it == 0) TransferInputMode.ASSET else TransferInputMode.USD },
+                            )
+                            OutlinedTextField(
+                                value = sendTo,
+                                onValueChange = { sendTo = it },
+                                label = { Text("收款地址", fontSize = 11.sp) },
+                                modifier = Modifier.fillMaxWidth(),
+                                minLines = 2,
+                            )
+                            OutlinedButton(
+                                onClick = {
+                                    val intent = Intent(context, QrScanActivity::class.java)
+                                        .putExtra(QrScanActivity.EXTRA_STATUS_TEXT, "请扫描收款地址二维码")
+                                    transferScanLauncher.launch(intent)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("扫码填入地址", fontSize = 11.sp)
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedTextField(
+                                    value = sendAmount,
+                                    onValueChange = { sendAmount = it },
+                                    label = { Text(if (transferInputMode == TransferInputMode.ASSET) "数量" else "美元", fontSize = 11.sp) },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true,
+                                )
+                                if (entry.isBitcoin) {
+                                    OutlinedTextField(
+                                        value = feeRate,
+                                        onValueChange = { feeRate = it },
+                                        label = { Text("sat/vB", fontSize = 11.sp) },
+                                        modifier = Modifier.weight(1f),
+                                        singleLine = true,
+                                    )
+                                }
+                            }
+                            if (sendPreviewText != null) {
+                                Text(sendPreviewText, fontSize = 11.sp, color = Color(0xFF667085))
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    val assetAmount = if (transferInputMode == TransferInputMode.ASSET) sendAmount.trim() else resolvedSendAssetAmount.orEmpty()
+                                    if (entry.isBitcoin) {
+                                        entry.btcAccount?.id?.let { accountId ->
+                                            onPrepareBitcoinTransfer(accountId, sendTo, assetAmount, feeRate.takeIf { it.isNotBlank() })
+                                        }
+                                    } else {
+                                        onPrepareTransferRequest(sendTo, assetAmount, entry.symbol)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = sendTo.isNotBlank() && if (transferInputMode == TransferInputMode.ASSET) {
+                                    sendAmount.isNotBlank()
+                                } else {
+                                    resolvedSendAssetAmount != null
+                                },
+                            ) {
+                                Text("发送 ${entry.symbol}", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssetHistoryList(
+    items: List<WalletActivityItem>,
+    chain: WalletChain,
+    onOpenDetail: (WalletActivityItem) -> Unit,
+) {
+    if (items.isEmpty()) {
+        Text("还没有记录", fontSize = 11.sp, color = Color(0xFF667085))
+        return
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items.forEach { item ->
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onOpenDetail(item) },
+                color = Color.White,
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(item.title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF111827))
+                            if (item.subtitle.isNotBlank()) {
+                                Text(item.subtitle, fontSize = 11.sp, color = Color(0xFF667085))
+                            }
+                        }
+                        if (item.amountLabel.isNotBlank()) {
+                            Text(item.amountLabel, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Color(0xFF111827))
+                        }
+                    }
+                    if (item.detail.isNotBlank()) {
+                        Text(item.detail, fontSize = 11.sp, color = Color(0xFF98A2B3))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "${WalletChains.require(item.chainId.takeIf { it != 0L } ?: chain.chainId).shortName} · ${DateUtils.getRelativeTimeSpanString(item.timestamp)}",
+                            fontSize = 10.sp,
+                            color = Color(0xFF667085),
+                        )
+                        Text("详情", fontSize = 11.sp, color = Color(0xFF5B43B4))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TransactionDetailCard(
+    item: WalletActivityItem,
+    chain: WalletChain,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    var detail by remember(item.id) { mutableStateOf(buildFallbackTransactionDetail(item, chain)) }
+    var loading by remember(item.id) { mutableStateOf(item.txHash.isNotBlank()) }
+    var loadError by remember(item.id) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(item.id) {
+        loading = item.txHash.isNotBlank()
+        loadError = null
+        detail = buildFallbackTransactionDetail(item, chain)
+        if (item.txHash.isBlank()) {
+            loading = false
+            return@LaunchedEffect
+        }
+        runCatching { resolveTransactionDetail(item, chain) }
+            .onSuccess { detail = it }
+            .onFailure { loadError = it.message ?: "加载详情失败" }
+        loading = false
+    }
+
+    Surface(
+        color = Color.White,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            TextButton(onClick = onBack) {
+                Text("返回交易记录", fontSize = 11.sp, color = Color(0xFF5B43B4))
+            }
+            Text("交易详情", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF111827))
+            Text(detail.statusLabel, fontSize = 12.sp, color = Color(0xFF667085))
+            if (detail.amountLabel.isNotBlank()) {
+                Text(detail.amountLabel, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF111827))
+            }
+            if (loading) {
+                Text("正在加载链上详情...", fontSize = 11.sp, color = Color(0xFF667085))
+            }
+            loadError?.let {
+                Text(it, fontSize = 11.sp, color = Color(0xFFB42318))
+            }
+            detail.fields.forEach { field ->
+                Surface(
+                    color = Color.White,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(field.label, fontSize = 11.sp, color = Color(0xFF667085))
+                        SelectionContainer {
+                            Text(field.value, fontSize = 12.sp, color = Color(0xFF111827))
+                        }
+                        if (field.copyable) {
+                            TextButton(
+                                onClick = {
+                                    copyPlainText(
+                                        context = context,
+                                        label = field.label,
+                                        value = field.value,
+                                        successMessage = "${field.label}已复制",
+                                    )
+                                },
+                            ) {
+                                Text("复制${field.label}", fontSize = 11.sp, color = Color(0xFF5B43B4))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BitcoinTransferCompactCard(
+    account: BitcoinWatchAccount,
+    onSyncAccount: (String) -> Unit,
+    onPrepareTransfer: (String, String, String, String?) -> Unit,
+) {
+    var showComposer by rememberSaveable(account.id) { mutableStateOf(false) }
+    var transferTo by rememberSaveable(account.id) { mutableStateOf("") }
+    var transferAmount by rememberSaveable(account.id) { mutableStateOf("") }
+    var feeRate by rememberSaveable(account.id) { mutableStateOf("") }
+
+    Surface(
+        color = Color.White,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(account.label, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color(0xFF111827))
+                    Text(
+                        formatBitcoinSats(account.balanceSats),
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF111827),
+                    )
+                    Text(
+                        formatUsdAmount(bitcoinBalanceUsd(account.balanceSats, account.priceUsd)) ?: "--",
+                        fontSize = 11.sp,
+                        color = Color(0xFF667085),
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    OutlinedButton(onClick = { onSyncAccount(account.id) }) {
+                        Text(if (account.syncing) "同步中" else "同步", fontSize = 10.sp)
+                    }
+                    Button(onClick = { showComposer = !showComposer }) {
+                        Text(if (showComposer) "收起" else "发送", fontSize = 10.sp)
+                    }
+                }
+            }
+
+            if (showComposer) {
+                OutlinedTextField(
+                    value = transferTo,
+                    onValueChange = { transferTo = it },
+                    placeholder = { Text("收款 BTC 地址", fontSize = 11.sp) },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = transferAmount,
+                        onValueChange = { transferAmount = it },
+                        placeholder = { Text("数量", fontSize = 11.sp) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = feeRate,
+                        onValueChange = { feeRate = it },
+                        placeholder = { Text("sat/vB", fontSize = 11.sp) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                    )
+                }
+                val btcUsdPreview = calculateUsdPreview(transferAmount, account.priceUsd)
+                if (btcUsdPreview != null) {
+                    Text(btcUsdPreview, fontSize = 11.sp, color = Color(0xFF667085))
+                }
+                Button(
+                    onClick = { onPrepareTransfer(account.id, transferTo, transferAmount, feeRate.takeIf { it.isNotBlank() }) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("准备签名", fontSize = 11.sp)
+                }
+            }
+        }
     }
 }
 
@@ -2210,7 +3280,6 @@ private fun WalletOverviewSection(
     WalletSectionCard {
         SectionHeader(
             title = chain.displayName,
-            subtitle = if (state.addresses.isEmpty()) "先从树莓派导入观察地址，再查看资产与签名" else "已接入 ${state.addresses.size} 个观察地址",
             trailing = {
                 TextButton(onClick = onRefreshBalances) {
                     Text(if (state.loadingBalances) "同步中" else "刷新", fontSize = 12.sp)
@@ -2218,43 +3287,32 @@ private fun WalletOverviewSection(
             },
         )
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            StatusChip(if (state.selectedAddress.isBlank()) "未选地址" else "当前地址已选")
-            StatusChip("${state.addresses.size} 个地址")
-            StatusChip(chain.shortName)
-            StatusChip("路径已固定")
-        }
-
         Surface(
-            color = Color(0xFFF8FAFC),
-            shape = RoundedCornerShape(14.dp),
-            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+            color = Color(0xFF0F172A),
+            shape = RoundedCornerShape(18.dp),
         ) {
             Column(
-                modifier = Modifier.padding(12.dp),
+                modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text("当前派生路径", fontSize = 12.sp, color = Color(0xFF667085))
+                Text(
+                    if (state.selectedAddress.isBlank()) "未连接观察地址" else shortAddressLabel(state.selectedAddress, head = 12, tail = 10),
+                    fontSize = 24.sp,
+                    lineHeight = 28.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                )
+                Text(
+                    state.evmDerivationPath,
+                    fontSize = 12.sp,
+                    color = Color(0xFFCBD5E1),
+                )
                 OutlinedTextField(
                     value = state.evmDerivationPath,
                     onValueChange = onEvmDerivationPathChange,
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     placeholder = { Text(DEFAULT_EVM_DERIVATION_PATH, fontSize = 12.sp) },
-                )
-                Text(
-                    if (state.selectedAddress.isBlank()) {
-                        "当前还没有 EVM 观察地址，建议直接用树莓派按这个路径导入。"
-                    } else {
-                        "当前地址: ${shortAddressLabel(state.selectedAddress, head = 10, tail = 8)}"
-                    },
-                    fontSize = 12.sp,
-                    color = Color(0xFF475467),
                 )
             }
         }
@@ -2319,19 +3377,6 @@ private fun WalletOverviewSection(
                     )
                 }
             }
-        } else if (state.addresses.isEmpty()) {
-            Surface(
-                color = Color(0xFFF8FAFC),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-            ) {
-                Text(
-                    "推荐流程：设置派生路径 -> 点“从树莓派导入” -> 树莓派扫码 -> 手机扫回结果。导入后资产、转账和 WalletConnect 都会围着这个地址展开。",
-                    modifier = Modifier.padding(12.dp),
-                    fontSize = 12.sp,
-                    color = Color(0xFF667085),
-                )
-            }
         }
     }
 }
@@ -2349,22 +3394,40 @@ private fun BitcoinPrototypeSection(
     var showImportPanel by rememberSaveable { mutableStateOf(state.bitcoinWatchAccounts.isEmpty()) }
     var showAccounts by rememberSaveable { mutableStateOf(false) }
     var expandedAccountId by rememberSaveable { mutableStateOf<String?>(null) }
+    val totalSats = state.bitcoinWatchAccounts.sumOf { it.balanceSats }
+    val totalUsd = state.bitcoinWatchAccounts.mapNotNull { bitcoinBalanceUsd(it.balanceSats, it.priceUsd) }.takeIf { it.isNotEmpty() }?.sum()
 
     WalletSectionCard {
         SectionHeader(
-            title = "Bitcoin 观察账户",
-            subtitle = "首页只保留账户摘要，地址预览放到二级展开",
+            title = "Bitcoin",
+            trailing = {
+                if (state.bitcoinWatchAccounts.isNotEmpty()) {
+                    StatusChip("${state.bitcoinWatchAccounts.size} 个账户")
+                }
+            },
         )
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Surface(
+            color = Color(0xFF111827),
+            shape = RoundedCornerShape(18.dp),
         ) {
-            StatusChip("${state.bitcoinWatchAccounts.size} 个账户")
-            StatusChip("只读")
-            StatusChip("树莓派导入")
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    if (state.bitcoinWatchAccounts.isEmpty()) "0 BTC" else formatBitcoinSats(totalSats),
+                    fontSize = 26.sp,
+                    lineHeight = 30.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                )
+                Text(
+                    formatUsdAmount(totalUsd) ?: "--",
+                    fontSize = 14.sp,
+                    color = Color(0xFFD1D5DB),
+                )
+            }
         }
 
         Row(
@@ -2382,28 +3445,6 @@ private fun BitcoinPrototypeSection(
                 modifier = Modifier.weight(1f),
             ) {
                 Text(if (showAccounts) "收起账户" else "查看账户", fontSize = 12.sp)
-            }
-        }
-
-        Surface(
-            color = Color(0xFFF8FAFC),
-            shape = RoundedCornerShape(14.dp),
-            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-        ) {
-            Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    state.bitcoinPrototypeStatus,
-                    fontSize = 12.sp,
-                    color = Color(0xFF475467),
-                )
-                Text(
-                    "树莓派导出：pi-signer get-xpub --pin <PIN> --xtype zpub",
-                    fontSize = 11.sp,
-                    color = Color(0xFF667085),
-                )
             }
         }
 
@@ -2427,25 +3468,7 @@ private fun BitcoinPrototypeSection(
             }
         }
 
-        if (state.bitcoinWatchAccounts.isEmpty()) {
-            Surface(
-                color = Color(0xFFFEF3F2),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, Color(0xFFFECACA)),
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text("还没有 BTC 观察账户", fontWeight = FontWeight.Medium, color = Color(0xFF101828))
-                    Text(
-                        "先从树莓派导出 zpub，再扫码或粘贴进来。当前这版已经能做地址派生预览。",
-                        fontSize = 12.sp,
-                        color = Color(0xFF667085),
-                    )
-                }
-            }
-        } else if (showAccounts) {
+        if (state.bitcoinWatchAccounts.isNotEmpty() && showAccounts) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -2463,19 +3486,6 @@ private fun BitcoinPrototypeSection(
                     )
                 }
             }
-        } else {
-            Surface(
-                color = Color(0xFFF8FAFC),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-            ) {
-                Text(
-                    "账户和地址预览已隐藏到二级列表，点“查看账户”再展开具体地址。",
-                    modifier = Modifier.padding(12.dp),
-                    fontSize = 12.sp,
-                    color = Color(0xFF667085),
-                )
-            }
         }
     }
 }
@@ -2487,6 +3497,9 @@ private fun BitcoinWatchAccountCard(
     onToggleExpanded: () -> Unit,
     onRemoveAccount: (String) -> Unit,
     onSyncAccount: (String) -> Unit,
+    showBalanceSummary: Boolean = true,
+    showSyncSummary: Boolean = true,
+    showTransferAction: Boolean = true,
     onPrepareTransfer: (String, String, String, String?) -> Unit,
 ) {
     val context = LocalContext.current
@@ -2497,35 +3510,45 @@ private fun BitcoinWatchAccountCard(
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = Color(0xFFF8FAFC),
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+        color = Color.White,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(13.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(account.label, fontWeight = FontWeight.SemiBold, color = Color(0xFF101828))
-                    Text("${account.networkLabel} · ${account.scriptTypeLabel}", fontSize = 11.sp, color = Color(0xFF667085))
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("BTC", fontWeight = FontWeight.SemiBold, color = Color(0xFF101828), fontSize = 13.sp)
+                    Text(account.scriptTypeLabel, fontSize = 11.sp, color = Color(0xFF667085))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    StatusChip(label = account.prefix.uppercase())
-                    StatusChip(label = "只读")
                     TextButton(onClick = onToggleExpanded) {
                         Text(if (expanded) "收起" else "查看", fontSize = 11.sp)
                     }
                 }
             }
 
-            Text(account.accountPathHint, fontSize = 12.sp, color = Color(0xFF344054))
-            if (account.accountFingerprintHex.isNotBlank()) {
-                Text("账户指纹: ${account.accountFingerprintHex}", fontSize = 11.sp, color = Color(0xFF667085))
+            if (showBalanceSummary) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        if (account.balanceSats > 0) formatBitcoinSats(account.balanceSats) else "0 BTC",
+                        fontSize = 20.sp,
+                        lineHeight = 24.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF111827),
+                    )
+                    Text(
+                        formatUsdAmount(bitcoinBalanceUsd(account.balanceSats, account.priceUsd)) ?: "--",
+                        fontSize = 12.sp,
+                        color = Color(0xFF667085),
+                    )
+                }
             }
 
             Row(
@@ -2538,44 +3561,46 @@ private fun BitcoinWatchAccountCard(
                 ) {
                     Text(if (account.syncing) "同步中..." else "同步余额", fontSize = 12.sp)
                 }
-                Button(
-                    onClick = { showTransferComposer = !showTransferComposer },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(if (showTransferComposer) "收起转账" else "发送 BTC", fontSize = 12.sp)
-                }
-            }
-
-            Surface(
-                color = Color.White,
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-            ) {
-                Column(
-                    modifier = Modifier.padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        if (account.balanceSats > 0) "可用余额: ${formatBitcoinSats(account.balanceSats)}" else "可用余额: 未同步",
-                        fontSize = 12.sp,
-                        color = Color(0xFF101828),
-                    )
-                    Text(
-                        if (account.lastSyncStatus.isNotBlank()) account.lastSyncStatus else "点“同步余额”后会拉取链上 UTXO 和下一收款地址。",
-                        fontSize = 11.sp,
-                        color = Color(0xFF667085),
-                    )
-                    if (account.nextReceiveAddress.isNotBlank()) {
-                        Text(
-                            "下一收款地址: ${shortAddressLabel(account.nextReceiveAddress, head = 12, tail = 8)}",
-                            fontSize = 11.sp,
-                            color = Color(0xFF344054),
-                        )
+                if (showTransferAction) {
+                    Button(
+                        onClick = { showTransferComposer = !showTransferComposer },
+                        modifier = Modifier.weight(1f),
+                        colors = tpPrimaryButtonColors(),
+                    ) {
+                        Text(if (showTransferComposer) "收起转账" else "发送 BTC", fontSize = 12.sp)
                     }
                 }
             }
 
-            if (showTransferComposer) {
+            if (showSyncSummary && (account.lastSyncStatus.isNotBlank() || account.nextReceiveAddress.isNotBlank())) {
+                Surface(
+                    color = Color(0xFFF8FAFC),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (account.lastSyncStatus.isNotBlank()) {
+                            Text(
+                                account.lastSyncStatus,
+                                fontSize = 12.sp,
+                                color = Color(0xFF475467),
+                            )
+                        }
+                        if (account.nextReceiveAddress.isNotBlank()) {
+                            Text(
+                                shortAddressLabel(account.nextReceiveAddress, head = 14, tail = 10),
+                                fontSize = 12.sp,
+                                color = Color(0xFF0F172A),
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (showTransferAction && showTransferComposer) {
                 OutlinedTextField(
                     value = transferTo,
                     onValueChange = { transferTo = it },
@@ -2602,11 +3627,6 @@ private fun BitcoinWatchAccountCard(
                         singleLine = true,
                     )
                 }
-                Text(
-                    "手续费留空就用当前链上推荐值。准备后会生成树莓派扫描用的 BTC PSBT 二维码。",
-                    fontSize = 11.sp,
-                    color = Color(0xFF667085),
-                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2629,6 +3649,21 @@ private fun BitcoinWatchAccountCard(
             }
 
             if (expanded) {
+                Surface(
+                    color = Color(0xFFF8FAFC),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(account.accountPathHint, fontSize = 12.sp, color = Color(0xFF344054))
+                        if (account.accountFingerprintHex.isNotBlank()) {
+                            Text("指纹 ${account.accountFingerprintHex}", fontSize = 11.sp, color = Color(0xFF667085))
+                        }
+                    }
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -2778,6 +3813,92 @@ private fun calculateUsdPreview(amount: String, priceUsd: Double?): String? {
         ?.let { usdFormatter.format(it) }
 }
 
+private fun calculateAssetUsd(amount: String, priceUsd: Double?): Double? {
+    val decimal = amount.toBigDecimalOrNull() ?: return null
+    return priceUsd?.let { decimal.multiply(BigDecimal.valueOf(it)).toDouble() }
+}
+
+private fun convertTransferInputToAssetAmount(
+    input: String,
+    priceUsd: Double?,
+    mode: TransferInputMode,
+): String? {
+    val trimmed = input.trim()
+    if (trimmed.isBlank()) return null
+    if (mode == TransferInputMode.ASSET) return trimmed
+    val usd = trimmed.toBigDecimalOrNull() ?: return null
+    val price = priceUsd?.toBigDecimal() ?: return null
+    if (price <= BigDecimal.ZERO) return null
+    return usd.divide(price, 8, java.math.RoundingMode.DOWN)
+        .stripTrailingZeros()
+        .toPlainString()
+}
+
+private fun extractTransferTargetFromQr(payload: String): String {
+    val trimmed = payload.trim()
+    if (trimmed.isBlank()) return ""
+    return when {
+        trimmed.startsWith("bitcoin:", ignoreCase = true) -> trimmed.substringAfter(':').substringBefore('?').trim()
+        trimmed.startsWith("ethereum:", ignoreCase = true) -> {
+            trimmed.substringAfter(':')
+                .substringBefore('?')
+                .substringBefore('@')
+                .trim()
+        }
+        else -> trimmed.substringBefore('?').trim()
+    }
+}
+
+private fun buildReceiveQrPayload(
+    entry: CombinedAssetEntry,
+    chain: WalletChain,
+    address: String,
+    amountAsset: String?,
+): String {
+    val normalizedAddress = address.trim()
+    if (normalizedAddress.isBlank()) return ""
+    val normalizedAmount = amountAsset?.trim()?.takeIf { it.isNotBlank() }
+    return if (entry.isBitcoin) {
+        buildString {
+            append("bitcoin:")
+            append(normalizedAddress)
+            if (normalizedAmount != null) {
+                append("?amount=")
+                append(normalizedAmount)
+            }
+        }
+    } else {
+        if (normalizedAmount != null) {
+            "$normalizedAddress\n${entry.symbol}: $normalizedAmount\nNetwork: ${chain.shortName}"
+        } else {
+            normalizedAddress
+        }
+    }
+}
+
+private fun generateInlineQrBitmap(payload: String): Bitmap? {
+    val normalized = payload.trim()
+    if (normalized.isBlank()) return null
+    return runCatching {
+        val matrix = QRCodeWriter().encode(
+            normalized,
+            BarcodeFormat.QR_CODE,
+            512,
+            512,
+            mapOf(
+                EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+                EncodeHintType.MARGIN to 1,
+            ),
+        )
+        BarcodeEncoder().createBitmap(matrix)
+    }.getOrNull()
+}
+
+private fun bitcoinBalanceUsd(sats: Long, priceUsd: Double?): Double? {
+    val btc = BigDecimal.valueOf(sats).divide(BigDecimal.valueOf(100_000_000L), 8, java.math.RoundingMode.DOWN)
+    return priceUsd?.let { btc.multiply(BigDecimal.valueOf(it)).toDouble() }
+}
+
 private fun findTokenPrice(state: WalletUiState, chain: WalletChain, symbol: String): Double? {
     val assets = state.chainPortfolios[chain.chainId]?.assets ?: return null
     return assets.firstOrNull { it.symbol.equals(symbol, ignoreCase = true) }?.priceUsd
@@ -2919,25 +4040,23 @@ private fun AddressListItem(
 
 @Composable
 private fun PortfolioSection(
-    chain: WalletChain,
     portfolio: ChainPortfolioUi?,
     isLoading: Boolean,
 ) {
     WalletSectionCard {
-    val priceLabel = portfolio?.lastUpdatedAt?.let { "价格 ${formatPriceTime(it)}" }
-    SectionHeader(
-        title = "资产",
-        subtitle = chain.displayName,
-        trailing = priceLabel?.let {
-            {
-                Text(it, fontSize = 11.sp, color = Color(0xFF667085))
-            }
-        },
-    )
+        val priceLabel = portfolio?.lastUpdatedAt?.let { "价格 ${formatPriceTime(it)}" }
+        SectionHeader(
+            title = "资产",
+            trailing = priceLabel?.let {
+                {
+                    Text(it, fontSize = 11.sp, color = Color(0xFF667085))
+                }
+            },
+        )
             if (isLoading && portfolio == null) {
                 Text("正在同步余额...", color = Color(0xFF64748B))
             } else if (portfolio == null) {
-                Text("添加观察地址后，这里会展示当前链资产。", color = Color(0xFF64748B))
+                Text("暂无资产", color = Color(0xFF64748B))
             } else {
                 portfolio.assets
                     .sortedBy { assetAmountLooksZero(it.amount) }
@@ -3010,12 +4129,11 @@ private fun PortfolioSection(
         WalletSectionCard {
             SectionHeader(
                 title = "转账",
-                subtitle = "生成树莓派签名二维码",
             )
             OutlinedTextField(
                 value = state.transferTo,
                 onValueChange = onTransferToChange,
-                label = { Text("接收地址") },
+                label = { Text("收款地址") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
@@ -3039,13 +4157,12 @@ private fun PortfolioSection(
             )
             if (transferUsdLabel != null) {
                 Text(
-                    "≈ $transferUsdLabel",
+                    transferUsdLabel,
                     fontSize = 12.sp,
                     color = Color(0xFF475467),
                     modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
                 )
             }
-            Text("代币", fontSize = 12.sp, color = Color(0xFF667085))
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -3097,26 +4214,13 @@ private fun DappToolsSection(
     WalletSectionCard {
         SectionHeader(
             title = "DApp 签名工具",
-            subtitle = "扫码 WalletConnect 链接后，会优先按当前观察地址自动连接",
         )
-        Surface(
-            color = Color(0xFFF8FAFC),
-            shape = RoundedCornerShape(14.dp),
-            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-        ) {
-            Text(
-                "推荐直接扫 DApp 给出的二维码；如果已经选好观察地址，收到提案后会自动批准 WalletConnect 会话。",
-                modifier = Modifier.padding(12.dp),
-                fontSize = 12.sp,
-                color = Color(0xFF475467),
-            )
-        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(onClick = onScanRequest, modifier = Modifier.weight(1f)) { Text("扫码连接", fontSize = 12.sp) }
+            OutlinedButton(onClick = onScanRequest, modifier = Modifier.weight(1f)) { Text("扫码连接", fontSize = 12.sp) }
             OutlinedButton(onClick = onImportRequestFromClipboard, modifier = Modifier.weight(1f)) { Text("粘贴连接", fontSize = 12.sp) }
-        }
-        TextButton(onClick = { showManualTools = !showManualTools }) {
-            Text(if (showManualTools) "收起高级导入" else "高级导入", fontSize = 12.sp)
+            OutlinedButton(onClick = { showManualTools = !showManualTools }, modifier = Modifier.weight(1f)) {
+                Text(if (showManualTools) "收起高级" else "高级导入", fontSize = 12.sp)
+            }
         }
         if (showManualTools) {
             OutlinedTextField(
@@ -3166,23 +4270,28 @@ private fun ActivitySection(
     state: WalletUiState,
     chain: WalletChain,
     onRefresh: () -> Unit,
-    onOpenUrl: (String) -> Unit,
 ) {
+    var selectedItem by remember { mutableStateOf<WalletActivityItem?>(null) }
     val filteredItems = state.activityItems.filter {
         it.chainId == chain.chainId || it.kind == WalletActivityKind.DAPP || it.kind == WalletActivityKind.SYSTEM
     }
+    BackHandler(enabled = selectedItem != null) { selectedItem = null }
     WalletSectionCard {
         SectionHeader(
             title = "活动",
             subtitle = if (state.syncingActivity) "正在同步最近代币活动..." else "本地操作记录和最近链上代币转账",
             trailing = { TextButton(onClick = onRefresh) { Text("刷新") } },
         )
-            if (filteredItems.isEmpty()) {
+            if (selectedItem != null) {
+                TransactionDetailCard(item = selectedItem!!, chain = chain, onBack = { selectedItem = null })
+            } else if (filteredItems.isEmpty()) {
                 Text("还没有活动记录。完成转账、签名或连接 DApp 后会显示在这里。", color = Color(0xFF64748B))
             } else {
                 filteredItems.forEach { item ->
                     Surface(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedItem = item },
                         color = Color(0xFFF8FAFC),
                         shape = RoundedCornerShape(18.dp),
                         border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
@@ -3218,9 +4327,7 @@ private fun ActivitySection(
                                     if (item.statusLabel.isNotBlank()) {
                                         Text(item.statusLabel, fontSize = 11.sp, color = Color(0xFF0F766E))
                                     }
-                                    if (item.externalUrl.isNotBlank()) {
-                                        TextButton(onClick = { onOpenUrl(item.externalUrl) }) { Text("查看") }
-                                    }
+                                    Text("详情", fontSize = 11.sp, color = Color(0xFF5B43B4))
                                 }
                             }
                         }
@@ -3608,28 +4715,21 @@ private fun PreparedRequestSection(
 }
 
 @Composable
-private fun MessageCard(title: String, message: String, background: Color, onDismiss: () -> Unit) {
+private fun MessageCard(title: String, message: String, background: Color) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = background),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, background.copy(alpha = 0.55f)),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(title, fontWeight = FontWeight.Bold, color = Color(0xFF101828))
-                TextButton(onClick = onDismiss) { Text("关闭") }
-            }
-            Text(message, fontSize = 12.sp, color = Color(0xFF344054))
+            Text(title, fontWeight = FontWeight.Bold, color = Color(0xFF101828), fontSize = 13.sp)
+            Text(message, fontSize = 11.sp, color = Color(0xFF344054))
         }
     }
 }

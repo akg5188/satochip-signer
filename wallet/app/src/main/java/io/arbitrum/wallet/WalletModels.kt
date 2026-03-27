@@ -136,12 +136,14 @@ data class BitcoinWatchAccount(
     val changePreview: List<BitcoinDerivedAddressPreview> = emptyList(),
     val derivationError: String = "",
     val balanceSats: Long = 0,
+    val priceUsd: Double? = null,
     val utxoCount: Int = 0,
     val nextReceiveAddress: String = "",
     val nextChangeAddress: String = "",
     val lastSyncStatus: String = "",
     val lastSyncAt: Long = 0,
     val syncing: Boolean = false,
+    val recentActivity: List<WalletActivityItem> = emptyList(),
 )
 
 data class WalletUiState(

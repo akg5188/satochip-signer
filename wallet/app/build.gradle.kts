@@ -67,9 +67,8 @@ android {
             isShrinkResources = false
         }
         release {
-            // Keep release packaging reliable for the current WalletConnect stack.
-            isMinifyEnabled = false
-            isShrinkResources = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             signingConfig = signingConfigs.getByName(if (hasReleaseKeystore) "release" else "debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

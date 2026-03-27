@@ -30,6 +30,7 @@ private const val BITCOIN_DUST_THRESHOLD_SATS = 546L
 
 data class BitcoinAccountSnapshot(
     val balanceSats: Long,
+    val priceUsd: Double?,
     val utxoCount: Int,
     val nextReceiveIndex: Int,
     val nextReceiveAddress: String,
@@ -37,6 +38,7 @@ data class BitcoinAccountSnapshot(
     val nextChangeAddress: String,
     val spendableUtxos: List<BitcoinSpendableUtxo>,
     val status: String,
+    val recentActivity: List<WalletActivityItem>,
 )
 
 data class BitcoinPreparedTransfer(
@@ -50,6 +52,21 @@ data class BitcoinPreparedTransfer(
     val snapshot: BitcoinAccountSnapshot,
 )
 
+data class BitcoinTransactionDetail(
+    val txid: String,
+    val statusLabel: String,
+    val fromSummary: String,
+    val toSummary: String,
+    val feeSats: Long,
+    val blockHeight: Long?,
+    val confirmations: Int?,
+    val timestamp: Long,
+    val inputCount: Int,
+    val outputCount: Int,
+    val size: Int,
+    val weight: Int,
+)
+
 data class BitcoinSpendableUtxo(
     val txid: String,
     val vout: Int,
@@ -61,6 +78,18 @@ private data class BitcoinBranchDiscovery(
     val utxos: List<BitcoinSpendableUtxo>,
     val nextIndex: Int,
     val nextAddress: String,
+    val usedAddresses: List<String>,
+)
+
+private data class BitcoinChainActivity(
+    val txid: String,
+    val timestamp: Long,
+    val incoming: Boolean,
+    val netSats: Long,
+    val counterparty: String,
+    val detail: String,
+    val statusLabel: String,
+    val externalUrl: String,
 )
 
 private data class BitcoinCoinSelection(
@@ -82,8 +111,14 @@ object BitcoinTransferService {
         val change = discoverBranch(account, branch = 1)
         val utxos = receive.utxos + change.utxos
         val balanceSats = utxos.sumOf { it.valueSats }
+        val priceUsd = EvmRpc.fetchCoingeckoPriceForSymbol("BTC")
+        val recentActivity = fetchAccountActivity(
+            prefix = account.prefix,
+            ownedAddresses = (receive.usedAddresses + change.usedAddresses).toSet(),
+        )
         BitcoinAccountSnapshot(
             balanceSats = balanceSats,
+            priceUsd = priceUsd,
             utxoCount = utxos.size,
             nextReceiveIndex = receive.nextIndex,
             nextReceiveAddress = receive.nextAddress,
@@ -95,6 +130,7 @@ object BitcoinTransferService {
             } else {
                 "已发现 ${utxos.size} 个 UTXO，可用余额 ${formatBitcoinSats(balanceSats)}"
             },
+            recentActivity = recentActivity,
         )
     }
 
@@ -176,11 +212,66 @@ object BitcoinTransferService {
         }
     }
 
+    suspend fun fetchTransactionDetail(
+        externalUrl: String,
+        txid: String,
+    ): BitcoinTransactionDetail? = withContext(Dispatchers.IO) {
+        if (txid.isBlank()) return@withContext null
+        val cleanTxid = txid.removePrefix("0x")
+        val baseUrl = externalUrl.substringBefore("/tx/").trim().ifBlank { return@withContext null }
+        val tx = fetchJsonObject("$baseUrl/tx/$cleanTxid")
+        val status = tx.optJSONObject("status")
+        val confirmed = status?.optBoolean("confirmed") == true
+        val blockHeight = status?.optLong("block_height")?.takeIf { it > 0L }
+        val blockTime = status?.optLong("block_time")?.takeIf { it > 0L }?.times(1000)
+            ?: System.currentTimeMillis()
+        val confirmations = if (confirmed && blockHeight != null) {
+            val tipHeight = fetchText("$baseUrl/blocks/tip/height").trim().toLongOrNull()
+            tipHeight?.let { (it - blockHeight + 1L).coerceAtLeast(1L).toInt() }
+        } else {
+            0
+        }
+        val vin = tx.optJSONArray("vin") ?: JSONArray()
+        val vout = tx.optJSONArray("vout") ?: JSONArray()
+        val fromAddresses = linkedSetOf<String>()
+        val toAddresses = linkedSetOf<String>()
+        for (index in 0 until vin.length()) {
+            val address = vin.optJSONObject(index)
+                ?.optJSONObject("prevout")
+                ?.optString("scriptpubkey_address")
+                .orEmpty()
+                .trim()
+            if (address.isNotBlank()) fromAddresses += address
+        }
+        for (index in 0 until vout.length()) {
+            val address = vout.optJSONObject(index)
+                ?.optString("scriptpubkey_address")
+                .orEmpty()
+                .trim()
+            if (address.isNotBlank()) toAddresses += address
+        }
+        BitcoinTransactionDetail(
+            txid = cleanTxid,
+            statusLabel = if (confirmed) "链上确认" else "待确认",
+            fromSummary = summarizeAddresses(fromAddresses.toList()),
+            toSummary = summarizeAddresses(toAddresses.toList()),
+            feeSats = tx.optLong("fee", 0L),
+            blockHeight = blockHeight,
+            confirmations = confirmations,
+            timestamp = blockTime,
+            inputCount = vin.length(),
+            outputCount = vout.length(),
+            size = tx.optInt("size", 0),
+            weight = tx.optInt("weight", 0),
+        )
+    }
+
     private suspend fun discoverBranch(
         account: BitcoinWatchAccount,
         branch: Int,
     ): BitcoinBranchDiscovery {
         val utxos = mutableListOf<BitcoinSpendableUtxo>()
+        val usedAddresses = mutableListOf<String>()
         var index = 0
         var consecutiveUnused = 0
         var lastUsedIndex = -1
@@ -191,6 +282,7 @@ object BitcoinTransferService {
             if (addressInfo.isUsed) {
                 lastUsedIndex = index
                 consecutiveUnused = 0
+                usedAddresses += material.address
                 val utxoArray = fetchAddressUtxos(account.prefix, material.address)
                 for (position in 0 until utxoArray.length()) {
                     val utxo = utxoArray.optJSONObject(position) ?: continue
@@ -213,6 +305,7 @@ object BitcoinTransferService {
             utxos = utxos,
             nextIndex = nextIndex,
             nextAddress = nextAddress,
+            usedAddresses = usedAddresses.distinct(),
         )
     }
 
@@ -231,6 +324,131 @@ object BitcoinTransferService {
 
     private suspend fun fetchAddressUtxos(prefix: String, address: String): JSONArray {
         return fetchJsonArray("${bitcoinEsploraBaseUrl(prefix)}/address/$address/utxo")
+    }
+
+    private suspend fun fetchAddressTransactions(prefix: String, address: String): List<JSONObject> {
+        val baseUrl = "${bitcoinEsploraBaseUrl(prefix)}/address/$address/txs"
+        val all = mutableListOf<JSONObject>()
+        var page = fetchJsonArray(baseUrl)
+        while (page.length() > 0 && all.size < 120) {
+            for (index in 0 until page.length()) {
+                val tx = page.optJSONObject(index) ?: continue
+                all += tx
+            }
+            if (page.length() < 25) break
+            val lastTxid = page.optJSONObject(page.length() - 1)?.optString("txid").orEmpty()
+            if (lastTxid.isBlank()) break
+            page = fetchJsonArray("$baseUrl/chain/$lastTxid")
+        }
+        return all
+    }
+
+    private suspend fun fetchAccountActivity(
+        prefix: String,
+        ownedAddresses: Set<String>,
+    ): List<WalletActivityItem> {
+        if (ownedAddresses.isEmpty()) return emptyList()
+        val txMap = linkedMapOf<String, JSONObject>()
+        ownedAddresses.forEach { address ->
+            fetchAddressTransactions(prefix, address).forEach { tx ->
+                val txid = tx.optString("txid").trim()
+                if (txid.isNotBlank()) {
+                    txMap.putIfAbsent(txid, tx)
+                }
+            }
+        }
+        return txMap.values.mapNotNull { tx ->
+            val parsed = parseAccountTransaction(prefix, tx, ownedAddresses) ?: return@mapNotNull null
+            WalletActivityItem(
+                id = "btc-chain-${parsed.txid}",
+                chainId = WalletChains.DEFAULT.chainId,
+                kind = WalletActivityKind.ONCHAIN,
+                title = if (parsed.incoming) "收到 BTC" else "转出 BTC",
+                subtitle = parsed.counterparty,
+                detail = parsed.detail,
+                amountLabel = "${if (parsed.netSats >= 0) "+" else "-"}${formatBitcoinSats(kotlin.math.abs(parsed.netSats))}",
+                statusLabel = parsed.statusLabel,
+                timestamp = parsed.timestamp,
+                txHash = parsed.txid,
+                externalUrl = parsed.externalUrl,
+            )
+        }.sortedByDescending { it.timestamp }
+    }
+
+    private fun parseAccountTransaction(
+        prefix: String,
+        tx: JSONObject,
+        ownedAddresses: Set<String>,
+    ): BitcoinChainActivity? {
+        val txid = tx.optString("txid").trim()
+        if (txid.isBlank()) return null
+        val vinArray = tx.optJSONArray("vin") ?: JSONArray()
+        val voutArray = tx.optJSONArray("vout") ?: JSONArray()
+
+        var receivedSats = 0L
+        var spentSats = 0L
+        var externalInput = ""
+        var externalOutput = ""
+
+        for (index in 0 until vinArray.length()) {
+            val vin = vinArray.optJSONObject(index) ?: continue
+            val prevout = vin.optJSONObject("prevout") ?: continue
+            val address = prevout.optString("scriptpubkey_address").trim()
+            val value = prevout.optLong("value", 0L)
+            if (ownedAddresses.contains(address)) {
+                spentSats += value
+            } else if (externalInput.isBlank() && address.isNotBlank()) {
+                externalInput = address
+            }
+        }
+
+        for (index in 0 until voutArray.length()) {
+            val vout = voutArray.optJSONObject(index) ?: continue
+            val address = vout.optString("scriptpubkey_address").trim()
+            val value = vout.optLong("value", 0L)
+            if (ownedAddresses.contains(address)) {
+                receivedSats += value
+            } else if (externalOutput.isBlank() && address.isNotBlank()) {
+                externalOutput = address
+            }
+        }
+
+        val netSats = receivedSats - spentSats
+        if (netSats == 0L && receivedSats == 0L && spentSats == 0L) return null
+
+        val status = tx.optJSONObject("status")
+        val timestamp = status?.optLong("block_time", 0L)?.takeIf { it > 0L }?.times(1000)
+            ?: System.currentTimeMillis()
+        val incoming = netSats >= 0L
+        val detail = "${shortBitcoinCounterparty(externalInput)} -> ${shortBitcoinCounterparty(externalOutput)}"
+        return BitcoinChainActivity(
+            txid = txid,
+            timestamp = timestamp,
+            incoming = incoming,
+            netSats = if (netSats == 0L && receivedSats > 0L) receivedSats else netSats,
+            counterparty = if (incoming) {
+                shortBitcoinCounterparty(externalInput.ifBlank { "链上账户" })
+            } else {
+                shortBitcoinCounterparty(externalOutput.ifBlank { "链上账户" })
+            },
+            detail = detail,
+            statusLabel = if (status?.optBoolean("confirmed") == true) "链上确认" else "待确认",
+            externalUrl = "${bitcoinEsploraBaseUrl(prefix)}/tx/$txid",
+        )
+    }
+
+    private fun shortBitcoinCounterparty(address: String): String {
+        val trimmed = address.trim()
+        if (trimmed.isBlank()) return "链上账户"
+        if (trimmed.length <= 18) return trimmed
+        return "${trimmed.take(8)}...${trimmed.takeLast(6)}"
+    }
+
+    private fun summarizeAddresses(addresses: List<String>): String {
+        if (addresses.isEmpty()) return "链上账户"
+        if (addresses.size == 1) return addresses.first()
+        val preview = addresses.take(2).joinToString("\n")
+        return "$preview\n等 ${addresses.size} 个地址"
     }
 
     private suspend fun fetchTransactionHex(prefix: String, txid: String): ByteArray {

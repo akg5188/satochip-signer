@@ -71,6 +71,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         WalletStorage.writeEvmDerivationPath(prefs, value)
     }
     fun setBitcoinImportInput(value: String) = _uiState.update { it.copy(bitcoinImportInput = value) }
+    fun importBitcoinWatchAccountFromPayload(value: String) {
+        _uiState.update { it.copy(bitcoinImportInput = value) }
+        importBitcoinWatchAccountInternal(value)
+    }
     fun setTransferTo(value: String) = _uiState.update { it.copy(transferTo = value) }
     fun setTransferAmount(value: String) = _uiState.update { it.copy(transferAmount = value) }
     fun setTransferToken(value: String) = _uiState.update { it.copy(transferToken = value) }
@@ -355,11 +359,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         emitBrowserAccountsChanged()
     }
 
-    fun importBitcoinWatchAccount() {
-        val parsed = parseBitcoinWatchAccountImport(_uiState.value.bitcoinImportInput)
+    fun importBitcoinWatchAccount() = importBitcoinWatchAccountInternal(_uiState.value.bitcoinImportInput)
+
+    private fun importBitcoinWatchAccountInternal(rawInput: String) {
+        val parsed = parseBitcoinWatchAccountImport(rawInput)
             ?: return setError("请输入有效的 xpub / ypub / zpub / tpub / upub / vpub，或直接粘贴 get-xpub 输出")
 
         val now = System.currentTimeMillis()
+        var importedAccountId: String? = null
         _uiState.update { state ->
             val existing = state.bitcoinWatchAccounts.firstOrNull { it.xpub == parsed.xpub }
             if (existing != null) {
@@ -372,14 +379,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 val account = enrichBitcoinWatchAccount(
                     BitcoinWatchAccount(
-                    id = UUID.randomUUID().toString(),
-                    label = parsed.defaultLabel,
-                    xpub = parsed.xpub,
-                    prefix = parsed.prefix,
-                    networkLabel = parsed.networkLabel,
-                    scriptTypeLabel = parsed.scriptTypeLabel,
-                    accountPathHint = parsed.accountPathHint,
-                    importedAt = now,
+                        id = UUID.randomUUID().toString(),
+                        label = parsed.defaultLabel,
+                        xpub = parsed.xpub,
+                        prefix = parsed.prefix,
+                        networkLabel = parsed.networkLabel,
+                        scriptTypeLabel = parsed.scriptTypeLabel,
+                        accountPathHint = parsed.accountPathHint,
+                        importedAt = now,
                     )
                 )
                 if (account.derivationError.isNotBlank()) {
@@ -388,6 +395,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         info = "",
                     )
                 }
+                importedAccountId = account.id
                 val accounts = listOf(account) + state.bitcoinWatchAccounts
                 state.copy(
                     bitcoinImportInput = "",
@@ -399,6 +407,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         persistBitcoinWatchAccounts()
+        importedAccountId?.let(::syncBitcoinWatchAccount)
     }
 
     fun removeBitcoinWatchAccount(accountId: String) {
@@ -431,12 +440,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     updateBitcoinWatchAccount(accountId) { account ->
                         account.copy(
                             balanceSats = snapshot.balanceSats,
+                            priceUsd = snapshot.priceUsd,
                             utxoCount = snapshot.utxoCount,
                             nextReceiveAddress = snapshot.nextReceiveAddress,
                             nextChangeAddress = snapshot.nextChangeAddress,
                             lastSyncStatus = snapshot.status,
                             lastSyncAt = System.currentTimeMillis(),
                             syncing = false,
+                            recentActivity = snapshot.recentActivity,
                         )
                     }
                     _uiState.update {
@@ -480,6 +491,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 updateBitcoinWatchAccount(accountId) {
                     it.copy(
                         balanceSats = prepared.snapshot.balanceSats,
+                        priceUsd = prepared.snapshot.priceUsd,
                         utxoCount = prepared.snapshot.utxoCount,
                         nextReceiveAddress = prepared.snapshot.nextReceiveAddress,
                         nextChangeAddress = prepared.snapshot.nextChangeAddress,
@@ -834,17 +846,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun prepareTransfer() {
+        prepareTransferRequest(
+            toInput = _uiState.value.transferTo,
+            amountInput = _uiState.value.transferAmount,
+            tokenSymbol = _uiState.value.transferToken,
+        )
+    }
+
+    fun prepareTransferRequest(
+        toInput: String,
+        amountInput: String,
+        tokenSymbol: String,
+    ) {
         val state = _uiState.value
         val chain = WalletChains.require(state.selectedChainId)
         val from = state.selectedAddress
-        val to = normalizeAddress(state.transferTo)
-        val amount = state.transferAmount.trim()
-        val token = chain.tokens.firstOrNull { it.symbol.equals(state.transferToken, ignoreCase = true) }
-            ?: return setError("当前链不支持 ${state.transferToken}")
+        val to = normalizeAddress(toInput)
+        val amount = amountInput.trim()
+        val token = chain.tokens.firstOrNull { it.symbol.equals(tokenSymbol, ignoreCase = true) }
+            ?: return setError("当前链不支持 $tokenSymbol")
 
         if (from.isBlank()) return setError("请先添加观察地址")
         if (to == null) return setError("接收地址格式错误")
         if (amount.isBlank()) return setError("请输入数量")
+
+        _uiState.update {
+            it.copy(
+                transferTo = toInput,
+                transferAmount = amountInput,
+                transferToken = token.symbol,
+            )
+        }
 
         viewModelScope.launch {
             try {
@@ -999,6 +1031,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 requestInput = "",
                             )
                         }
+                        recordLocalActivity(
+                            WalletActivityItem(
+                                id = "btc-$txid",
+                                chainId = WalletChains.DEFAULT.chainId,
+                                kind = WalletActivityKind.OUTGOING_TX,
+                                title = "BTC 交易已广播",
+                                subtitle = account.label,
+                                detail = _uiState.value.requestSummary,
+                                amountLabel = extractAmountLabel(_uiState.value.requestSummary).ifBlank { "BTC" },
+                                statusLabel = "已广播",
+                                timestamp = System.currentTimeMillis(),
+                                txHash = txid,
+                            )
+                        )
                         syncBitcoinWatchAccount(accountId)
                     } catch (e: Exception) {
                         setError("BTC 广播失败: ${e.message}")
@@ -1361,22 +1407,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _uiState.update { it.copy(syncingActivity = true) }
             runCatching {
-                EvmRpc.getRecentTokenTransfers(chain, address).map { transfer ->
-                    val counterparty = if (transfer.incoming) transfer.from else transfer.to
-                    WalletActivityItem(
-                        id = "onchain-${transfer.txHash}-${transfer.token.symbol}-${transfer.incoming}",
-                        chainId = chain.chainId,
-                        kind = WalletActivityKind.ONCHAIN,
-                        title = if (transfer.incoming) "收到 ${transfer.token.symbol}" else "转出 ${transfer.token.symbol}",
-                        subtitle = counterparty.ifBlank { "链上账户" },
-                        detail = "${shortAddress(transfer.from)} -> ${shortAddress(transfer.to)}",
-                        amountLabel = "${if (transfer.incoming) "+" else "-"}${formatUnits(transfer.amount, transfer.token.decimals)} ${transfer.token.symbol}",
-                        statusLabel = "链上记录",
-                        timestamp = transfer.timestamp,
-                        txHash = transfer.txHash,
-                        externalUrl = chain.txUrl(transfer.txHash),
-                    )
-                }
+                EvmRpc.getRecentAddressActivity(chain, address)
             }.onSuccess { items ->
                 syncedActivityByChain[chain.chainId] = items
                 publishActivity()

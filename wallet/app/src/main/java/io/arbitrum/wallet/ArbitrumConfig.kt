@@ -48,7 +48,7 @@ object WalletChains {
         rpcUrl = "https://arb1.arbitrum.io/rpc",
         explorerUrl = "https://arbiscan.io",
         accentColor = 0xFF3E63FF,
-        historyLookbackBlocks = 4_000,
+        historyLookbackBlocks = 250_000,
         tokens = listOf(
             TokenInfo("ETH", "Ether", 18),
             TokenInfo("USDC", "USD Coin", 6, "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"),

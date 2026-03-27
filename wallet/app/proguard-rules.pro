@@ -8,3 +8,4 @@
 # the Android runtime surface used here; suppress to keep release minification working.
 -dontwarn java.util.logging.Level
 -dontwarn java.util.logging.Logger
+-dontwarn org.slf4j.impl.StaticLoggerBinder

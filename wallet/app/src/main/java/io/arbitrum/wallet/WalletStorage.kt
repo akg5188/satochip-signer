@@ -175,6 +175,36 @@ object WalletStorage {
                             accountPathHint = obj.optString("accountPathHint"),
                             sourceLabel = obj.optString("sourceLabel").ifBlank { "Imported from pi-signer get-xpub" },
                             importedAt = obj.optLong("importedAt"),
+                            balanceSats = obj.optLong("balanceSats", 0L),
+                            priceUsd = obj.optDouble("priceUsd").takeIf { !it.isNaN() && it > 0.0 },
+                            utxoCount = obj.optInt("utxoCount", 0),
+                            nextReceiveAddress = obj.optString("nextReceiveAddress"),
+                            nextChangeAddress = obj.optString("nextChangeAddress"),
+                            lastSyncStatus = obj.optString("lastSyncStatus"),
+                            lastSyncAt = obj.optLong("lastSyncAt", 0L),
+                            recentActivity = buildList {
+                                val activityArray = obj.optJSONArray("recentActivity") ?: JSONArray()
+                                for (activityIndex in 0 until activityArray.length()) {
+                                    val item = activityArray.optJSONObject(activityIndex) ?: continue
+                                    add(
+                                        WalletActivityItem(
+                                            id = item.optString("id").ifBlank { "btc-activity-$activityIndex" },
+                                            chainId = item.optLong("chainId", WalletChains.DEFAULT.chainId),
+                                            kind = WalletActivityKind.valueOf(
+                                                item.optString("kind").ifBlank { WalletActivityKind.ONCHAIN.name }
+                                            ),
+                                            title = item.optString("title"),
+                                            subtitle = item.optString("subtitle"),
+                                            detail = item.optString("detail"),
+                                            amountLabel = item.optString("amountLabel"),
+                                            statusLabel = item.optString("statusLabel"),
+                                            timestamp = item.optLong("timestamp", 0L),
+                                            txHash = item.optString("txHash"),
+                                            externalUrl = item.optString("externalUrl"),
+                                        )
+                                    )
+                                }
+                            },
                         )
                     )
                 }
@@ -196,6 +226,35 @@ object WalletStorage {
                         put("accountPathHint", account.accountPathHint)
                         put("sourceLabel", account.sourceLabel)
                         put("importedAt", account.importedAt)
+                        put("balanceSats", account.balanceSats)
+                        account.priceUsd?.let { put("priceUsd", it) }
+                        put("utxoCount", account.utxoCount)
+                        put("nextReceiveAddress", account.nextReceiveAddress)
+                        put("nextChangeAddress", account.nextChangeAddress)
+                        put("lastSyncStatus", account.lastSyncStatus)
+                        put("lastSyncAt", account.lastSyncAt)
+                        put(
+                            "recentActivity",
+                            JSONArray().apply {
+                                account.recentActivity.forEach { item ->
+                                    put(
+                                        JSONObject().apply {
+                                            put("id", item.id)
+                                            put("chainId", item.chainId)
+                                            put("kind", item.kind.name)
+                                            put("title", item.title)
+                                            put("subtitle", item.subtitle)
+                                            put("detail", item.detail)
+                                            put("amountLabel", item.amountLabel)
+                                            put("statusLabel", item.statusLabel)
+                                            put("timestamp", item.timestamp)
+                                            put("txHash", item.txHash)
+                                            put("externalUrl", item.externalUrl)
+                                        }
+                                    )
+                                }
+                            },
+                        )
                     }
                 )
             }
