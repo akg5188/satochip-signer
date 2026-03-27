@@ -1,8 +1,11 @@
 package io.arbitrum.wallet
 
 import android.app.Application
-import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.zxing.BarcodeFormat
@@ -34,12 +37,12 @@ private val typedDataJson = Json { ignoreUnknownKeys = true; isLenient = true }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
-        private const val PREFS_NAME = "satochip_multi_wallet"
-        private const val AUTO_APPROVE_WALLETCONNECT = true
+        private const val AUTO_APPROVE_WALLETCONNECT = false
         private const val ADDRESS_DISCOVERY_MESSAGE_PREFIX = "tp-watch-address-discovery:"
+        private val ALLOWED_INJECTED_BROWSER_ORIGINS = setOf("https://app.hyperliquid.xyz")
     }
 
-    private val prefs = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs = WalletStorage.openSecurePreferences(application)
     private val _uiState = MutableStateFlow(WalletUiState())
     val uiState: StateFlow<WalletUiState> = _uiState.asStateFlow()
     private val _browserCommands = MutableSharedFlow<InjectedBrowserCommand>(extraBufferCapacity = 32)
@@ -51,8 +54,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val hyperliquidMarketMeta = linkedMapOf<String, HyperliquidMarketMeta>()
     private var pendingHyperliquidApproval: HyperliquidApprovalRequest? = null
     private var pendingInjectedBrowserRequest: InjectedBrowserPendingRequest? = null
+    private val sessionSecurityObserver = object : DefaultLifecycleObserver {
+        override fun onStop(owner: LifecycleOwner) {
+            clearSensitiveSessionState()
+        }
+    }
 
     init {
+        ProcessLifecycleOwner.get().lifecycle.addObserver(sessionSecurityObserver)
         restorePersistedState()
         runCatching {
             WalletConnectBridge.ensureInitialized(application)
@@ -62,6 +71,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         bindWalletConnectState()
+    }
+
+    override fun onCleared() {
+        ProcessLifecycleOwner.get().lifecycle.removeObserver(sessionSecurityObserver)
+        super.onCleared()
     }
 
     fun setActiveTab(tab: WalletTab) = _uiState.update { it.copy(activeTab = tab) }
@@ -146,6 +160,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         paramsJson: String,
         origin: String,
     ) {
+        val normalizedOrigin = normalizeInjectedBrowserOrigin(origin)
+        if (!isAllowedInjectedBrowserOrigin(normalizedOrigin)) {
+            emitBrowserReject(requestId, 4001, "未授权的网页来源")
+            reportBrowserRuntimeIssue("blocked browser origin · ${origin.ifBlank { "<blank>" }}")
+            return
+        }
         val normalizedMethod = method.trim()
         if (normalizedMethod.isBlank()) {
             emitBrowserReject(requestId, 4001, "缺少方法名")
@@ -164,7 +184,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         if (address.isBlank()) {
                             emitBrowserReject(requestId, 4001, "请先选择观察地址")
                         } else {
-                            authorizeInjectedBrowser()
+                            authorizeInjectedBrowser(normalizedOrigin)
                             emitBrowserAccountsChanged()
                             emitBrowserChainChanged()
                             emitBrowserResolve(requestId, org.json.JSONArray(listOf(address)).toString())
@@ -172,7 +192,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     "wallet_getpermissions" -> {
-                        emitBrowserResolve(requestId, currentBrowserPermissionsJson(origin))
+                        emitBrowserResolve(requestId, currentBrowserPermissionsJson(normalizedOrigin))
                     }
 
                     "wallet_requestpermissions", "wallet_grantpermissions" -> {
@@ -180,7 +200,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         if (address.isBlank()) {
                             emitBrowserReject(requestId, 4001, "请先选择观察地址")
                         } else {
-                            authorizeInjectedBrowser()
+                            authorizeInjectedBrowser(normalizedOrigin)
                             emitBrowserAccountsChanged()
                             emitBrowserChainChanged()
                             emitBrowserResolve(requestId, currentBrowserRequestPermissionsJson())
@@ -210,6 +230,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             emitBrowserReject(requestId, -32002, "已有待处理签名请求")
                             return@launch
                         }
+                        if (currentAuthorizedBrowserAccounts().isEmpty()) {
+                            emitBrowserReject(requestId, 4100, "当前网页尚未获得钱包授权")
+                            return@launch
+                        }
 
                         val address = _uiState.value.selectedAddress
                         if (address.isBlank()) {
@@ -224,7 +248,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             chainId = "eip155:${_uiState.value.selectedChainId}",
                             params = paramsJson.ifBlank { "[]" },
                             peerName = "Hyperliquid",
-                            peerUrl = origin,
+                            peerUrl = normalizedOrigin,
                         )
                         when (
                             val prepared = WalletConnectRequestCodec.prepare(
@@ -261,7 +285,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     pendingInjectedBrowserRequest = InjectedBrowserPendingRequest(
                                         browserRequestId = requestId,
                                         method = normalizedMethod,
-                                        origin = origin,
+                                        origin = normalizedOrigin,
                                     )
                                     recordLocalActivity(
                                         WalletActivityItem(
@@ -269,7 +293,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                             chainId = prepared.chainId,
                                             kind = WalletActivityKind.DAPP,
                                             title = "Hyperliquid 页面发起 ${normalizedMethod}",
-                                            subtitle = origin.ifBlank { "app.hyperliquid.xyz" },
+                                            subtitle = normalizedOrigin.ifBlank { "app.hyperliquid.xyz" },
                                             detail = WalletChains.require(prepared.chainId).displayName,
                                             statusLabel = "待树莓派签名",
                                             timestamp = System.currentTimeMillis(),
@@ -352,6 +376,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectAddress(address: String) {
+        if (_uiState.value.selectedAddress != address) {
+            clearSensitiveSessionState()
+        }
         _uiState.update { it.copy(selectedAddress = address, error = "", info = "") }
         persistAddresses()
         loadBalances()
@@ -667,7 +694,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val updatedAgent = storedAgent?.copy(validUntil = snapshot.storedAgentValidUntil)
                 if (updatedAgent != null) {
                     hyperliquidAgentsByAccount[updatedAgent.accountAddress.lowercase()] = updatedAgent
-                    persistHyperliquidAgents()
                 }
 
                 val selectedMarket = when {
@@ -1309,6 +1335,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                     }
+                } else if (proposal != null) {
+                    _uiState.update {
+                        it.copy(
+                            info = "收到新的 WalletConnect 连接请求，请手动批准后再继续。",
+                            error = "",
+                        )
+                    }
                 }
             }
         }
@@ -1336,9 +1369,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val evmDerivationPath = WalletStorage.readEvmDerivationPath(prefs)
         val bitcoinWatchAccounts = WalletStorage.readBitcoinWatchAccounts(prefs).map(::enrichBitcoinWatchAccount)
         hyperliquidAgentsByAccount.clear()
-        WalletStorage.readHyperliquidAgents(prefs, ::normalizeAddress).forEach { agent ->
-            hyperliquidAgentsByAccount[agent.accountAddress.lowercase()] = agent
-        }
         localActivityItems.clear()
         localActivityItems += WalletStorage.readActivity(prefs)
         _uiState.update {
@@ -1351,11 +1381,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 selectedChainId = selectedChain,
                 transferToken = WalletChains.require(selectedChain).preferredTransferSymbol(),
                 contacts = contacts,
-                hyperliquidAgent = currentHyperliquidAgent(effectiveSelected)?.toUi(),
+                hyperliquidAgent = null,
                 hyperliquidStatus = if (effectiveSelected.isBlank()) {
                     "先添加观察地址，再启用 Hyperliquid"
                 } else {
-                    "正在同步 Hyperliquid..."
+                    "为保障安全，Hyperliquid 代理不会保存在本机。每次解锁后需重新授权。"
                 },
             )
         }
@@ -1400,7 +1430,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun persistHyperliquidAgents() {
-        WalletStorage.writeHyperliquidAgents(prefs, hyperliquidAgentsByAccount.values)
+        // Hyperliquid agent private keys are session-only and never persisted.
     }
 
     private fun syncRecentActivity(chain: WalletChain, address: String) {
@@ -1596,7 +1626,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 _uiState.update {
                     it.copy(
-                        info = "已接收 WalletConnect 配对链接。若当前已选观察地址，会在收到提案后自动批准连接。",
+                        info = "已接收 WalletConnect 配对链接。收到提案后请在钱包内手动批准。",
                         error = "",
                         activeTab = focusTab,
                     )
@@ -1888,10 +1918,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun currentBrowserPermissionsJson(origin: String): String {
         val accounts = currentAuthorizedBrowserAccounts()
         if (accounts.isEmpty()) return "[]"
+        val effectiveOrigin = origin.ifBlank { _uiState.value.browserAuthorizedOrigin.ifBlank { "https://app.hyperliquid.xyz" } }
 
         val permission = org.json.JSONObject().apply {
             put("id", "satochip_eth_accounts")
-            put("invoker", origin.ifBlank { "https://app.hyperliquid.xyz" })
+            put("invoker", effectiveOrigin)
             put("parentCapability", "eth_accounts")
             put("date", System.currentTimeMillis())
             put(
@@ -1937,14 +1968,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ).toString()
     }
 
-    private fun authorizeInjectedBrowser() {
+    private fun authorizeInjectedBrowser(origin: String) {
         if (_uiState.value.browserAuthorized) return
-        _uiState.update { it.copy(browserAuthorized = true, error = "") }
+        _uiState.update {
+            it.copy(
+                browserAuthorized = true,
+                browserAuthorizedOrigin = origin,
+                error = "",
+            )
+        }
     }
 
     private fun revokeInjectedBrowserAuthorization() {
         if (!_uiState.value.browserAuthorized) return
-        _uiState.update { it.copy(browserAuthorized = false, error = "") }
+        _uiState.update { it.copy(browserAuthorized = false, browserAuthorizedOrigin = "", error = "") }
         emitBrowserAccountsChanged()
     }
 
@@ -2016,7 +2053,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     hyperliquidPendingApproval = false,
                     hyperliquidAgent = savedAgent.toUi(),
-                    hyperliquidStatus = "Hyperliquid 代理已授权",
+                    hyperliquidStatus = "Hyperliquid 代理已在本次会话授权，锁屏或退到后台后需重新授权。",
                     signQrBitmap = null,
                     signQrPages = emptyList(),
                     signQrPageIndex = 0,
@@ -2028,7 +2065,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     dappInfo = "",
                     relayHint = "",
                     requestInput = "",
-                    info = "Hyperliquid 代理授权成功，已经可以直接下单。",
+                    info = "Hyperliquid 代理授权成功。本次会话内可直接交易，离开应用后需重新授权。",
                     error = "",
                 )
             }
@@ -2064,6 +2101,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 hyperliquidFills = emptyList(),
             )
         }
+    }
+
+    private fun clearSensitiveSessionState() {
+        val selectedAddress = _uiState.value.selectedAddress
+        pendingHyperliquidApproval = null
+        pendingInjectedBrowserRequest = null
+        hyperliquidAgentsByAccount.clear()
+        _uiState.update {
+            it.copy(
+                browserAuthorized = false,
+                browserAuthorizedOrigin = "",
+                hyperliquidPendingApproval = false,
+                hyperliquidAgent = null,
+                signQrPages = emptyList(),
+                signQrPageIndex = 0,
+                signQrBitmap = null,
+                pendingResponseType = null,
+                preparedRequestChainId = null,
+                requestTitle = "",
+                requestSummary = "",
+                transferInfo = "",
+                dappInfo = "",
+                relayHint = "",
+                requestInput = "",
+                hyperliquidStatus = if (selectedAddress.isBlank()) {
+                    "先添加观察地址，再启用 Hyperliquid"
+                } else {
+                    "已锁定。为保障安全，请重新授权 Hyperliquid 代理。"
+                },
+            )
+        }
+        emitBrowserAccountsChanged()
+    }
+
+    private fun normalizeInjectedBrowserOrigin(origin: String): String {
+        val parsed = runCatching { Uri.parse(origin.trim()) }.getOrNull() ?: return ""
+        val scheme = parsed.scheme?.lowercase() ?: return ""
+        val host = parsed.host?.lowercase() ?: return ""
+        if (scheme != "https") return ""
+        return "$scheme://$host"
+    }
+
+    private fun isAllowedInjectedBrowserOrigin(origin: String): Boolean {
+        return origin in ALLOWED_INJECTED_BROWSER_ORIGINS
     }
 
     private fun recordLocalActivity(item: WalletActivityItem) {

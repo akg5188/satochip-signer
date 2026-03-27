@@ -135,6 +135,15 @@ abstract class InjectedWalletBridge {
     abstract fun reportIssue(level: String?, message: String?, source: String?, line: Int)
 }
 
+private const val HYPERLIQUID_TRADING_URL = "https://app.hyperliquid.xyz/trade"
+private const val HYPERLIQUID_ALLOWED_HOST = "app.hyperliquid.xyz"
+
+private fun isAllowedHyperliquidUrl(uri: Uri?): Boolean {
+    if (uri == null) return false
+    return uri.scheme.equals("https", ignoreCase = true) &&
+        uri.host.equals(HYPERLIQUID_ALLOWED_HOST, ignoreCase = true)
+}
+
 class MainActivity : BiometricGateActivity(), InjectedBrowserHost {
     private enum class GalleryImportTarget {
         REQUEST,
@@ -574,21 +583,27 @@ class HyperliquidActivity : BiometricGateActivity(), InjectedBrowserHost {
         val webView = WebView(this).apply {
             setBackgroundColor(0xFF07111C.toInt())
             CookieManager.getInstance().setAcceptCookie(true)
-            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+            CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
             settings.cacheMode = WebSettings.LOAD_NO_CACHE
-            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             settings.useWideViewPort = false
             settings.loadWithOverviewMode = false
             settings.setSupportZoom(false)
-            settings.setSupportMultipleWindows(true)
+            settings.setSupportMultipleWindows(false)
             settings.builtInZoomControls = false
             settings.displayZoomControls = false
-            settings.javaScriptCanOpenWindowsAutomatically = true
+            settings.javaScriptCanOpenWindowsAutomatically = false
+            settings.allowFileAccess = false
+            settings.allowContentAccess = false
+            settings.mediaPlaybackRequiresUserGesture = true
             settings.textZoom = 100
             settings.userAgentString = buildBrowserLikeUserAgent(settings.userAgentString)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                settings.safeBrowsingEnabled = true
+            }
             isVerticalScrollBarEnabled = false
             isHorizontalScrollBarEnabled = false
             overScrollMode = WebView.OVER_SCROLL_NEVER
@@ -612,7 +627,7 @@ class HyperliquidActivity : BiometricGateActivity(), InjectedBrowserHost {
                     viewModel.syncInjectedBrowserContext()
                 },
             )
-            loadUrl("https://app.hyperliquid.xyz/trade")
+            loadUrl(HYPERLIQUID_TRADING_URL)
         }
         attachHyperliquidWebView(webView)
         contentLayout.addView(
@@ -1481,21 +1496,27 @@ private fun HyperliquidBrowserSection(
                 WebView(context).apply {
                     setBackgroundColor(0xFF07111C.toInt())
                     CookieManager.getInstance().setAcceptCookie(true)
-                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                     settings.databaseEnabled = true
                     settings.cacheMode = WebSettings.LOAD_NO_CACHE
-                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                     settings.useWideViewPort = false
                     settings.loadWithOverviewMode = false
                     settings.setSupportZoom(false)
-                    settings.setSupportMultipleWindows(true)
+                    settings.setSupportMultipleWindows(false)
                     settings.builtInZoomControls = false
                     settings.displayZoomControls = false
-                    settings.javaScriptCanOpenWindowsAutomatically = true
+                    settings.javaScriptCanOpenWindowsAutomatically = false
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
+                    settings.mediaPlaybackRequiresUserGesture = true
                     settings.textZoom = 100
                     settings.userAgentString = buildBrowserLikeUserAgent(settings.userAgentString)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        settings.safeBrowsingEnabled = true
+                    }
                     isVerticalScrollBarEnabled = false
                     isHorizontalScrollBarEnabled = false
                     overScrollMode = WebView.OVER_SCROLL_NEVER
@@ -1520,7 +1541,7 @@ private fun HyperliquidBrowserSection(
                             onInjectedBrowserReady()
                         },
                     )
-                    loadUrl("https://app.hyperliquid.xyz/trade")
+                    loadUrl(HYPERLIQUID_TRADING_URL)
                     onAttachWebView(this)
                 }
             },
@@ -1569,7 +1590,19 @@ private class HyperliquidWebChromeClient(
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                     val url = request?.url?.toString() ?: return false
                     return when (request.url.scheme?.lowercase()) {
-                        "http", "https", "about", "javascript", "data", "blob" -> {
+                        "https" -> {
+                            if (isAllowedHyperliquidUrl(request.url)) {
+                                parent.post { parent.loadUrl(url) }
+                            } else {
+                                onOpenExternal(url)
+                            }
+                            true
+                        }
+                        "http" -> {
+                            onOpenExternal(url)
+                            true
+                        }
+                        "about", "javascript", "data", "blob" -> {
                             parent.post { parent.loadUrl(url) }
                             true
                         }
@@ -1612,7 +1645,17 @@ private class HyperliquidInjectedWebViewClient(
         if (!request.isForMainFrame) return false
 
         return when (url.scheme?.lowercase()) {
-            "http", "https", "about", "javascript", "data", "blob" -> false
+            "https" -> if (isAllowedHyperliquidUrl(url)) {
+                false
+            } else {
+                onOpenExternal(url.toString())
+                true
+            }
+            "http" -> {
+                onOpenExternal(url.toString())
+                true
+            }
+            "about", "javascript", "data", "blob" -> false
             else -> {
                 onOpenExternal(url.toString())
                 true

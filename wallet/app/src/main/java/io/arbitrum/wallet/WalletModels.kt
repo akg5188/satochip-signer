@@ -156,6 +156,7 @@ data class WalletUiState(
     val bitcoinWatchAccounts: List<BitcoinWatchAccount> = emptyList(),
     val bitcoinPrototypeStatus: String = defaultBitcoinPrototypeStatus(0),
     val browserAuthorized: Boolean = false,
+    val browserAuthorizedOrigin: String = "",
     val selectedChainId: Long = WalletChains.DEFAULT.chainId,
     val chainPortfolios: Map<Long, ChainPortfolioUi> = emptyMap(),
     val loadingBalances: Boolean = false,

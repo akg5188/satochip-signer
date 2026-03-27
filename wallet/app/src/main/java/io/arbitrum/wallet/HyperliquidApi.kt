@@ -198,9 +198,9 @@ object HyperliquidApi {
 
         val status = when {
             account == null -> "Hyperliquid 账户尚未激活或没有可读取的状态"
-            storedAgent != null && storedAgentValidUntil != null -> "Hyperliquid 代理已授权"
-            storedAgent != null -> "Hyperliquid 代理已保存，建议重新确认授权状态"
-            else -> "先完成 Hyperliquid 代理授权，之后就能直接下单"
+            storedAgent != null && storedAgentValidUntil != null -> "Hyperliquid 代理已在当前会话授权"
+            storedAgent != null -> "Hyperliquid 代理已在当前会话加载，建议重新确认授权状态"
+            else -> "当前为只读模式，需重新授权代理后才可直接下单"
         }
 
         HyperliquidSnapshot(

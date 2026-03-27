@@ -1,10 +1,16 @@
 package io.arbitrum.wallet
 
+import android.content.Context
 import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import org.json.JSONArray
 import org.json.JSONObject
 
 object WalletStorage {
+    private const val LEGACY_PREFS_NAME = "satochip_multi_wallet"
+    private const val SECURE_PREFS_NAME = "satochip_multi_wallet_secure"
+    private const val KEY_MIGRATED_FROM_LEGACY = "_migrated_from_legacy"
     private const val KEY_ADDRESSES = "addresses"
     private const val KEY_SELECTED_ADDRESS = "selected_address"
     private const val KEY_SELECTED_CHAIN_ID = "selected_chain_id"
@@ -13,6 +19,54 @@ object WalletStorage {
     private const val KEY_ACTIVITY = "activity"
     private const val KEY_HYPERLIQUID_AGENTS = "hyperliquid_agents"
     private const val KEY_BITCOIN_WATCH_ACCOUNTS = "bitcoin_watch_accounts"
+
+    fun openSecurePreferences(context: Context): SharedPreferences {
+        val appContext = context.applicationContext
+        val masterKey = MasterKey.Builder(appContext)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        val securePrefs = EncryptedSharedPreferences.create(
+            appContext,
+            SECURE_PREFS_NAME,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+        migrateLegacyPrefs(appContext, securePrefs)
+        securePrefs.edit().remove(KEY_HYPERLIQUID_AGENTS).apply()
+        return securePrefs
+    }
+
+    private fun migrateLegacyPrefs(context: Context, securePrefs: SharedPreferences) {
+        if (securePrefs.getBoolean(KEY_MIGRATED_FROM_LEGACY, false)) {
+            return
+        }
+        val legacyPrefs = context.getSharedPreferences(LEGACY_PREFS_NAME, Context.MODE_PRIVATE)
+        val editor = securePrefs.edit()
+        if (legacyPrefs.contains(KEY_ADDRESSES)) {
+            editor.putString(KEY_ADDRESSES, legacyPrefs.getString(KEY_ADDRESSES, null))
+        }
+        if (legacyPrefs.contains(KEY_SELECTED_ADDRESS)) {
+            editor.putString(KEY_SELECTED_ADDRESS, legacyPrefs.getString(KEY_SELECTED_ADDRESS, null))
+        }
+        if (legacyPrefs.contains(KEY_SELECTED_CHAIN_ID)) {
+            editor.putLong(KEY_SELECTED_CHAIN_ID, legacyPrefs.getLong(KEY_SELECTED_CHAIN_ID, WalletChains.DEFAULT.chainId))
+        }
+        if (legacyPrefs.contains(KEY_EVM_DERIVATION_PATH)) {
+            editor.putString(KEY_EVM_DERIVATION_PATH, legacyPrefs.getString(KEY_EVM_DERIVATION_PATH, DEFAULT_EVM_DERIVATION_PATH))
+        }
+        if (legacyPrefs.contains(KEY_CONTACTS)) {
+            editor.putString(KEY_CONTACTS, legacyPrefs.getString(KEY_CONTACTS, null))
+        }
+        if (legacyPrefs.contains(KEY_ACTIVITY)) {
+            editor.putString(KEY_ACTIVITY, legacyPrefs.getString(KEY_ACTIVITY, null))
+        }
+        if (legacyPrefs.contains(KEY_BITCOIN_WATCH_ACCOUNTS)) {
+            editor.putString(KEY_BITCOIN_WATCH_ACCOUNTS, legacyPrefs.getString(KEY_BITCOIN_WATCH_ACCOUNTS, null))
+        }
+        editor.putBoolean(KEY_MIGRATED_FROM_LEGACY, true).apply()
+        legacyPrefs.edit().clear().apply()
+    }
 
     fun readAddresses(prefs: SharedPreferences, normalizer: (String?) -> String?): List<String> {
         val raw = prefs.getString(KEY_ADDRESSES, null)
