@@ -1,4 +1,7 @@
-built_at=2026-03-27 15:35:13 CST
-repo_head=aab65e0a3a53f2c6fbefadda04875e4941a8677a
-apk_path=/home/ak/zero/tp-satochip-signer/dist/satochip-wallet-release.apk
-apk_sha256=e68d983f721a9da24d148b845f0a4d50ba399cb33f32498cabdee075a3c4fea8
+module=wallet
+artifact_path=dist/satochip-wallet-release.apk
+artifact_sha256=9f39872132cf99270ccafaf220ef46bc87dafc33967df4b1001a3b068fe44070
+version_name=0.1.0
+repo_head=061fc418e880c4cc8fda5eb948ca606a275a50fb
+build_script=manual-secure-release
+build_time_utc=2026-03-27T09:16:10Z
