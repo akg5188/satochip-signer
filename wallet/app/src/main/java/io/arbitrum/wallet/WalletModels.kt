@@ -8,11 +8,6 @@ enum class WalletTab {
     DISCOVER,
 }
 
-enum class HyperliquidOrderMode {
-    MARKET,
-    LIMIT,
-}
-
 enum class PendingResponseType {
     BROADCAST_TX,
     BROADCAST_BTC_TX,
@@ -56,6 +51,13 @@ data class TransferContact(
     val chainId: Long? = null,
 )
 
+data class TrustedDappEntry(
+    val host: String,
+    val chainId: Long,
+    val address: String,
+    val trustedAt: Long = 0L,
+)
+
 data class WalletActivityItem(
     val id: String,
     val chainId: Long,
@@ -68,49 +70,6 @@ data class WalletActivityItem(
     val timestamp: Long,
     val txHash: String = "",
     val externalUrl: String = "",
-)
-
-data class HyperliquidAgentUi(
-    val agentAddress: String,
-    val agentName: String,
-    val approvedAt: Long,
-    val validUntil: Long? = null,
-)
-
-data class HyperliquidAccountUi(
-    val accountValue: String = "",
-    val marginUsed: String = "",
-    val withdrawable: String = "",
-    val notionalPosition: String = "",
-)
-
-data class HyperliquidMarketUi(
-    val name: String,
-    val midPrice: String,
-    val dayVolume: String,
-    val fundingRate: String,
-    val openInterest: String,
-    val szDecimals: Int,
-    val maxLeverage: Int,
-)
-
-data class HyperliquidOpenOrderUi(
-    val oid: Long,
-    val coin: String,
-    val sideLabel: String,
-    val limitPrice: String,
-    val size: String,
-    val timestamp: Long,
-)
-
-data class HyperliquidFillUi(
-    val id: String,
-    val coin: String,
-    val sideLabel: String,
-    val price: String,
-    val size: String,
-    val pnl: String,
-    val timestamp: Long,
 )
 
 data class BitcoinDerivedAddressPreview(
@@ -155,8 +114,6 @@ data class WalletUiState(
     val bitcoinImportInput: String = "",
     val bitcoinWatchAccounts: List<BitcoinWatchAccount> = emptyList(),
     val bitcoinPrototypeStatus: String = defaultBitcoinPrototypeStatus(0),
-    val browserAuthorized: Boolean = false,
-    val browserAuthorizedOrigin: String = "",
     val selectedChainId: Long = WalletChains.DEFAULT.chainId,
     val chainPortfolios: Map<Long, ChainPortfolioUi> = emptyMap(),
     val loadingBalances: Boolean = false,
@@ -178,6 +135,7 @@ data class WalletUiState(
     val relayHint: String = "",
     val preparedRequestChainId: Long? = null,
     val walletConnectStatus: String = "",
+    val trustedDappEntries: List<TrustedDappEntry> = emptyList(),
     val walletConnectProposal: WalletConnectProposalUi? = null,
     val walletConnectPendingRequest: WalletConnectPendingRequest? = null,
     val signQrPages: List<String> = emptyList(),
@@ -185,23 +143,12 @@ data class WalletUiState(
     val signQrBitmap: Bitmap? = null,
     val pendingResponseType: PendingResponseType? = null,
     val preparedBitcoinAccountId: String? = null,
+    val pendingBroadcastRawTransaction: String = "",
+    val pendingBroadcastBitcoinTxHex: String = "",
     val txHash: String = "",
     val txHashChainId: Long? = null,
+    val txHashExplorerUrl: String = "",
     val lastSignature: String = "",
     val lastSignatureAddress: String = "",
     val activityItems: List<WalletActivityItem> = emptyList(),
-    val hyperliquidStatus: String = "",
-    val hyperliquidLoading: Boolean = false,
-    val hyperliquidPendingApproval: Boolean = false,
-    val hyperliquidAgent: HyperliquidAgentUi? = null,
-    val hyperliquidAccount: HyperliquidAccountUi? = null,
-    val hyperliquidMarkets: List<HyperliquidMarketUi> = emptyList(),
-    val hyperliquidSelectedMarket: String = "BTC",
-    val hyperliquidOrderMode: HyperliquidOrderMode = HyperliquidOrderMode.MARKET,
-    val hyperliquidOrderSideBuy: Boolean = true,
-    val hyperliquidOrderSizeInput: String = "",
-    val hyperliquidOrderPriceInput: String = "",
-    val hyperliquidReduceOnly: Boolean = false,
-    val hyperliquidOpenOrders: List<HyperliquidOpenOrderUi> = emptyList(),
-    val hyperliquidFills: List<HyperliquidFillUi> = emptyList(),
 )

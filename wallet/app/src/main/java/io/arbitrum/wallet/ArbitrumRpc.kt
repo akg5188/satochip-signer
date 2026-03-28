@@ -48,10 +48,17 @@ data class EvmTransactionDetail(
 )
 
 object EvmRpc {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
+    private val allowedHosts = setOf(
+        "arb1.arbitrum.io",
+        "arbitrum.blockscout.com",
+        "coins.llama.fi",
+        "api.coingecko.com",
+    )
+    private val client = TrustedNetwork.newPinnedClient(
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+    ).build()
 
 private const val JSON_MEDIA = "application/json"
 private const val TRANSFER_TOPIC =
@@ -386,8 +393,7 @@ private val fallbackGasPrice = BigInteger("1000000000")
     }
 
     private fun getJson(url: String): JSONObject {
-        val request = Request.Builder()
-            .url(url)
+        val request = TrustedNetwork.requestBuilder(url, allowedHosts)
             .header("User-Agent", "Mozilla/5.0")
             .header("Accept", "application/json")
             .get()
@@ -489,8 +495,7 @@ private val fallbackGasPrice = BigInteger("1000000000")
     }
 
     private fun post(chain: WalletChain, body: String): String {
-        val request = Request.Builder()
-            .url(chain.rpcUrl)
+        val request = TrustedNetwork.requestBuilder(chain.rpcUrl, allowedHosts)
             .post(body.toRequestBody(JSON_MEDIA.toMediaType()))
             .build()
         val response = client.newCall(request).execute()
@@ -515,7 +520,9 @@ private val fallbackGasPrice = BigInteger("1000000000")
         val slug = "${chain.slug}:$addr"
         val url = "https://coins.llama.fi/prices/current/$slug"
         return@withContext try {
-            val response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            val response = client.newCall(
+                TrustedNetwork.requestBuilder(url, allowedHosts).get().build()
+            ).execute()
             val body = response.body?.string().orEmpty()
             val coins = JSONObject(body).optJSONObject("coins") ?: return@withContext null
             val coin = coins.optJSONObject(slug) ?: return@withContext null
@@ -531,7 +538,9 @@ private val fallbackGasPrice = BigInteger("1000000000")
         val encoded = java.net.URLEncoder.encode(id, "UTF-8")
         val url = "https://api.coingecko.com/api/v3/simple/price?ids=$encoded&vs_currencies=usd"
         return@withContext try {
-            val response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            val response = client.newCall(
+                TrustedNetwork.requestBuilder(url, allowedHosts).get().build()
+            ).execute()
             val body = response.body?.string().orEmpty()
             val obj = JSONObject(body).optJSONObject(id) ?: return@withContext null
             val price = obj.optDouble("usd", Double.NaN)
@@ -546,7 +555,9 @@ private val fallbackGasPrice = BigInteger("1000000000")
         val encoded = java.net.URLEncoder.encode(id, "UTF-8")
         val url = "https://api.coingecko.com/api/v3/simple/price?ids=$encoded&vs_currencies=usd"
         return@withContext try {
-            val response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            val response = client.newCall(
+                TrustedNetwork.requestBuilder(url, allowedHosts).get().build()
+            ).execute()
             val body = response.body?.string().orEmpty()
             val obj = JSONObject(body).optJSONObject(id) ?: return@withContext null
             val price = obj.optDouble("usd", Double.NaN)

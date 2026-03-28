@@ -1,4 +1,6 @@
 import java.util.Properties
+import java.security.KeyStore
+import java.security.MessageDigest
 
 val localProperties = Properties().apply {
     val f = rootProject.file("local.properties")
@@ -21,6 +23,36 @@ val keystoreProperties = Properties().apply {
 
 val hasReleaseKeystore = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
     .all { !keystoreProperties.getProperty(it).isNullOrBlank() }
+val releaseTaskRequested = gradle.startParameter.taskNames.any { taskName ->
+    taskName.contains("Release", ignoreCase = true)
+}
+val releaseSignerSha256 = if (hasReleaseKeystore) {
+    val storePath = keystoreProperties.getProperty("storeFile")
+    val storeType = keystoreProperties.getProperty("storeType")
+        ?.takeIf { it.isNotBlank() }
+        ?: when (storePath.substringAfterLast('.', "").lowercase()) {
+            "jks" -> "JKS"
+            "p12", "pfx", "pkcs12" -> "PKCS12"
+            else -> KeyStore.getDefaultType()
+        }
+    val keyStore = KeyStore.getInstance(storeType)
+    file(storePath).inputStream().use { input ->
+        keyStore.load(input, keystoreProperties.getProperty("storePassword").toCharArray())
+    }
+    val certificate = keyStore.getCertificate(keystoreProperties.getProperty("keyAlias"))
+        ?: throw org.gradle.api.GradleException("Unable to load release signing certificate for wallet.")
+    MessageDigest.getInstance("SHA-256")
+        .digest(certificate.encoded)
+        .joinToString("") { byte -> "%02x".format(byte) }
+} else {
+    ""
+}
+
+if (releaseTaskRequested && !hasReleaseKeystore) {
+    throw org.gradle.api.GradleException(
+        "Release build requires a configured keystore.properties; debug signing is blocked for wallet release artifacts."
+    )
+}
 
 plugins {
     id("com.android.application")
@@ -54,6 +86,7 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+        resValue("string", "expected_signer_sha256", "")
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -69,7 +102,10 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName(if (hasReleaseKeystore) "release" else "debug")
+            resValue("string", "expected_signer_sha256", releaseSignerSha256)
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -110,6 +146,16 @@ android {
 
 configurations.all {
     resolutionStrategy {
+        force("androidx.core:core:1.12.0")
+        force("androidx.core:core-ktx:1.12.0")
+        force("androidx.activity:activity:1.8.2")
+        force("androidx.activity:activity-ktx:1.8.2")
+        force("androidx.activity:activity-compose:1.8.2")
+        force("androidx.lifecycle:lifecycle-runtime:2.7.0")
+        force("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+        force("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
+        force("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+        force("androidx.lifecycle:lifecycle-process:2.7.0")
         force("androidx.collection:collection:1.4.0")
         force("androidx.collection:collection-ktx:1.4.0")
         force("androidx.collection:collection-jvm:1.4.0")
@@ -127,7 +173,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("androidx.lifecycle:lifecycle-process:2.7.0")
-    implementation("androidx.webkit:webkit:1.14.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
@@ -145,7 +190,7 @@ dependencies {
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     implementation("org.msgpack:msgpack-core:0.9.11")
 
-    implementation(platform("com.walletconnect:android-bom:1.35.2"))
-    implementation("com.walletconnect:android-core")
-    implementation("com.walletconnect:web3wallet")
+    implementation(platform("com.reown:android-bom:1.4.1"))
+    implementation("com.reown:android-core")
+    implementation("com.reown:walletkit")
 }

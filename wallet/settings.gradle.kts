@@ -16,7 +16,12 @@ dependencyResolutionManagement {
         mavenLocal()
         maven("https://jitpack.io")
         maven("https://maven.aliyun.com/repository/google")
-        maven("https://maven.aliyun.com/repository/central")
+        maven("https://maven.aliyun.com/repository/central") {
+            content {
+                excludeGroupByRegex("com\\.reown(\\..*)?")
+                excludeGroupByRegex("com\\.walletconnect(\\..*)?")
+            }
+        }
         google()
         mavenCentral()
     }

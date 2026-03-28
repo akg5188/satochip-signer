@@ -17,7 +17,8 @@ object WalletStorage {
     private const val KEY_EVM_DERIVATION_PATH = "evm_derivation_path"
     private const val KEY_CONTACTS = "contacts"
     private const val KEY_ACTIVITY = "activity"
-    private const val KEY_HYPERLIQUID_AGENTS = "hyperliquid_agents"
+    private const val KEY_TRUSTED_DAPP_HOSTS = "trusted_dapp_hosts"
+    private const val LEGACY_KEY_HYPERLIQUID_AGENTS = "hyperliquid_agents"
     private const val KEY_BITCOIN_WATCH_ACCOUNTS = "bitcoin_watch_accounts"
 
     fun openSecurePreferences(context: Context): SharedPreferences {
@@ -33,7 +34,7 @@ object WalletStorage {
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
         migrateLegacyPrefs(appContext, securePrefs)
-        securePrefs.edit().remove(KEY_HYPERLIQUID_AGENTS).apply()
+        securePrefs.edit().remove(LEGACY_KEY_HYPERLIQUID_AGENTS).apply()
         return securePrefs
     }
 
@@ -60,6 +61,9 @@ object WalletStorage {
         }
         if (legacyPrefs.contains(KEY_ACTIVITY)) {
             editor.putString(KEY_ACTIVITY, legacyPrefs.getString(KEY_ACTIVITY, null))
+        }
+        if (legacyPrefs.contains(KEY_TRUSTED_DAPP_HOSTS)) {
+            editor.putString(KEY_TRUSTED_DAPP_HOSTS, legacyPrefs.getString(KEY_TRUSTED_DAPP_HOSTS, null))
         }
         if (legacyPrefs.contains(KEY_BITCOIN_WATCH_ACCOUNTS)) {
             editor.putString(KEY_BITCOIN_WATCH_ACCOUNTS, legacyPrefs.getString(KEY_BITCOIN_WATCH_ACCOUNTS, null))
@@ -208,6 +212,76 @@ object WalletStorage {
         prefs.edit().putString(KEY_ACTIVITY, array.toString()).apply()
     }
 
+    fun readTrustedDappEntries(
+        prefs: SharedPreferences,
+        defaultChainId: Long,
+        defaultAddress: String,
+        normalizer: (String?) -> String?,
+    ): List<TrustedDappEntry> {
+        val raw = prefs.getString(KEY_TRUSTED_DAPP_HOSTS, null)
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            buildList {
+                val array = JSONArray(raw)
+                for (index in 0 until array.length()) {
+                    when (val item = array.opt(index)) {
+                        is String -> {
+                            val host = item.trim().lowercase()
+                            val address = normalizer(defaultAddress).orEmpty()
+                            if (host.isNotBlank() && address.isNotBlank()) {
+                                add(
+                                    TrustedDappEntry(
+                                        host = host,
+                                        chainId = defaultChainId,
+                                        address = address,
+                                        trustedAt = 0L,
+                                    )
+                                )
+                            }
+                        }
+
+                        is JSONObject -> {
+                            val host = item.optString("host").trim().lowercase()
+                            val chainId = item.optLong("chainId", defaultChainId)
+                            val address = normalizer(item.optString("address")).orEmpty()
+                            if (host.isNotBlank() && chainId > 0L && address.isNotBlank()) {
+                                add(
+                                    TrustedDappEntry(
+                                        host = host,
+                                        chainId = chainId,
+                                        address = address,
+                                        trustedAt = item.optLong("trustedAt", 0L),
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }.distinctBy { "${it.host}|${it.chainId}|${it.address.lowercase()}" }
+        }.getOrDefault(emptyList())
+    }
+
+    fun writeTrustedDappEntries(prefs: SharedPreferences, entries: List<TrustedDappEntry>) {
+        val array = JSONArray().apply {
+            entries.mapNotNull { entry ->
+                val host = entry.host.trim().lowercase()
+                val address = entry.address.trim()
+                if (host.isBlank() || address.isBlank() || entry.chainId <= 0L) {
+                    null
+                } else {
+                    JSONObject().apply {
+                        put("host", host)
+                        put("chainId", entry.chainId)
+                        put("address", address)
+                        put("trustedAt", entry.trustedAt)
+                    }
+                }
+            }.distinctBy { "${it.optString("host")}|${it.optLong("chainId")}|${it.optString("address").lowercase()}" }
+                .forEach(::put)
+        }
+        prefs.edit().putString(KEY_TRUSTED_DAPP_HOSTS, array.toString()).apply()
+    }
+
     fun readBitcoinWatchAccounts(prefs: SharedPreferences): List<BitcoinWatchAccount> {
         val raw = prefs.getString(KEY_BITCOIN_WATCH_ACCOUNTS, null)
         if (raw.isNullOrBlank()) return emptyList()
@@ -316,48 +390,4 @@ object WalletStorage {
         prefs.edit().putString(KEY_BITCOIN_WATCH_ACCOUNTS, array.toString()).apply()
     }
 
-    fun readHyperliquidAgents(prefs: SharedPreferences, normalizer: (String?) -> String?): List<HyperliquidAgentRecord> {
-        val raw = prefs.getString(KEY_HYPERLIQUID_AGENTS, null)
-        if (raw.isNullOrBlank()) return emptyList()
-        return runCatching {
-            buildList {
-                val array = JSONArray(raw)
-                for (index in 0 until array.length()) {
-                    val obj = array.optJSONObject(index) ?: continue
-                    val accountAddress = normalizer(obj.optString("accountAddress")) ?: continue
-                    val agentAddress = normalizer(obj.optString("agentAddress")) ?: continue
-                    val privateKeyHex = obj.optString("privateKeyHex").removePrefix("0x")
-                    if (privateKeyHex.length != 64) continue
-                    add(
-                        HyperliquidAgentRecord(
-                            accountAddress = accountAddress,
-                            agentAddress = agentAddress,
-                            privateKeyHex = privateKeyHex,
-                            agentName = obj.optString("agentName").ifBlank { "satochip" },
-                            approvedAt = obj.optLong("approvedAt"),
-                            validUntil = obj.optLong("validUntil").takeIf { obj.has("validUntil") && it > 0 },
-                        )
-                    )
-                }
-            }
-        }.getOrDefault(emptyList())
-    }
-
-    fun writeHyperliquidAgents(prefs: SharedPreferences, agents: Collection<HyperliquidAgentRecord>) {
-        val array = JSONArray().apply {
-            agents.sortedByDescending { it.approvedAt }.forEach { agent ->
-                put(
-                    JSONObject().apply {
-                        put("accountAddress", agent.accountAddress)
-                        put("agentAddress", agent.agentAddress)
-                        put("privateKeyHex", agent.privateKeyHex)
-                        put("agentName", agent.agentName)
-                        put("approvedAt", agent.approvedAt)
-                        agent.validUntil?.let { put("validUntil", it) }
-                    }
-                )
-            }
-        }
-        prefs.edit().putString(KEY_HYPERLIQUID_AGENTS, array.toString()).apply()
-    }
 }

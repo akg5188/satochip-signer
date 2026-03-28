@@ -100,11 +100,13 @@ private data class BitcoinCoinSelection(
 )
 
 object BitcoinTransferService {
-    private val client = OkHttpClient.Builder()
-        .callTimeout(20, TimeUnit.SECONDS)
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .build()
+    private val allowedHosts = setOf("blockstream.info")
+    private val client = TrustedNetwork.newPinnedClient(
+        OkHttpClient.Builder()
+            .callTimeout(20, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+    ).build()
 
     suspend fun syncAccount(account: BitcoinWatchAccount): BitcoinAccountSnapshot = withContext(Dispatchers.IO) {
         val receive = discoverBranch(account, branch = 0)
@@ -200,8 +202,7 @@ object BitcoinTransferService {
     }
 
     suspend fun broadcastTransaction(prefix: String, txHex: String): String = withContext(Dispatchers.IO) {
-        val request = Request.Builder()
-            .url("${bitcoinEsploraBaseUrl(prefix)}/tx")
+        val request = TrustedNetwork.requestBuilder("${bitcoinEsploraBaseUrl(prefix)}/tx", allowedHosts)
             .post(txHex.trim().toRequestBody("text/plain; charset=utf-8".toMediaType()))
             .build()
         client.newCall(request).execute().use { response ->
@@ -478,7 +479,7 @@ object BitcoinTransferService {
     }
 
     private suspend fun fetchText(url: String): String {
-        val request = Request.Builder().url(url).build()
+        val request = TrustedNetwork.requestBuilder(url, allowedHosts).build()
         return client.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             require(response.isSuccessful) { body.ifBlank { "请求失败 (${response.code})" } }

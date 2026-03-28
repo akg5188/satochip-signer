@@ -2,7 +2,6 @@
 <resources>
     <string name="app_name">Satochip 钱包</string>
     <string name="brand_name">Satochip</string>
-    <string name="hyperliquid_name">Hyperliquid</string>
     <string name="scan_title_default">扫码</string>
     <string name="scan_title_request">扫描 DApp 请求</string>
     <string name="scan_title_response">扫描树莓派结果</string>

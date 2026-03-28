@@ -9,3 +9,7 @@
 -dontwarn java.util.logging.Level
 -dontwarn java.util.logging.Logger
 -dontwarn org.slf4j.impl.StaticLoggerBinder
+
+# Reown WalletKit reflects over its model classes; keep them stable in release.
+-keep class com.reown.walletkit.client.Wallet$Model { *; }
+-keep class com.reown.walletkit.client.Wallet { *; }

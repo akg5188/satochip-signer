@@ -40,17 +40,6 @@ object WalletConnectRequestCodec {
                 WalletConnectPreparedRequest.ImmediateResult(activeChain.chainIdHex)
             }
 
-            "wallet_switchethereumchain", "wallet_addethereumchain" -> {
-                val requestedChainId = parseRequestedChainId(request.params)
-                    ?: throw IllegalArgumentException("未提供目标链 ID")
-                val chain = WalletChains.byId(requestedChainId)
-                    ?: throw IllegalArgumentException("当前不支持链 $requestedChainId")
-                WalletConnectPreparedRequest.ImmediateResult(
-                    result = null,
-                    switchToChainId = chain.chainId,
-                )
-            }
-
             "eth_sendtransaction" -> prepareSendTransaction(
                 request = request,
                 selectedAddress = selectedAddress,
@@ -67,7 +56,7 @@ object WalletConnectRequestCodec {
                 title = "WalletConnect 交易签名",
                 responseType = PendingResponseType.RETURN_RAW_TRANSACTION,
             )
-            "personal_sign", "eth_sign" -> preparePersonalSign(request, selectedAddress, activeChainId, derivationPath)
+            "personal_sign" -> preparePersonalSign(request, selectedAddress, activeChainId, derivationPath)
             "eth_signtypeddata", "eth_signtypeddata_v3", "eth_signtypeddata_v4" ->
                 prepareTypedDataSign(request, selectedAddress, activeChainId, derivationPath)
             else -> throw IllegalArgumentException("暂不支持的 WalletConnect 方法: ${request.method}")
@@ -90,15 +79,20 @@ object WalletConnectRequestCodec {
         require(from.equals(selectedAddress, ignoreCase = true)) { "请求地址与当前观察地址不一致" }
 
         val chain = resolveChain(
-            parseChainIdValue(tx.opt("chainId")) ?: parseChainIdValue(request.chainId),
             activeChainId,
+            parseChainIdValue(request.chainId),
+            parseChainIdValue(tx.opt("chainId")),
         )
 
         val to = tx.optString("to").takeIf { it.isNotBlank() }
             ?: throw IllegalArgumentException("eth_sendTransaction 缺少 to 地址")
+        require(isLikelyEvmAddress(to)) { "eth_sendTransaction 的 to 地址格式错误" }
         val value = parseBigInt(tx.opt("value"))
+        require(value.signum() >= 0) { "交易金额不能为负数" }
         val data = tx.optString("data").ifBlank { tx.optString("input").ifBlank { "0x" } }
+        require(isValidHexPayload(data)) { "交易 data 字段不是有效十六进制" }
         val nonce = parseBigIntOrNull(tx.opt("nonce")) ?: EvmRpc.getNonce(chain, from)
+        require(nonce.signum() >= 0) { "交易 nonce 不能为负数" }
 
         val estimateMap = linkedMapOf<String, String>()
         estimateMap["from"] = from
@@ -109,6 +103,7 @@ object WalletConnectRequestCodec {
         val gasLimit = parseBigIntOrNull(tx.opt("gas"))
             ?: parseBigIntOrNull(tx.opt("gasLimit"))
             ?: EvmRpc.estimateGas(chain, estimateMap)
+        require(gasLimit.signum() >= 0) { "Gas Limit 不能为负数" }
 
         val explicitType = tx.opt("type")
         val has1559 = tx.has("maxFeePerGas") || tx.has("maxPriorityFeePerGas")
@@ -123,6 +118,7 @@ object WalletConnectRequestCodec {
         } else {
             null
         }
+        gasPrice?.let { require(it.signum() >= 0) { "Gas Price 不能为负数" } }
 
         val (fallbackPriority, fallbackMaxFee) = if (type == 2) {
             EvmRpc.getBlockGasParams(chain)
@@ -140,6 +136,8 @@ object WalletConnectRequestCodec {
         } else {
             null
         }
+        maxPriority?.let { require(it.signum() >= 0) { "Priority Fee 不能为负数" } }
+        maxFee?.let { require(it.signum() >= 0) { "Max Fee 不能为负数" } }
 
         val payload = TpRequestBuilder.buildSignTransactionRequest(
             fromAddress = from,
@@ -190,7 +188,7 @@ object WalletConnectRequestCodec {
             isLikelyEvmAddress(second) -> first
             else -> first
         }
-        val chain = resolveChain(parseChainIdValue(request.chainId), activeChainId)
+        val chain = resolveChain(activeChainId, parseChainIdValue(request.chainId))
         val payload = TpRequestBuilder.buildPersonalSignRequest(
             address = selectedAddress,
             message = message,
@@ -237,8 +235,9 @@ object WalletConnectRequestCodec {
             parsed.jsonObject["domain"]?.jsonObject?.get("chainId")?.jsonPrimitive?.content
         }.getOrNull()
         val chain = resolveChain(
-            parseChainIdValue(request.chainId) ?: parseChainIdValue(typedChainId),
             activeChainId,
+            parseChainIdValue(request.chainId),
+            parseChainIdValue(typedChainId),
         )
 
         val payload = TpRequestBuilder.buildSignTypedDataRequest(
@@ -256,16 +255,14 @@ object WalletConnectRequestCodec {
         )
     }
 
-    private fun resolveChain(explicitChainId: Long?, activeChainId: Long): WalletChain {
-        val target = explicitChainId ?: activeChainId
-        return WalletChains.byId(target) ?: throw IllegalArgumentException("当前不支持链 $target")
-    }
-
-    private fun parseRequestedChainId(params: String): Long? {
-        val array = JSONArray(params)
-        if (array.length() == 0) return null
-        val obj = array.optJSONObject(0) ?: return null
-        return parseChainIdValue(obj.opt("chainId"))
+    private fun resolveChain(activeChainId: Long, vararg requestedChainIds: Long?): WalletChain {
+        val explicitChainIds = requestedChainIds.filterNotNull().distinct()
+        require(explicitChainIds.size <= 1) { "DApp 请求链信息不一致，请重新确认后再重试" }
+        val explicitChainId = explicitChainIds.singleOrNull()
+        if (explicitChainId != null && explicitChainId != activeChainId) {
+            throw IllegalArgumentException("DApp 请求的链与当前钱包所选链不一致，请先在钱包里手动切换到目标链后再重试")
+        }
+        return WalletChains.byId(activeChainId) ?: throw IllegalArgumentException("当前不支持链 $activeChainId")
     }
 
     private fun parseChainIdValue(value: Any?): Long? {
@@ -338,5 +335,10 @@ object WalletConnectRequestCodec {
     private fun isEmptyHex(value: String): Boolean {
         val clean = value.removePrefix("0x").removePrefix("0X")
         return clean.isBlank()
+    }
+
+    private fun isValidHexPayload(value: String): Boolean {
+        val clean = value.trim().removePrefix("0x").removePrefix("0X")
+        return clean.length % 2 == 0 && clean.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
     }
 }
