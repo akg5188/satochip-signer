@@ -1,111 +1,109 @@
-# Satochip Arbitrum Wallet (Android)
+# Satochip High-Security Watch Wallet (Android)
 
-这是仓库里的“独立钱包 APK”对应源码。
+这是仓库里 `wallet/` 目录对应的安卓观察钱包源码。
 
-如果你要找的是“给 TP 商业钱包扫码签名用的中转 APK”，不要看这个目录，请回到仓库根目录看：
+如果你要找的是整仓库其他模块，比如树莓派离线签名器、系统镜像或主仓库级发布脚本，不要只看这里，请回到仓库根目录：
 
 - [仓库首页说明](../README.md)
 
-这是一个给树莓派离线签名器配套使用的安卓观察钱包。
+当前这版 `wallet` 的定位已经固定为：
 
-当前这版的定位很明确：
+- `Arbitrum One` 高安全观察钱包
+- 手机端 DApp / WalletConnect 协调器
+- 树莓派离线签名请求二维码生成器
+- 树莓派签名结果回传后的人工确认广播器
+- `BTC` 观察账户原型入口
 
-- 只支持 `Arbitrum One`
-- 手机里不保存私钥
-- 负责看资产、发起转账、展示签名二维码、接收树莓派签名结果
-- 内置 `Hyperliquid` 官方网页，并通过注入钱包完成连接和签名
-- 支持指纹解锁启动
-- 已带一个 `BTC` 观察钱包原型：可导入 `xpub / ypub / zpub` 并派生收款/找零地址预览
+它不是热钱包，也不在手机里保存私钥。
 
 ## 现在能做什么
 
-- 添加多个观察地址，并切换当前地址
-- 查看 `ETH / USDC / USDT` 余额和美元估值
-- 构造转账请求，生成给树莓派扫描的动态二维码
-- 扫描树莓派签名结果并广播交易
-- 扫描外部 DApp / WalletConnect / 二维码签名请求
-- 在内置 `Hyperliquid` 页面里连接 `Satochip Wallet`
-- 导入 `BTC` 观察账户并查看地址预览
+- 添加多个 `EVM` 观察地址并切换当前地址
+- 查看 `Arbitrum One` 上的 `ETH / USDC / USDT` 余额和美元估值
+- 构造转账请求，生成给树莓派扫描的签名二维码
+- 扫描树莓派返回的签名结果，并在手机上人工确认后广播
+- 通过 `WalletConnect v2`、二维码或手动粘贴原始请求来协调 `DApp` 签名
+- 导入 `BTC xpub / ypub / zpub` 观察账户，并准备 `BTC` 转账冷签请求
+
+## 明确不做什么
+
+- 不内置 `Hyperliquid` 或其他 DApp 浏览器
+- 不在手机上保存私钥或直接热签名
+- 不自动信任所有 DApp
+- 不在锁屏后保留活跃 DApp 会话
+- 不自动从系统剪贴板读取敏感请求
+
+## 主要安全策略
+
+- 强制使用强生物识别进入钱包和执行关键动作
+- 如果检测到 `ADB / USB 调试`、开发者选项、`Root / Magisk / Hook`、`test-keys` 系统镜像、调试器连接，会阻止启动高安全界面
+- `WalletConnect` 只接受已验证、`HTTPS` 且主机合法的 DApp
+- DApp 信任范围按 `主机 + 链 + 地址` 绑定，并且 `24 小时` 过期
+- 手机锁屏或 App 退后台后，会主动清空敏感状态并断开 DApp 会话
+- 关键联网主机已做白名单和证书 pinning
 
 ## 文档入口
 
 - [用户使用教程](docs/使用教程.zh-CN.md)
 - [开发维护指南](docs/开发维护指南.zh-CN.md)
+- [固定构建与验包流程](docs/固定构建与验包流程.zh-CN.md)
 - [扩展到 BTC 与闪电网络方案](../docs/独立钱包扩展到BTC与闪电网络方案.zh-CN.md)
 - [安卓构建环境准备](../docs/安卓构建环境准备.zh-CN.md)
 
-## 直接下载 APK
+## 本地产物位置
 
-- 目标稳定文件名：`dist/satochip-wallet-release.apk`
-- 对应校验文件：`dist/satochip-wallet-release.apk.sha256`
-- 如果仓库里当前没有这两个文件，先执行标准构建脚本生成
+当前目录下的本地构建产物约定为：
 
-## 标准构建
+- `dist/satochip-wallet-release.apk`
+- `dist/satochip-wallet-release.apk.sha256`
+- `dist/satochip-wallet-release.build-info.txt`
 
-优先使用仓库根目录下的标准脚本：
+这些产物默认是本机构建快照，不会自动成为 GitHub Release 页面上的正式发布包。
+
+## 推荐构建方式
+
+优先使用仓库根目录的标准脚本：
 
 ```bash
 bash scripts/build_wallet_release.sh
 ```
 
-输出：
-
-```text
-dist/satochip-wallet-release.apk
-dist/satochip-wallet-release.apk.sha256
-```
-
-## 直接编译
-
-1. 复制配置文件
-
-```bash
-cp local.properties.example local.properties
-```
-
-2. 把 `local.properties` 里的 `sdk.dir` 改成你机器上的 Android SDK 路径
-
-3. 构建 release APK
-
-```bash
-./gradlew assembleRelease --console=plain
-```
-
-输出路径：
-
-```text
-app/build/outputs/apk/release/app-release.apk
-```
-
-## 英文路径构建脚本
-
-如果你的工程路径里有中文，或者 Gradle / Android SDK 在中文路径下不稳定，可以直接用：
+或者在 `wallet/` 目录下直接用：
 
 ```bash
 ./scripts/build_local_ascii.sh release
 ```
 
-输出路径：
-
-```text
-dist/satochip-wallet-release.apk
-dist/satochip-wallet-release.apk.sha256
-```
+如果工程路径有中文、空格或其他容易让 Gradle 出问题的字符，优先使用第二种，它会复制到纯英文临时路径再构建。
 
 ## 环境要求
 
-- JDK 17
-- Android SDK 34
-- Android Build Tools 35.0.0
-- Android 8.0 及以上设备
+- `JDK 17`
+- `Android SDK 34`
+- `Android Build Tools 35.0.0`
+- Linux / Ubuntu 优先
 
-第一次换机器时，优先看：
+## 发布签名说明
 
-- [../docs/安卓构建环境准备.zh-CN.md](../docs/安卓构建环境准备.zh-CN.md)
+当前 `release` 构建已经禁止回退到 `debug` 签名。
 
-## 当前说明
+这意味着：
 
-- 当前 release APK 使用调试签名，适合你自己安装、备份和继续维护
-- 如果以后换机器、换用户或调试 keystore 变化，覆盖安装旧包可能失败，需要先卸载再装
-- 如果以后要正式分发或上架，再换成你自己的正式 keystore
-- `wallet/` 目录里已经提供 `keystore.properties.example`
+- 你必须准备 `wallet/keystore.properties`
+- 例子见 `wallet/keystore.properties.example`
+- 以后想让新包覆盖旧包，必须一直使用同一套长期保存的发布 keystore
+
+如果换机器、换 keystore 或把 keystore 弄丢，后续新包会无法覆盖安装旧包。
+
+## 让下次编译保持稳定的关键点
+
+以后只要同时固定下面 4 件事，结果就会稳定很多：
+
+1. 固定源码提交
+2. 固定 `JDK / SDK / Build Tools` 版本
+3. 固定构建命令
+4. 固定同一套发布 keystore
+
+具体操作请直接看：
+
+- [固定构建与验包流程](docs/固定构建与验包流程.zh-CN.md)
