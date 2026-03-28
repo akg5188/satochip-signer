@@ -310,6 +310,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         val account = _uiState.value.bitcoinWatchAccounts.firstOrNull { it.id == accountId }
             ?: return setError("未找到 BTC 观察账户")
+        _uiState.update {
+            it.copy(
+                requestTitle = "",
+                requestSummary = "",
+                transferInfo = "",
+                dappInfo = "",
+                relayHint = "",
+                preparedRequestChainId = null,
+                preparedBitcoinAccountId = null,
+                signQrPages = emptyList(),
+                signQrPageIndex = 0,
+                signQrBitmap = null,
+                pendingResponseType = null,
+                pendingBroadcastRawTransaction = "",
+                pendingBroadcastBitcoinTxHex = "",
+                requestInput = "",
+                lastSignature = "",
+                lastSignatureAddress = "",
+                error = "",
+                info = "正在准备 BTC 转账请求...",
+            )
+        }
         viewModelScope.launch {
             runCatching {
                 BitcoinTransferService.prepareTransfer(
@@ -366,6 +388,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         pendingResponseType = PendingResponseType.BROADCAST_BTC_TX,
                         preparedBitcoinAccountId = accountId,
                         preparedRequestChainId = null,
+                        pendingBroadcastRawTransaction = "",
+                        pendingBroadcastBitcoinTxHex = "",
+                        requestInput = "",
                         txHash = "",
                         txHashChainId = null,
                         txHashExplorerUrl = "",
@@ -902,6 +927,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 pendingResponseType = null,
                 pendingBroadcastRawTransaction = "",
                 pendingBroadcastBitcoinTxHex = "",
+                requestInput = "",
+                lastSignature = "",
+                lastSignatureAddress = "",
                 error = "",
                 info = "",
             )
@@ -924,6 +952,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         _uiState.update {
             it.copy(
+                signQrPages = emptyList(),
+                signQrPageIndex = 0,
+                signQrBitmap = null,
                 pendingBroadcastRawTransaction = "",
                 pendingBroadcastBitcoinTxHex = "",
                 preparedRequestChainId = null,
@@ -934,6 +965,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 dappInfo = "",
                 relayHint = "",
                 pendingResponseType = null,
+                lastSignature = "",
+                lastSignatureAddress = "",
                 info = "已取消广播",
                 error = "",
                 requestInput = "",
@@ -2007,16 +2040,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val txid = BitcoinTransferService.broadcastTransaction(account.prefix, txHex)
                 _uiState.update {
                     it.copy(
+                        signQrPages = emptyList(),
+                        signQrPageIndex = 0,
+                        signQrBitmap = null,
+                        pendingResponseType = null,
+                        pendingBroadcastRawTransaction = "",
                         pendingBroadcastBitcoinTxHex = "",
+                        preparedRequestChainId = null,
                         preparedBitcoinAccountId = null,
                         requestTitle = "",
                         requestSummary = "",
                         transferInfo = "",
                         dappInfo = "",
                         relayHint = "",
+                        requestInput = "",
                         txHash = txid,
                         txHashChainId = null,
                         txHashExplorerUrl = "${bitcoinEsploraBaseUrl(account.prefix).removeSuffix("/api")}/tx/$txid",
+                        lastSignature = "",
+                        lastSignatureAddress = "",
                         error = "",
                         info = "BTC 交易已广播：$txid",
                     )
