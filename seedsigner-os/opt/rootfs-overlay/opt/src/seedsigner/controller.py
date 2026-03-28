@@ -168,6 +168,7 @@ class Controller(Singleton):
     psbt: PSBT = None
     psbt_seed: Seed = None
     psbt_parser: PSBTParser = None
+    psbt_input_qr_type: str | None = None
     psbt_sign_with_satochip: bool = False
     psbt_from_microsd: bool = False
     psbt_microsd_save_path: Path | None = None
@@ -285,6 +286,7 @@ class Controller(Singleton):
         # Store one working psbt in memory
         controller.psbt = None
         controller.psbt_parser = None
+        controller.psbt_input_qr_type = None
         controller.psbt_sign_with_satochip = False
         controller.psbt_from_microsd = False
         controller.psbt_microsd_save_path = None
@@ -464,6 +466,7 @@ class Controller(Singleton):
                     self.address_explorer_data = None
                     self.psbt = None
                     self.psbt_parser = None
+                    self.psbt_input_qr_type = None
                     self.psbt_seed = None
                     self.psbt_sign_with_satochip = False
                     self.sign_message_with_satochip = False
@@ -632,6 +635,7 @@ class Controller(Singleton):
 
         self.psbt = None
         self.psbt_parser = None
+        self.psbt_input_qr_type = None
         self.psbt_seed = None
         self.psbt_sign_with_satochip = False
         self.sign_message_with_satochip = False

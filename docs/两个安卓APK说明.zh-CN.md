@@ -6,10 +6,11 @@
 
 文件：
 
-- `dist/tp-qr-relay-android-latest.apk`
-- `dist/tp-qr-relay-android-latest.apk.sha256`
-- `dist/tp-qr-relay-android-latest.build-info.txt`
-- GitHub Release：`tp-relay-android-20260318-1956`
+- 默认按需构建，不长期回填到仓库 `dist/`
+- 本地构建后产物：
+  `dist/tp-qr-relay-android-latest.apk`
+  `dist/tp-qr-relay-android-latest.apk.sha256`
+  `dist/tp-qr-relay-android-latest.build-info.txt`
 - 源码目录：`app/`
 - 标准构建命令：`bash scripts/build_tp_relay_apk.sh`
 

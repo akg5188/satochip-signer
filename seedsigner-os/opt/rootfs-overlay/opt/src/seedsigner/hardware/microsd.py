@@ -3,6 +3,7 @@ import os
 import time
 from pathlib import Path
 
+from seedsigner.helpers.hardening import allow_microsd_runtime
 from seedsigner.models.singleton import Singleton
 from seedsigner.models.threads import BaseThread
 
@@ -73,6 +74,8 @@ class MicroSD(Singleton, BaseThread):
         from seedsigner.models.settings import Settings  # Import here to avoid circular import issues
 
         if Settings.HOSTNAME == Settings.SEEDSIGNER_OS:
+            if not allow_microsd_runtime():
+                return False
             return os.path.exists(MicroSD.MOUNT_POINT)
         else:
             # Always True for Raspi OS
@@ -91,6 +94,9 @@ class MicroSD(Singleton, BaseThread):
         
         # explicitly only microsd add/remove detection in seedsigner-os
         if Settings.HOSTNAME == Settings.SEEDSIGNER_OS:
+            if not allow_microsd_runtime():
+                Settings.handle_microsd_state_change(action=MicroSD.ACTION__REMOVED)
+                return
 
             # at start-up, get current status and inform Settings
             Settings.handle_microsd_state_change(

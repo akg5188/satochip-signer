@@ -1,4 +1,5 @@
 import math
+import base64
 
 from embit import bip32
 from embit.networks import NETWORKS
@@ -13,6 +14,7 @@ from seedsigner.helpers.ur2.ur import UR
 from seedsigner.helpers.ur2.cbor_lite import CBOREncoder
 from urtypes.bytes import Bytes
 from seedsigner.helpers.qr import QR
+from seedsigner.helpers.base43 import base43_encode
 from seedsigner.models.seed import Seed
 from seedsigner.models.settings import SettingsConstants
 
@@ -395,6 +397,46 @@ class UrPsbtQrEncoder(BaseFountainQrEncoder):
         super().__post_init__()
         qr_ur_bytes = UR("crypto-psbt", UR_PSBT(self.psbt.serialize()).to_cbor())
         self.ur2_encode = UREncoder(ur=qr_ur_bytes, max_fragment_len=self.qr_max_fragment_size)
+
+
+@dataclass
+class Base64PsbtQrEncoder(BaseStaticQrEncoder):
+    psbt: PSBT = None
+
+    def next_part(self):
+        return base64.b64encode(self.psbt.serialize()).decode("ascii")
+
+
+@dataclass
+class Base43PsbtQrEncoder(BaseStaticQrEncoder):
+    psbt: PSBT = None
+
+    def next_part(self):
+        return base43_encode(self.psbt.serialize())
+
+
+@dataclass
+class SpecterPsbtQrEncoder(BaseSimpleAnimatedQREncoder):
+    psbt: PSBT = None
+
+    @property
+    def qr_max_fragment_size(self):
+        density_mapping = {
+            SettingsConstants.DENSITY__LOW: 40,
+            SettingsConstants.DENSITY__MEDIUM: 65,
+            SettingsConstants.DENSITY__HIGH: 90,
+        }
+        return density_mapping.get(self.qr_density, 65)
+
+    def _create_parts(self):
+        base64_psbt = base64.b64encode(self.psbt.serialize()).decode("ascii")
+        qr_cnt = max(1, ((len(base64_psbt) - 1) // self.qr_max_fragment_size) + 1)
+
+        for index in range(qr_cnt):
+            start = index * self.qr_max_fragment_size
+            stop = start + self.qr_max_fragment_size
+            part = base64_psbt[start:stop]
+            self.parts.append(f"p{index + 1}of{qr_cnt} {part}")
 
 
 @dataclass

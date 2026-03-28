@@ -151,6 +151,7 @@ class ScanView(View):
                 psbt = self.decoder.get_psbt()
                 self.controller.psbt = psbt
                 self.controller.psbt_parser = None
+                self.controller.psbt_input_qr_type = self.decoder.qr_type
                 return Destination(PSBTSelectSeedView, skip_current_view=True)
 
             elif self.decoder.is_settings:

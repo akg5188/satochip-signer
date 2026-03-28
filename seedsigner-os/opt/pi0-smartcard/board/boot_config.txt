@@ -20,3 +20,7 @@ force_turbo=1
 
 # Enable I2C
 dtparam=i2c1=on
+
+# Disable onboard radios on Pi Zero W/2W class boards.
+dtoverlay=disable-wifi
+dtoverlay=disable-bt

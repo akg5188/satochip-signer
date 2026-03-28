@@ -203,8 +203,10 @@ build_image() {
 
   # Meson/pkgconf breaks on non-ASCII sysroot paths. Expose stable ASCII aliases
   # so generated cross-compilation files never point at the Chinese workspace path.
-  meson_host_dir=$(PATH="/usr/lib/ccache:${PATH}" make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ printvars VARS='HOST_DIR' QUOTED_VARS=YES | sed -n "s/^HOST_DIR='\\(.*\\)'$/\\1/p")
-  meson_staging_dir=$(PATH="/usr/lib/ccache:${PATH}" make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ printvars VARS='STAGING_DIR' QUOTED_VARS=YES | sed -n "s/^STAGING_DIR='\\(.*\\)'$/\\1/p")
+  # Buildroot's printvars can hang in some host environments. These paths are
+  # stable for out-of-tree builds, so prefer the canonical O= layout directly.
+  meson_host_dir="${build_dir}/host"
+  meson_staging_dir="${build_dir}/staging"
   meson_alias_base="/tmp/seedsigner-meson-${config_name}"
   meson_host_alias="${meson_alias_base}-host"
   meson_staging_alias="${meson_alias_base}-staging"

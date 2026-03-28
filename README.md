@@ -17,7 +17,7 @@
 
 | 现在要做的事 | 去哪个目录 | 看哪份说明 | 下载入口 |
 | --- | --- | --- | --- |
-| 给 `TokenPocket` 商业钱包做签名中转 | `app/` | [app/README.md](app/README.md) | [TP 签名中转 Release](https://github.com/akg5188/tp-satochip-signer/releases/tag/tp-relay-android-20260318-1956) |
+| 给 `TokenPocket` 商业钱包做签名中转 | `app/` | [app/README.md](app/README.md) | 对应 Release，或本地执行 `bash scripts/build_tp_relay_apk.sh` 现编 |
 | 用独立钱包看资产、转账、连 `Hyperliquid` | `wallet/` | [wallet/README.md](wallet/README.md) | 对应 Release，或本地执行 `bash scripts/build_wallet_release.sh` 生成 `dist/satochip-wallet-release.apk` |
 | 给 `J3R180` 卡设置 `PIN` 和助记词 | `backups/satochip-utils/` | [Tails 离线使用教程](backups/satochip-utils/Tails-离线使用教程.zh-CN.md) | 本仓库离线备份 |
 | 下载或写入 `J3R180` 卡固件 | `card-applet/` | [card-applet 中文说明](card-applet/README.zh-CN.md) | [卡固件 Release](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318) |
@@ -27,7 +27,7 @@
 
 | 内容 | 文件名 | 推荐下载位置 | 仓库内稳定备份 |
 | --- | --- | --- | --- |
-| TP 签名中转安卓 APK | `tp-qr-relay-android-latest.apk` | 仓库里的稳定文件名 `dist/tp-qr-relay-android-latest.apk` | `dist/tp-qr-relay-android-latest.apk` |
+| TP 签名中转安卓 APK | `tp-qr-relay-android-latest.apk` | 对应 Release，或本地执行 `bash scripts/build_tp_relay_apk.sh` 现编 | 默认不回填到 `dist/` 快照 |
 | 独立钱包安卓 APK | `satochip-wallet-release.apk` | 对应 Release，或本地生成后回填 `dist/satochip-wallet-release.apk` | `dist/satochip-wallet-release.apk` |
 | `J3R180` 卡固件 | `SatoChip-3.0.4.cap` | [j3r180-card-firmware-20260318](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318) | `card-applet/prebuilt/SatoChip-3.0.4.cap` |
 | 树莓派固件 | `system-update-latest.img.xz` | 仓库里的稳定文件名 `dist/system-update-latest.img.xz` | `dist/system-update-latest.img.xz` |
@@ -86,6 +86,7 @@ bash scripts/build_tp_relay_apk.sh
 ```text
 dist/tp-qr-relay-android-latest.apk
 dist/tp-qr-relay-android-latest.apk.sha256
+dist/tp-qr-relay-android-latest.build-info.txt
 ```
 
 ### 重新生成树莓派运行时镜像

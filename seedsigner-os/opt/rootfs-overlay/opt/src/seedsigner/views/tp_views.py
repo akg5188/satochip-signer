@@ -13,9 +13,10 @@ from embit.networks import NETWORKS
 from gettext import gettext as _
 
 from seedsigner.gui.components import GUIConstants
-from seedsigner.gui.screens import RET_CODE__BACK_BUTTON, ButtonListScreen, WarningScreen, LargeIconStatusScreen, seed_screens
+from seedsigner.gui.screens import RET_CODE__BACK_BUTTON, RET_CODE__POWER_BUTTON, ButtonListScreen, WarningScreen, LargeIconStatusScreen, seed_screens
 from seedsigner.gui.screens.scan_screens import ScanScreen
 from seedsigner.gui.screens.screen import ButtonOption, LoadingScreenThread, QRDisplayScreen
+from seedsigner.helpers.iso7816 import format_sw_error
 from seedsigner.gui.screens.tools_screens import ToolsFormattedTextScreen, ToolsTextQRTextEntryScreen
 from seedsigner.helpers.tp_fragment import FragmentParseError, MultiFragmentAssembler, parse_tp_multi_fragment
 from seedsigner.helpers.tp_relay import RelayAssembler, RelayParseError, parse_tp_relay_fragment
@@ -44,6 +45,12 @@ from .view import Destination, ErrorView, View
 
 DEFAULT_DERIVATION_PATH = "m/44'/60'/0'/0/0"
 DEFAULT_BTC_ADDRESS_PATH = "m/84'/0'/0'/0/0"
+DEFAULT_SCREENSAVER_MS = 2 * 60 * 1000
+TP_MODE_SCREENSAVER_MS = 10 * 365 * 24 * 60 * 60 * 1000
+TP_BTC_XPUB_EXPORTS = {
+    "xpub": ("m/44'/0'/0'", "standard"),
+    "zpub": ("m/84'/0'/0'", "p2wpkh"),
+}
 DEFAULT_READER_HINT = None
 CAMO_BUTTON_TEXT = " "
 CAMO_TEXT = " "
@@ -456,7 +463,27 @@ def _extract_xpub_from_output(stdout: str, xtype: str) -> str:
     raise ValueError("未从输出中解析到扩展公钥")
 
 
+def _set_runtime_mode(tp_only: bool) -> None:
+    from seedsigner.controller import Controller
+
+    os.environ["TP_ONLY_MODE"] = "1" if tp_only else "0"
+
+    controller = Controller.get_instance()
+    controller.screensaver_activation_ms = (
+        TP_MODE_SCREENSAVER_MS if tp_only else DEFAULT_SCREENSAVER_MS
+    )
+    controller.reset_screensaver_timeout()
+
+
+def _official_home_destination() -> Destination:
+    from seedsigner.views.view import MainMenuView
+
+    _set_runtime_mode(False)
+    return Destination(MainMenuView, clear_history=True)
+
+
 def _tp_home_destination() -> Destination:
+    _set_runtime_mode(True)
     return Destination(ToolsTpHomeView, clear_history=True)
 
 
@@ -677,12 +704,37 @@ def _build_bip39_index_report(raw_index: str) -> str:
     )
 
 
+class ModeSelectView(View):
+    TP_MODE = ButtonOption("TP / Satochip")
+    OFFICIAL_MODE = ButtonOption("官方 SeedSigner")
+
+    def run(self):
+        from seedsigner.views.view import PowerOptionsView
+
+        button_data = [self.TP_MODE, self.OFFICIAL_MODE]
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="选择模式",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__POWER_BUTTON:
+            return Destination(PowerOptionsView)
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(ModeSelectView, clear_history=True)
+        if button_data[selected_menu_num] == self.OFFICIAL_MODE:
+            return _official_home_destination()
+        return _tp_home_destination()
+
+
 def _operator_display_label(operator: str) -> str:
     return OPERATOR_LABELS.get(operator, operator)
 
 
 class ToolsTpHomeView(View):
     SCAN = ButtonOption("扫码签名")
+    OFFICIAL_MODE = ButtonOption("官方模式")
     EXPORT_BTC_ZPUB = ButtonOption("导出 BTC zpub")
     EXPORT_BTC_XPUB = ButtonOption("导出 BTC xpub")
     SEED_TOOLS = ButtonOption("助记词工具")
@@ -691,6 +743,7 @@ class ToolsTpHomeView(View):
     def run(self):
         button_data = [
             self.SCAN,
+            self.OFFICIAL_MODE,
             self.EXPORT_BTC_ZPUB,
             self.EXPORT_BTC_XPUB,
             self.SEED_TOOLS,
@@ -709,6 +762,8 @@ class ToolsTpHomeView(View):
 
         if button_data[selected_menu_num] == self.SCAN:
             return Destination(ToolsTpSignerScanView)
+        if button_data[selected_menu_num] == self.OFFICIAL_MODE:
+            return _official_home_destination()
         if button_data[selected_menu_num] == self.EXPORT_BTC_ZPUB:
             return Destination(ToolsTpBtcXpubPinEntryView, view_args=dict(xtype="zpub"))
         if button_data[selected_menu_num] == self.EXPORT_BTC_XPUB:
@@ -1861,44 +1916,39 @@ class ToolsTpBtcXpubRunView(View):
         self.xtype = xtype
 
     def run(self):
-        signer_bin = _resolve_signer_bin()
-        if not signer_bin.is_file():
-            return _masked_error_destination("31")
+        export_profile = TP_BTC_XPUB_EXPORTS.get(self.xtype.strip().lower())
+        if export_profile is None:
+            return _debug_error_destination("32", f"unsupported xpub type: {self.xtype}")
 
-        loading = LoadingScreenThread(text="")
+        derivation_path, card_xtype = export_profile
+        connector = seedkeeper_utils.init_satochip(
+            self,
+            init_card_filter=["satochip"],
+            require_pin=False,
+        )
+        if not connector:
+            return _tp_home_destination()
+
+        loading = LoadingScreenThread(text="Verifying PIN")
         loading.start()
         try:
-            cmd = [
-                str(signer_bin),
-                "get-xpub",
-                "--pin",
-                self.pin,
-                "--xtype",
-                self.xtype,
-                "--timeout-sec",
-                "120",
-            ]
-            if DEFAULT_READER_HINT:
-                cmd.extend(["--reader", DEFAULT_READER_HINT])
+            connector.set_pin(0, list(self.pin.encode("utf-8")))
+            _response, sw1, sw2 = connector.card_verify_PIN()
+            if sw1 != 0x90 or sw2 != 0x00:
+                return _debug_error_destination("45", format_sw_error(sw1, sw2))
+        except Exception as exc:
+            logger.exception("TP BTC xpub PIN verify failed")
+            return _debug_error_destination("45", str(exc))
+        finally:
+            loading.stop()
 
-            proc = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                timeout=150,
-            )
-            if proc.returncode != 0:
-                detail = _extract_error(proc.stdout, proc.stderr, "get-xpub failed")
-                code = _map_signer_error_code(detail)
-                return _masked_error_destination(code)
-
-            xpub_value = _extract_xpub_from_output(proc.stdout, self.xtype)
-        except subprocess.TimeoutExpired:
-            return _masked_error_destination("34")
-        except Exception:
-            return _masked_error_destination("48")
+        loading = LoadingScreenThread(text="Exporting xpub...")
+        loading.start()
+        try:
+            xpub_value = connector.card_bip32_get_xpub(derivation_path, card_xtype, True)
+        except Exception as exc:
+            logger.exception("TP BTC xpub export failed")
+            return _debug_error_destination("53", str(exc))
         finally:
             loading.stop()
 

@@ -34,10 +34,11 @@ cp "${BASE_DIR}/images/bcm2708-rpi-zero.dtb" boot/
 cp "${BASE_DIR}/images/zImage" boot/zImage
 
 sed -i \
-  -e '/^dtoverlay=disable-wifi$/d' \
-  -e '/^dtoverlay=disable-bt$/d' \
   -e '/^dtoverlay=mmc$/d' \
   boot/config.txt
+
+grep -qxF 'dtoverlay=disable-wifi' boot/config.txt || echo 'dtoverlay=disable-wifi' >> boot/config.txt
+grep -qxF 'dtoverlay=disable-bt' boot/config.txt || echo 'dtoverlay=disable-bt' >> boot/config.txt
 
 while IFS= read -r overlay_name; do
   [ -n "${overlay_name}" ] || continue

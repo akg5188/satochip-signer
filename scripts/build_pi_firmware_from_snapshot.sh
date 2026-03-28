@@ -2,7 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RAW_IMG="$ROOT_DIR/seedsigner-os/images/seedsigner_os.dev_.pi0-smartcard.img"
+ASCII_BASE="${TP_ASCII_BASE:-$HOME/tp-signer-ascii}"
+ASCII_IMAGE_DIR="${TP_IMAGE_DIR:-$ASCII_BASE/images}"
+DEFAULT_RAW_IMG="$ASCII_IMAGE_DIR/seedsigner_os.dev_.pi0-smartcard.img"
+LEGACY_RAW_IMG="$ROOT_DIR/seedsigner-os/images/seedsigner_os.dev_.pi0-smartcard.img"
+RAW_IMG="${RAW_IMG:-$DEFAULT_RAW_IMG}"
 DIST_DIR="$ROOT_DIR/dist"
 DIST_IMG="${DIST_IMG:-$DIST_DIR/system-update-latest.img.xz}"
 DIST_SUM="${DIST_SUM:-$DIST_IMG.sha256}"
@@ -19,8 +23,12 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
 fi
 
 if [[ ! -f "$RAW_IMG" ]]; then
-  echo "Raw image not found: $RAW_IMG" >&2
-  exit 1
+  if [[ -f "$LEGACY_RAW_IMG" ]]; then
+    RAW_IMG="$LEGACY_RAW_IMG"
+  else
+    echo "Raw image not found: $RAW_IMG" >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -f "$SNAPSHOT_TIME_FILE" ]]; then
@@ -54,6 +62,15 @@ snapshot_tree_sha="$(
 )"
 nfc_bindings_sha="$(sha256sum "$NFC_BINDINGS_FILE" | awk '{print $1}')"
 
+raw_image_path="$RAW_IMG"
+if [[ "$RAW_IMG" == "$ROOT_DIR/"* ]]; then
+  raw_image_path="${RAW_IMG#$ROOT_DIR/}"
+elif [[ "$RAW_IMG" == "$ASCII_BASE/"* ]]; then
+  raw_image_path="TP_ASCII_BASE/${RAW_IMG#$ASCII_BASE/}"
+elif [[ "$RAW_IMG" == "$HOME/"* ]]; then
+  raw_image_path="HOME/${RAW_IMG#$HOME/}"
+fi
+
 tmp_img="$(mktemp "$DIST_DIR/.system-update-latest.img.xz.XXXXXX")"
 ionice -c3 nice -n 19 xz -T"$XZ_THREADS" -9 -c "$RAW_IMG" > "$tmp_img"
 mv "$tmp_img" "$DIST_IMG"
@@ -63,7 +80,7 @@ printf '%s  %s\n' "$dist_sha" "$(basename "$DIST_IMG")" > "$DIST_SUM"
 
 cat > "$DIST_INFO" <<EOF
 source_snapshot_build_commit_time=$snapshot_time
-raw_image_path=seedsigner-os/images/$(basename "$RAW_IMG")
+raw_image_path=$raw_image_path
 raw_image_sha256=$raw_sha
 compressed_image_path=dist/$(basename "$DIST_IMG")
 compressed_image_sha256=$dist_sha

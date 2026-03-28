@@ -112,7 +112,8 @@ check_pi_firmware_artifact \
   "$ROOT_DIR/dist/system-update-latest.img.xz.sha256" \
   "$ROOT_DIR/dist/system-update-latest.build-info.txt"
 
-check_artifact \
+check_optional_artifact \
+  "TP relay APK" \
   "$ROOT_DIR/dist/tp-qr-relay-android-latest.apk" \
   "$ROOT_DIR/dist/tp-qr-relay-android-latest.apk.sha256" \
   "$ROOT_DIR/dist/tp-qr-relay-android-latest.build-info.txt"

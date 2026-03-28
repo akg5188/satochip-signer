@@ -970,7 +970,14 @@ class PSBTFinalizeView(View):
 
 class PSBTSignedQRDisplayView(View):
     def run(self):
-        from seedsigner.models.encode_qr import UrPsbtQrEncoder, GenericStringEncoder
+        from seedsigner.models.encode_qr import (
+            Base43PsbtQrEncoder,
+            Base64PsbtQrEncoder,
+            GenericStringEncoder,
+            SpecterPsbtQrEncoder,
+            UrPsbtQrEncoder,
+        )
+        from seedsigner.models.qr_type import QRType
         from seedsigner.models.wif import WIFKey
         from seedsigner.gui.screens.screen import LoadingScreenThread
 
@@ -1013,10 +1020,22 @@ class PSBTSignedQRDisplayView(View):
             loading = LoadingScreenThread(text=_("Encoding PSBT..."))
             loading.start()
             try:
-                qr_encoder = UrPsbtQrEncoder(
-                    psbt=self.controller.psbt,
-                    qr_density=self.settings.get_value(SettingsConstants.SETTING__QR_DENSITY),
-                )
+                input_qr_type = getattr(self.controller, "psbt_input_qr_type", None)
+                qr_density = self.settings.get_value(SettingsConstants.SETTING__QR_DENSITY)
+                if input_qr_type == QRType.PSBT__BASE43:
+                    qr_encoder = Base43PsbtQrEncoder(psbt=self.controller.psbt)
+                elif input_qr_type == QRType.PSBT__BASE64:
+                    qr_encoder = Base64PsbtQrEncoder(psbt=self.controller.psbt)
+                elif input_qr_type == QRType.PSBT__SPECTER:
+                    qr_encoder = SpecterPsbtQrEncoder(
+                        psbt=self.controller.psbt,
+                        qr_density=qr_density,
+                    )
+                else:
+                    qr_encoder = UrPsbtQrEncoder(
+                        psbt=self.controller.psbt,
+                        qr_density=qr_density,
+                    )
             finally:
                 loading.stop()
 

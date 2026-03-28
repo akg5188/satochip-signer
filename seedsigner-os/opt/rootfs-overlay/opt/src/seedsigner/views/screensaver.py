@@ -29,7 +29,10 @@ class LogoScreen(BaseScreen):
         self.partner_logos: dict = {}
         for partner in self.partners:
             logo_url = os.path.join("partners", f"{partner}_logo.png")
-            self.partner_logos[partner] = load_image(logo_url)
+            try:
+                self.partner_logos[partner] = load_image(logo_url)
+            except FileNotFoundError:
+                logger.warning("Missing partner logo asset: %s", logo_url)
 
 
     def _run(self):
@@ -79,7 +82,7 @@ class OpeningSplashScreen(LogoScreen):
 
         logo_offset_x = int((self.canvas_width - self.logo.width)/2)
 
-        if show_partner_logos:
+        if show_partner_logos and self.partner_logos:
             logo_offset_y = -56
         else:
             logo_offset_y = 0
@@ -111,7 +114,7 @@ class OpeningSplashScreen(LogoScreen):
         if not self.is_screenshot_renderer:
             self.renderer.show_image()
 
-        if show_partner_logos:
+        if show_partner_logos and self.partner_logos:
             if not self.is_screenshot_renderer:
                 # Hold on the version num for a moment
                 time.sleep(1)
@@ -254,5 +257,4 @@ class ScreensaverScreen(LogoScreen):
 
     def stop(self):
         self._is_running = False
-
 

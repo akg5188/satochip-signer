@@ -12,9 +12,12 @@
 
 ## 对应 APK
 
-- 仓库内稳定文件名：`dist/tp-qr-relay-android-latest.apk`
-- 对应校验文件：`dist/tp-qr-relay-android-latest.apk.sha256`
-- 对应构建信息：`dist/tp-qr-relay-android-latest.build-info.txt`
+- 当前默认不把 release APK 长期回填到仓库 `dist/`
+- 需要时通过 `bash scripts/build_tp_relay_apk.sh` 现编生成
+- 构建后会产出：
+  `dist/tp-qr-relay-android-latest.apk`、
+  `dist/tp-qr-relay-android-latest.apk.sha256`、
+  `dist/tp-qr-relay-android-latest.build-info.txt`
 
 ## 文档入口
 

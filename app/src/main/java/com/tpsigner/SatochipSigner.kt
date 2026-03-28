@@ -32,6 +32,7 @@ class SatochipSigner {
         runCatching { Crypto.addBouncyCastleProvider() }
         ensureSatochipAppletSelected(channel)
         val commandSet = SatochipCommandSet(channel)
+        verifyAuthenticityOrThrow(commandSet)
         runCatching {
             commandSet.cardVerifyPIN(pin.toByteArray(StandardCharsets.UTF_8))
         }.getOrElse { error ->
@@ -57,6 +58,7 @@ class SatochipSigner {
 
         ensureSatochipAppletSelected(channel)
         val commandSet = SatochipCommandSet(channel)
+        verifyAuthenticityOrThrow(commandSet)
         runCatching {
             commandSet.cardVerifyPIN(pin.toByteArray(StandardCharsets.UTF_8))
         }.getOrElse { error ->
@@ -180,6 +182,19 @@ class SatochipSigner {
         val rs = parser.decodeFromDER(derSignature)
         val recId = recoverRecoveryId(parser, digest, rs, expectedPubkey)
         return SignatureParts(recId = recId, r = rs[0], s = rs[1])
+    }
+
+    private fun verifyAuthenticityOrThrow(commandSet: SatochipCommandSet) {
+        val result = runCatching { commandSet.cardVerifyAuthenticity() }
+            .getOrElse { error ->
+                throw IllegalStateException("卡片真伪校验失败: ${error.message}", error)
+            }
+        val status = result.getOrNull(0)
+        val errorText = result.getOrNull(4).orEmpty()
+        if (status != "OK") {
+            val reason = errorText.ifBlank { "未通过真卡校验" }
+            throw IllegalStateException("卡片真伪校验失败: $reason")
+        }
     }
 
     private fun personalSignHash(message: String): ByteArray {
