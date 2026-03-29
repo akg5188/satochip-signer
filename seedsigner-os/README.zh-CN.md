@@ -27,10 +27,12 @@
 - 找固件下载位置
 - 校验镜像
 - 烧录 TF 卡
+- 回忆怎么和 `satochip-wallet-release.apk` / `BlueWallet` / `TokenPocket` 搭配使用
 
 直接看：
 
 - [固件下载与写入指南](../docs/固件下载与写入指南.zh-CN.md)
+- [树莓派签名器使用教程](../docs/树莓派签名器使用教程.zh-CN.md)
 - [树莓派固件 GitHub Releases 页面](https://github.com/akg5188/tp-satochip-signer/releases)
 
 如果你要继续研究原始构建方式：

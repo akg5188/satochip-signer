@@ -8,6 +8,7 @@
 - [长期维护总入口](docs/长期维护总入口.zh-CN.md)
 - [安卓构建环境准备](docs/安卓构建环境准备.zh-CN.md)
 - [固件下载与写入指南](docs/固件下载与写入指南.zh-CN.md)
+- [树莓派签名器使用教程](docs/树莓派签名器使用教程.zh-CN.md)
 
 如果以后要把独立钱包扩到 `BTC` 或闪电网络，先看：
 
@@ -119,6 +120,7 @@ card-applet/prebuilt/SatoChip-3.0.4.cap
 - [仓库结构说明](docs/仓库结构说明.zh-CN.md)
 - [两个安卓APK说明](docs/两个安卓APK说明.zh-CN.md)
 - [固件下载与写入指南](docs/固件下载与写入指南.zh-CN.md)
+- [树莓派签名器使用教程](docs/树莓派签名器使用教程.zh-CN.md)
 - [3D 打印外壳改造方案](docs/3D打印外壳改造方案.zh-CN.md)
 - [快速开始](docs/快速开始.zh-CN.md)
 - [维护说明](docs/维护说明.zh-CN.md)
