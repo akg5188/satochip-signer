@@ -309,6 +309,8 @@ class TpRequestQrDecoder:
     def __init__(self) -> None:
         self.complete = False
         self.text = None
+        self.psbt_base64 = None
+        self.psbt_input_qr_type = None
         self.total_segments = 1
         self.collected_segments = 0
         self.is_nonUTF8 = False
@@ -316,6 +318,7 @@ class TpRequestQrDecoder:
         self._seen = set()
         self._assembler = MultiFragmentAssembler()
         self._relay_assembler = RelayAssembler()
+        self._psbt_decoder = DecodeQR()
 
     @property
     def is_complete(self) -> bool:
@@ -324,7 +327,19 @@ class TpRequestQrDecoder:
     def get_text(self) -> str:
         return self.text or ""
 
+    @property
+    def has_psbt(self) -> bool:
+        return bool(self.psbt_base64)
+
+    def get_psbt_base64(self) -> str:
+        return self.psbt_base64 or ""
+
+    def get_psbt_input_qr_type(self) -> str | None:
+        return self.psbt_input_qr_type
+
     def get_percent_complete(self, weight_mixed_frames: bool = False) -> int:
+        if self._psbt_decoder.qr_type and self._psbt_decoder.is_psbt:
+            return self._psbt_decoder.get_percent_complete(weight_mixed_frames=weight_mixed_frames)
         if self.complete:
             return 100
         if self.total_segments <= 1:
@@ -396,10 +411,25 @@ class TpRequestQrDecoder:
             self.collected_segments = self.total_segments
             return DecodeQRStatus.COMPLETE
 
-        self.text = text
-        self.complete = True
-        self.collected_segments = 1
-        return DecodeQRStatus.COMPLETE
+        psbt_status = self._psbt_decoder.add_data(text)
+        if self._psbt_decoder.is_psbt:
+            inner_decoder = getattr(self._psbt_decoder, "decoder", None)
+            self.total_segments = getattr(inner_decoder, "total_segments", 1) or 1
+            self.collected_segments = getattr(inner_decoder, "collected_segments", 0)
+            if psbt_status == DecodeQRStatus.COMPLETE:
+                self.psbt_base64 = self._psbt_decoder.get_base64_psbt()
+                self.psbt_input_qr_type = self._psbt_decoder.qr_type
+                self.complete = True
+            return psbt_status
+
+        if text.startswith(("ethereum:", "tp:")):
+            self.text = text
+            self.complete = True
+            self.collected_segments = 1
+            return DecodeQRStatus.COMPLETE
+
+        self.error = "暂不支持的二维码格式"
+        return DecodeQRStatus.INVALID
 
 
 def _summarize_payload(payload: str) -> str:
@@ -1869,6 +1899,14 @@ class ToolsTpSignerScanView(View):
         time.sleep(0.1)
 
         if decoder.is_complete:
+            if decoder.has_psbt:
+                return Destination(
+                    ToolsTpSignerPinEntryView,
+                    view_args=dict(
+                        psbt_base64=decoder.get_psbt_base64(),
+                        psbt_input_qr_type=decoder.get_psbt_input_qr_type(),
+                    ),
+                )
             payload = decoder.get_text().strip()
             if not payload.startswith(("ethereum:", "tp:")):
                 return _tp_home_destination()
@@ -1983,9 +2021,16 @@ class ToolsTpBtcXpubQrView(View):
 
 
 class ToolsTpSignerPinEntryView(View):
-    def __init__(self, payload: str):
+    def __init__(
+        self,
+        payload: str | None = None,
+        psbt_base64: str | None = None,
+        psbt_input_qr_type: str | None = None,
+    ):
         super().__init__()
         self.payload = payload
+        self.psbt_base64 = psbt_base64
+        self.psbt_input_qr_type = psbt_input_qr_type
 
     def run(self):
         try:
@@ -2001,7 +2046,18 @@ class ToolsTpSignerPinEntryView(View):
         if not pin or len(pin) < 4:
             return _tp_home_destination()
 
-        if self.payload.lower().startswith("tp:signpsbt-"):
+        if self.psbt_base64:
+            return Destination(
+                ToolsTpSignerPsbtRunView,
+                view_args=dict(
+                    pin=pin,
+                    psbt_base64=self.psbt_base64,
+                    psbt_input_qr_type=self.psbt_input_qr_type,
+                ),
+                skip_current_view=True,
+            )
+
+        if self.payload and self.payload.lower().startswith("tp:signpsbt-"):
             return Destination(
                 ToolsTpSignerPsbtRunView,
                 view_args=dict(payload=self.payload, pin=pin),
@@ -2016,11 +2072,25 @@ class ToolsTpSignerPinEntryView(View):
 
 
 class ToolsTpSignerPsbtRunView(View):
-    def __init__(self, payload: str, pin: str):
+    def __init__(
+        self,
+        payload: str | None = None,
+        pin: str = "",
+        psbt_base64: str | None = None,
+        psbt_input_qr_type: str | None = None,
+    ):
         super().__init__()
         self.payload = payload
         self.pin = pin
-        self.request_id, self.psbt_base64 = _extract_psbt_request(payload)
+        self.psbt_input_qr_type = psbt_input_qr_type
+        self.request_id = ""
+        self.legacy_tp_request = False
+
+        if payload and payload.lower().startswith("tp:signpsbt-"):
+            self.legacy_tp_request = True
+            self.request_id, self.psbt_base64 = _extract_psbt_request(payload)
+        else:
+            self.psbt_base64 = (psbt_base64 or "").strip()
 
     def run(self):
         signer_bin = _resolve_signer_bin()
@@ -2033,6 +2103,7 @@ class ToolsTpSignerPsbtRunView(View):
             with tempfile.TemporaryDirectory(prefix="tp-btc-psbt-") as tmpdir:
                 tmpdir_path = Path(tmpdir)
                 psbt_input_path = tmpdir_path / "unsigned.psbt.txt"
+                signed_psbt_path = tmpdir_path / "signed.psbt.txt"
                 tx_path = tmpdir_path / "signed.tx.hex"
                 psbt_input_path.write_text(self.psbt_base64 + "\n", encoding="utf-8")
 
@@ -2043,6 +2114,8 @@ class ToolsTpSignerPsbtRunView(View):
                     self.pin,
                     "--psbt-file",
                     str(psbt_input_path),
+                    "--out-psbt-base64",
+                    str(signed_psbt_path),
                     "--out-tx",
                     str(tx_path),
                     "--timeout-sec",
@@ -2065,11 +2138,17 @@ class ToolsTpSignerPsbtRunView(View):
                     code = _map_signer_error_code(detail)
                     return _masked_error_destination(code)
 
-                if not tx_path.exists():
-                    return _masked_error_destination("33")
+                signed_psbt_base64 = ""
+                if signed_psbt_path.exists():
+                    signed_psbt_base64 = signed_psbt_path.read_text(encoding="utf-8").strip()
 
-                tx_hex = tx_path.read_text(encoding="utf-8").strip()
-                if not tx_hex:
+                tx_hex = ""
+                if tx_path.exists():
+                    tx_hex = tx_path.read_text(encoding="utf-8").strip()
+
+                if self.legacy_tp_request and not tx_hex:
+                    return _masked_error_destination("33")
+                if not self.legacy_tp_request and not signed_psbt_base64:
                     return _masked_error_destination("33")
         except subprocess.TimeoutExpired:
             return _masked_error_destination("34")
@@ -2078,6 +2157,17 @@ class ToolsTpSignerPsbtRunView(View):
             return _masked_error_destination("35")
         finally:
             loading.stop()
+
+        if not self.legacy_tp_request:
+            return Destination(
+                ToolsTpSignerPsbtQrView,
+                view_args=dict(
+                    psbt_base64=signed_psbt_base64,
+                    input_qr_type=self.psbt_input_qr_type,
+                    tx_hex=tx_hex or None,
+                ),
+                skip_current_view=True,
+            )
 
         return Destination(
             ToolsTpSignerQrView,
@@ -2173,5 +2263,62 @@ class ToolsTpSignerQrView(View):
 
     def run(self):
         encoder = GenericStaticQrEncoder(data=self.response_text)
+        self.run_screen(QRDisplayScreen, qr_encoder=encoder)
+        return _tp_home_destination()
+
+
+class ToolsTpSignerPsbtQrView(View):
+    def __init__(self, psbt_base64: str, input_qr_type: str | None = None, tx_hex: str | None = None):
+        super().__init__()
+        self.psbt_base64 = psbt_base64
+        self.input_qr_type = input_qr_type
+        self.tx_hex = tx_hex
+
+    def run(self):
+        if self.tx_hex:
+            from seedsigner.models.encode_qr import BbqrTextQrEncoder
+
+            encoder = BbqrTextQrEncoder(
+                text=self.tx_hex,
+                file_type="U",
+                encoding_preference="Z",
+                min_version=4,
+                max_version=4,
+                min_split=1,
+                max_split=8,
+                frame_repeat=2,
+            )
+            self.run_screen(QRDisplayScreen, qr_encoder=encoder)
+            return _tp_home_destination()
+
+        from embit.psbt import PSBT
+        from seedsigner.models.encode_qr import (
+            BbqrPsbtQrEncoder,
+            Base43PsbtQrEncoder,
+            Base64PsbtQrEncoder,
+            SpecterPsbtQrEncoder,
+            UrPsbtQrEncoder,
+        )
+        from seedsigner.models.qr_type import QRType
+
+        try:
+            psbt = PSBT.from_base64(self.psbt_base64)
+            qr_density = self.settings.get_value(SettingsConstants.SETTING__QR_DENSITY)
+            if self.input_qr_type == QRType.PSBT__BASE43:
+                encoder = Base43PsbtQrEncoder(psbt=psbt)
+            elif self.input_qr_type == QRType.PSBT__BASE64:
+                encoder = Base64PsbtQrEncoder(psbt=psbt)
+            elif self.input_qr_type == QRType.PSBT__BBQR:
+                encoder = BbqrPsbtQrEncoder(psbt=psbt, qr_density=qr_density)
+            elif self.input_qr_type == QRType.PSBT__SPECTER:
+                encoder = SpecterPsbtQrEncoder(psbt=psbt, qr_density=qr_density)
+            else:
+                encoder = UrPsbtQrEncoder(psbt=psbt, qr_density=qr_density)
+        except Exception as exc:
+            logger.warning("TP-only signed PSBT QR render failed: %s", exc)
+            if not self.tx_hex:
+                return _masked_error_destination("33")
+            encoder = GenericStaticQrEncoder(data=self.tx_hex)
+
         self.run_screen(QRDisplayScreen, qr_encoder=encoder)
         return _tp_home_destination()

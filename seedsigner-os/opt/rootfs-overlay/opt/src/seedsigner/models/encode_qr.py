@@ -21,7 +21,7 @@ from seedsigner.models.settings import SettingsConstants
 from urtypes.crypto import PSBT as UR_PSBT
 from urtypes.crypto import Account, HDKey, Output, Keypath, PathComponent, SCRIPT_EXPRESSION_TAG_MAP, CoinInfo
 
-
+from seedsigner.helpers.bbqr import BBQrParts
 
 @dataclass
 class BaseQrEncoder:
@@ -194,6 +194,7 @@ class BaseSimpleAnimatedQREncoder(BaseQrEncoder):
         self.parts = []
         self.part_num_sent = 0
         self.sent_complete = False
+        self._frame_repeat_index = 0
         self._create_parts()
 
 
@@ -210,6 +211,14 @@ class BaseSimpleAnimatedQREncoder(BaseQrEncoder):
         # if part num sent is gt number of parts, start at 0
         if self.part_num_sent > (len(self.parts) - 1):
             self.part_num_sent = 0
+
+        frame_repeat = max(1, getattr(self, "frame_repeat", 1))
+        if frame_repeat > 1 and self.parts:
+            part = self.parts[self.part_num_sent]
+            self._frame_repeat_index += 1
+            if self._frame_repeat_index < frame_repeat:
+                return part
+            self._frame_repeat_index = 0
 
         part = self.parts[self.part_num_sent]
 
@@ -234,6 +243,7 @@ class BaseSimpleAnimatedQREncoder(BaseQrEncoder):
 
     def restart(self) -> str:
         self.part_num_sent = 0
+        self._frame_repeat_index = 0
 
 
 
@@ -397,6 +407,54 @@ class UrPsbtQrEncoder(BaseFountainQrEncoder):
         super().__post_init__()
         qr_ur_bytes = UR("crypto-psbt", UR_PSBT(self.psbt.serialize()).to_cbor())
         self.ur2_encode = UREncoder(ur=qr_ur_bytes, max_fragment_len=self.qr_max_fragment_size)
+
+
+@dataclass
+class BbqrPsbtQrEncoder(BaseSimpleAnimatedQREncoder):
+    psbt: PSBT = None
+
+    @property
+    def bbqr_version_limits(self):
+        density_mapping = {
+            SettingsConstants.DENSITY__LOW: (5, 15),
+            SettingsConstants.DENSITY__MEDIUM: (5, 25),
+            SettingsConstants.DENSITY__HIGH: (5, 40),
+        }
+        return density_mapping.get(self.qr_density, (5, 25))
+
+    def _create_parts(self):
+        min_version, max_version = self.bbqr_version_limits
+        bbqr = BBQrParts.from_payload(
+            raw=self.psbt.serialize(),
+            file_type="P",
+            min_version=min_version,
+            max_version=max_version,
+        )
+        self.parts = bbqr.parts
+
+
+@dataclass
+class BbqrTextQrEncoder(BaseSimpleAnimatedQREncoder):
+    text: str = None
+    file_type: str = "U"
+    encoding_preference: str = "auto"
+    min_version: int = 4
+    max_version: int = 4
+    min_split: int = 1
+    max_split: int = 1295
+    frame_repeat: int = 1
+
+    def _create_parts(self):
+        bbqr = BBQrParts.from_payload(
+            raw=(self.text or "").encode("utf-8"),
+            file_type=self.file_type,
+            encoding_preference=self.encoding_preference,
+            min_version=self.min_version,
+            max_version=self.max_version,
+            min_split=self.min_split,
+            max_split=self.max_split,
+        )
+        self.parts = bbqr.parts
 
 
 @dataclass

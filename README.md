@@ -93,6 +93,7 @@ dist/tp-qr-relay-android-latest.build-info.txt
 
 ```bash
 bash scripts/build_pi_firmware_from_snapshot.sh
+bash scripts/check_release_artifacts.sh
 ```
 
 ### 卡固件优先直接用预编译文件
@@ -104,11 +105,11 @@ card-applet/prebuilt/SatoChip-3.0.4.cap
 ## 最短维护顺序
 
 1. 先看 [一页式总导航](docs/一页式总导航.zh-CN.md)，确认这次要动哪一块。
-2. 改完后先本地重新编译或重新打包。
-3. 生成对应 `sha256`。
-4. 同步更新仓库里的稳定文件名。
-5. 上传到 GitHub Release。
-6. 最后补说明文档。
+2. 源码和文档先提交成一个干净 commit。
+3. 用这个干净 commit 重新编译或重新打包正式产物。
+4. 跑 `bash scripts/check_release_artifacts.sh`，确认 `build-info` 里的 `repo_head`、`repo_dirty`、`sha256` 都正确。
+5. 再单独提交 `dist/` 里的稳定备份文件。
+6. 上传到 GitHub Release 时，以 `build-info` 里的 `repo_head` 对应提交或 tag 作为源码基准。
 
 ## 配套文档
 

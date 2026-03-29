@@ -11,6 +11,7 @@ DIST_DIR="$ROOT_DIR/dist"
 DIST_IMG="${DIST_IMG:-$DIST_DIR/system-update-latest.img.xz}"
 DIST_SUM="${DIST_SUM:-$DIST_IMG.sha256}"
 DIST_INFO="${DIST_INFO:-$DIST_DIR/system-update-latest.build-info.txt}"
+DIST_BASENAME="$(basename "$DIST_IMG")"
 SNAPSHOT_DIR="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt"
 SNAPSHOT_TIME_FILE="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt/src/.build_commit_time"
 NFC_BINDINGS_FILE="$ROOT_DIR/seedsigner-os/opt/external-packages/nfc-bindings/nfc-bindings.mk"
@@ -50,9 +51,16 @@ raw_sha="$(sha256sum "$RAW_IMG" | awk '{print $1}')"
 snapshot_time="$(cat "$SNAPSHOT_TIME_FILE")"
 build_time_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 repo_head="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+repo_status="$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || true)"
 repo_dirty=0
-if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=no 2>/dev/null || true)" ]]; then
+if [[ -n "$repo_status" ]]; then
   repo_dirty=1
+fi
+if [[ "$repo_dirty" == "1" && "$DIST_BASENAME" == "system-update-latest.img.xz" && "${ALLOW_DIRTY_REPO:-0}" != "1" ]]; then
+  echo "Refusing to write dist/system-update-latest.img.xz from a dirty repository." >&2
+  echo "Commit source/doc changes first, or set DIST_IMG/DIST_SUM/DIST_INFO to a scratch filename for test builds." >&2
+  echo "Override only if you truly want an unreproducible stable artifact: ALLOW_DIRTY_REPO=1" >&2
+  exit 1
 fi
 snapshot_tree_sha="$(
   cd "$SNAPSHOT_DIR"
@@ -71,7 +79,7 @@ elif [[ "$RAW_IMG" == "$HOME/"* ]]; then
   raw_image_path="HOME/${RAW_IMG#$HOME/}"
 fi
 
-tmp_img="$(mktemp "$DIST_DIR/.system-update-latest.img.xz.XXXXXX")"
+tmp_img="$(mktemp "$DIST_DIR/.${DIST_BASENAME}.XXXXXX")"
 ionice -c3 nice -n 19 xz -T"$XZ_THREADS" -9 -c "$RAW_IMG" > "$tmp_img"
 mv "$tmp_img" "$DIST_IMG"
 

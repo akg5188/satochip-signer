@@ -971,6 +971,7 @@ class PSBTFinalizeView(View):
 class PSBTSignedQRDisplayView(View):
     def run(self):
         from seedsigner.models.encode_qr import (
+            BbqrPsbtQrEncoder,
             Base43PsbtQrEncoder,
             Base64PsbtQrEncoder,
             GenericStringEncoder,
@@ -1026,6 +1027,11 @@ class PSBTSignedQRDisplayView(View):
                     qr_encoder = Base43PsbtQrEncoder(psbt=self.controller.psbt)
                 elif input_qr_type == QRType.PSBT__BASE64:
                     qr_encoder = Base64PsbtQrEncoder(psbt=self.controller.psbt)
+                elif input_qr_type == QRType.PSBT__BBQR:
+                    qr_encoder = BbqrPsbtQrEncoder(
+                        psbt=self.controller.psbt,
+                        qr_density=qr_density,
+                    )
                 elif input_qr_type == QRType.PSBT__SPECTER:
                     qr_encoder = SpecterPsbtQrEncoder(
                         psbt=self.controller.psbt,

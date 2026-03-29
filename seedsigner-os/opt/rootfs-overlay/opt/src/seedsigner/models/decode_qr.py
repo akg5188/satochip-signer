@@ -13,6 +13,7 @@ from urtypes.crypto import PSBT as UR_PSBT
 from urtypes.crypto import Account, Output
 from urtypes.bytes import Bytes
 
+from seedsigner.helpers.bbqr import decode_bbqr_data, parse_bbqr_header
 from seedsigner.helpers.ur2.ur_decoder import URDecoder
 from seedsigner.models.qr_type import QRType
 from seedsigner.models.seed import Seed
@@ -79,6 +80,9 @@ class DecodeQR:
 
             if self.qr_type in [QRType.PSBT__UR2, QRType.OUTPUT__UR, QRType.ACCOUNT__UR, QRType.BYTES__UR]:
                 self.decoder = URDecoder() # BCUR Decoder
+
+            elif self.qr_type == QRType.PSBT__BBQR:
+                self.decoder = BbqrPsbtQrDecoder()
 
             elif self.qr_type == QRType.PSBT__SPECTER:
                 self.decoder = SpecterPsbtQrDecoder() # Specter Desktop PSBT QR base64 decoder
@@ -321,7 +325,7 @@ class DecodeQR:
         if self.qr_type in [QRType.PSBT__UR2, QRType.OUTPUT__UR, QRType.ACCOUNT__UR, QRType.BYTES__UR]:
             return int(self.decoder.estimated_percent_complete(weight_mixed_frames=weight_mixed_frames) * 100)
 
-        elif self.qr_type in [QRType.PSBT__SPECTER]:
+        elif self.qr_type in [QRType.PSBT__SPECTER, QRType.PSBT__BBQR]:
             if self.decoder.total_segments == None:
                 return 0
             return int((self.decoder.collected_segments / self.decoder.total_segments) * 100)
@@ -351,6 +355,7 @@ class DecodeQR:
     def is_psbt(self) -> bool:
         return self.qr_type in [
             QRType.PSBT__UR2,
+            QRType.PSBT__BBQR,
             QRType.PSBT__SPECTER,
             QRType.PSBT__BASE64,
             QRType.PSBT__BASE43,
@@ -470,6 +475,14 @@ class DecodeQR:
 
             elif re.search("^UR:BYTES/", s, re.IGNORECASE):
                 return QRType.BYTES__UR
+
+            elif s.upper().startswith("B$"):
+                try:
+                    _, file_type, _, _ = parse_bbqr_header(s.upper())
+                    if file_type == "P":
+                        return QRType.PSBT__BBQR
+                except Exception:
+                    pass
 
             elif DecodeQR.is_base64_psbt(s):
                 return QRType.PSBT__BASE64
@@ -884,6 +897,46 @@ class SpecterPsbtQrDecoder(BaseAnimatedQrDecoder):
     def parse_segment(self, segment) -> str:
         return segment.split(" ")[-1].strip()
 
+
+
+class BbqrPsbtQrDecoder(BaseAnimatedQrDecoder):
+    """
+        Used to decode BlueWallet/Coinkite BBQr animated PSBT encoding.
+    """
+    def __init__(self):
+        super().__init__()
+        self.encoding = None
+        self.file_type = None
+
+    def _parse_header(self, segment: str) -> tuple[str, str, int, int]:
+        encoding, file_type, total, index = parse_bbqr_header(segment.strip().upper())
+        if self.encoding is None:
+            self.encoding = encoding
+            self.file_type = file_type
+        elif self.encoding != encoding or self.file_type != file_type:
+            raise Exception("BBQr header changed unexpectedly")
+        return encoding, file_type, total, index
+
+    def current_segment_num(self, segment) -> int:
+        _, _, _, index = self._parse_header(segment)
+        return index + 1
+
+    def total_segment_nums(self, segment) -> int:
+        _, _, total, _ = self._parse_header(segment)
+        return total
+
+    def parse_segment(self, segment) -> str:
+        self._parse_header(segment)
+        return segment.strip().upper()[8:]
+
+    @property
+    def is_valid(self) -> bool:
+        return self.file_type == "P" and self.encoding is not None
+
+    def get_data(self):
+        if not self.complete or not self.is_valid:
+            return None
+        return decode_bbqr_data("".join(self.segments), self.encoding)
 
 
 class Base64PsbtQrDecoder(BaseSingleFrameQrDecoder):

@@ -53,6 +53,11 @@ check_pi_firmware_artifact() {
   repo_dirty="$(awk -F= '/^repo_dirty=/{print $2}' "$info_file")"
   [[ "$repo_dirty" == "0" ]] || fail "Pi firmware build-info repo_dirty must be 0"
 
+  local repo_head
+  repo_head="$(awk -F= '/^repo_head=/{print $2}' "$info_file")"
+  git -C "$ROOT_DIR" cat-file -e "${repo_head}^{commit}" 2>/dev/null || fail "repo_head ${repo_head} from $info_file is not a valid commit"
+  git -C "$ROOT_DIR" merge-base --is-ancestor "$repo_head" HEAD 2>/dev/null || fail "repo_head ${repo_head} from $info_file is not reachable from current HEAD"
+
   local package_script
   package_script="$(awk -F= '/^package_script=/{print $2}' "$info_file")"
   [[ "$package_script" != "manual-low-impact-xz" ]] || fail "Pi firmware build-info still uses obsolete manual-low-impact-xz package_script"
