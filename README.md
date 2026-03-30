@@ -23,7 +23,7 @@
 | 用独立钱包看资产、转账、连 `Hyperliquid` | `wallet/` | [wallet/README.md](wallet/README.md) | 对应 Release，或本地执行 `bash scripts/build_wallet_release.sh` 生成 `dist/satochip-wallet-release.apk` |
 | 给 `J3R180` 卡设置 `PIN` 和助记词 | `backups/satochip-utils/` | [Tails 离线使用教程](backups/satochip-utils/Tails-离线使用教程.zh-CN.md) | 本仓库离线备份 |
 | 下载或写入 `J3R180` 卡固件 | `card-applet/` | [card-applet 中文说明](card-applet/README.zh-CN.md) | [卡固件 Release](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318) |
-| 下载或写入树莓派固件 | `seedsigner-os/` 和 `dist/` | [seedsigner-os 中文说明](seedsigner-os/README.zh-CN.md) | [树莓派固件稳定备份](dist/system-update-latest.img.xz) |
+| 下载或写入树莓派固件 | `seedsigner-os/` 和 `dist/` | [seedsigner-os 中文说明](seedsigner-os/README.zh-CN.md)、[固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md) | [树莓派固件稳定备份](dist/system-update-latest.img.xz) |
 
 ## 下载总表
 
@@ -34,6 +34,11 @@
 | `J3R180` 卡固件 | `SatoChip-3.0.4.cap` | [j3r180-card-firmware-20260318](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318) | `card-applet/prebuilt/SatoChip-3.0.4.cap` |
 | 树莓派固件 | `system-update-latest.img.xz` | 仓库里的稳定文件名 `dist/system-update-latest.img.xz` | `dist/system-update-latest.img.xz` |
 | `Tails` 离线卡初始化工具 | `Satochip-Utils-linux-x86_64-0.3.0-beta` 等 | 本地离线包和 `backups/satochip-utils/` | `backups/satochip-utils/` |
+
+树莓派固件补充说明：
+
+- 当前仓库里有两类树莓派镜像：`system-update-latest.img.xz` 是历史稳定备份；`system-update-offline-signer-repair7.img.xz` 是你已经实机验证通过的备份版。
+- `repair7` 固件不要直接拿 `main` 头来猜源码，请看 [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md) 里的精确 tag。
 
 ## 五个核心部分
 
