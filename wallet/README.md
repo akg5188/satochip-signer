@@ -59,6 +59,10 @@ bash scripts/build_wallet_release.sh
 
 - `wallet/keystore.properties.example`
 
+如果以后丢了旧 keystore 密码，只能换一把新的发布签名。
+
+这不会影响链上资产安全，因为手机里不存私钥；但旧钱包 APK 将无法直接覆盖升级，必须卸载后重装，再重新导入观察地址、`xpub / zpub` 和 `WalletConnect` 会话。
+
 ## 文档入口
 
 - [使用教程](docs/使用教程.zh-CN.md)
