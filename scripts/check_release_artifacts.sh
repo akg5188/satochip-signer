@@ -48,10 +48,15 @@ check_pi_firmware_artifact() {
   grep -q '^nfc_bindings_mk_sha256=' "$info_file" || fail "Missing nfc_bindings_mk_sha256 in $info_file"
   grep -q '^build_script=' "$info_file" || fail "Missing build_script in $info_file"
   grep -q '^package_script=' "$info_file" || fail "Missing package_script in $info_file"
+  grep -q '^build_clean_mode=' "$info_file" || fail "Missing build_clean_mode in $info_file"
 
   local repo_dirty
   repo_dirty="$(awk -F= '/^repo_dirty=/{print $2}' "$info_file")"
   [[ "$repo_dirty" == "0" ]] || fail "Pi firmware build-info repo_dirty must be 0"
+
+  local build_clean_mode
+  build_clean_mode="$(awk -F= '/^build_clean_mode=/{print $2}' "$info_file")"
+  [[ "$build_clean_mode" == "clean" ]] || fail "Pi firmware build-info build_clean_mode must be clean"
 
   local repo_head
   repo_head="$(awk -F= '/^repo_head=/{print $2}' "$info_file")"

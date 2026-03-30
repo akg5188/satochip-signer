@@ -2,9 +2,10 @@
 
 这个仓库不是单一项目，而是同一套方案下的 5 个部分。
 
-以后时间久了忘了，不要先翻源码，先看下面这 3 个入口：
+以后时间久了忘了，不要先翻源码，先看下面这些入口：
 
 - [一页式总导航](docs/一页式总导航.zh-CN.md)
+- [树莓派签名器一页备忘](docs/树莓派签名器一页备忘.zh-CN.md)
 - [长期维护总入口](docs/长期维护总入口.zh-CN.md)
 - [安卓构建环境准备](docs/安卓构建环境准备.zh-CN.md)
 - [固件下载与写入指南](docs/固件下载与写入指南.zh-CN.md)
@@ -90,12 +91,20 @@ dist/tp-qr-relay-android-latest.apk.sha256
 dist/tp-qr-relay-android-latest.build-info.txt
 ```
 
+这些是本地构建输出，不是仓库里默认长期保留的 `dist/` 快照。
+
 ### 重新生成树莓派运行时镜像
 
 ```bash
 bash scripts/build_pi_firmware_from_snapshot.sh
 bash scripts/check_release_artifacts.sh
 ```
+
+说明：
+
+- 正式稳定固件默认必须用 `clean` 模式构建
+- 如果只是想做测试包，再显式加：
+  `TP_BUILD_CLEAN_MODE=no-clean DIST_IMG=dist/xxx-test.img.xz`
 
 ### 卡固件优先直接用预编译文件
 
@@ -109,6 +118,7 @@ card-applet/prebuilt/SatoChip-3.0.4.cap
 2. 源码和文档先提交成一个干净 commit。
 3. 用这个干净 commit 重新编译或重新打包正式产物。
 4. 跑 `bash scripts/check_release_artifacts.sh`，确认 `build-info` 里的 `repo_head`、`repo_dirty`、`sha256` 都正确。
+   从下一张按新流程重打的正式固件开始，还要确认 `build_clean_mode=clean`。
 5. 再单独提交 `dist/` 里的稳定备份文件。
 6. 上传到 GitHub Release 时，以 `build-info` 里的 `repo_head` 对应提交或 tag 作为源码基准。
 

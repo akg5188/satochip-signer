@@ -32,7 +32,7 @@ dependencies {
     implementation("com.google.zxing:javase:3.5.3")
 }
 
-val releaseBundleDir = layout.buildDirectory.dir("release/tp-pi-signer")
+val releaseBundleDir = layout.buildDirectory.dir("release/offline-signer")
 
 tasks.register<Sync>("assembleReleaseBundle") {
     dependsOn(tasks.installDist)

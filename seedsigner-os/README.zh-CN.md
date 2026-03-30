@@ -8,7 +8,7 @@
 - 提供运行环境、构建环境和镜像相关内容
 - 给树莓派签名器和界面运行做底座
 
-## 这个目录不是干什么的
+## 这个目录不是什么
 
 它不是：
 
@@ -44,5 +44,5 @@
 - `card-applet` = `J3R180` 智能卡固件
 - `seedsigner-os` = 树莓派固件
 - `wallet` = 独立钱包安卓 APK
-- `app` = 给 TokenPocket 用的“智能卡”安卓软件
+- `app` = 给 `TokenPocket` 用的签名中转安卓软件
 - `backups/satochip-utils` = `J3R180` 卡初始化工具备份

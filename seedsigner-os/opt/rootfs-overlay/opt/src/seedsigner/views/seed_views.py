@@ -20,6 +20,7 @@ from seedsigner.gui.components import FontAwesomeIconConstants, GUIConstants, Se
 from seedsigner.gui.screens import (RET_CODE__BACK_BUTTON, ButtonListScreen,
     WarningScreen, DireWarningScreen, seed_screens, LargeIconStatusScreen)
 from seedsigner.gui.screens.screen import ButtonOption, KeyboardScreen
+from seedsigner.gui.screens.tools_screens import ToolsFormattedTextScreen
 from seedsigner.hardware.microsd import MicroSD
 from seedsigner.helpers.bitbox02_backup import (
     Bitbox02BackupDetails,
@@ -48,6 +49,7 @@ from pysatochip.JCconstants import SEEDKEEPER_DIC_TYPE, SEEDKEEPER_DIC_ORIGIN, S
 from pysatochip.util import dict_swap_keys_values
 from seedsigner.helpers import seedkeeper_utils
 from binascii import unhexlify
+from seedsigner.models.mnemonic_steel import words_to_indices
 
 logger = logging.getLogger(__name__)
 
@@ -1152,6 +1154,7 @@ class SeedMnemonicInvalidView(View):
 
 class SeedMnemonicRawReviewView(View):
     NEXT = ButtonOption("下一页")
+    VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     REENTER = ButtonOption("重新输入")
     IMPORT_RAW = ButtonOption("按原样导入")
 
@@ -1167,7 +1170,7 @@ class SeedMnemonicRawReviewView(View):
         words_per_page = 4
         num_pages = max(1, (len(mnemonic) + words_per_page - 1) // words_per_page)
         words = mnemonic[self.page_index * words_per_page:(self.page_index + 1) * words_per_page]
-        button_data = [self.NEXT] if self.page_index < num_pages - 1 else [self.REENTER, self.IMPORT_RAW]
+        button_data = [self.VIEW_INDICES, self.NEXT] if self.page_index < num_pages - 1 else [self.VIEW_INDICES, self.REENTER, self.IMPORT_RAW]
 
         selected_menu_num = seed_screens.SeedWordsScreen(
             title=f"检查加密助记词：{self.page_index + 1}/{num_pages}",
@@ -1191,6 +1194,20 @@ class SeedMnemonicRawReviewView(View):
             )
 
         selected = button_data[selected_menu_num]
+        if selected == self.VIEW_INDICES:
+            return Destination(
+                SeedWordIndexView,
+                view_args=dict(
+                    words=mnemonic,
+                    title="待导入 BIP39 序号",
+                    return_destination=Destination(
+                        SeedMnemonicRawReviewView,
+                        view_args=dict(page_index=self.page_index),
+                        skip_current_view=True,
+                    ),
+                ),
+            )
+
         if selected == self.NEXT:
             return Destination(
                 SeedMnemonicRawReviewView,
@@ -1217,6 +1234,7 @@ class SeedMnemonicRawReviewView(View):
 
 class SeedFinalizeView(View):
     FINALIZE = ButtonOption("完成")
+    VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     LOAD_SEEDKEEPER = ButtonOption("加载口令")
     TYPE_PASSPHRASE = ButtonOption("输入口令")
     SCAN_PASSPHRASE = ButtonOption("扫描口令")
@@ -1262,6 +1280,8 @@ class SeedFinalizeView(View):
             return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
 
         button_data = [self.FINALIZE]
+        if self.seed.bip39_word_indices_supported:
+            button_data.append(self.VIEW_INDICES)
         #self.TYPE_PASSPHRASE.button_label = self.seed.passphrase_label
         if isinstance(self.seed, (XprvSeed, AezeedSeed)):
             pass
@@ -1280,6 +1300,15 @@ class SeedFinalizeView(View):
         if button_data[selected_menu_num] == self.FINALIZE:
             seed_num = self.controller.storage.finalize_pending_seed()
             return Destination(SeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
+
+        elif button_data[selected_menu_num] == self.VIEW_INDICES:
+            return Destination(
+                SeedWordIndexView,
+                view_args=dict(
+                    title="BIP39 序号",
+                    return_destination=Destination(SeedFinalizeView, skip_current_view=True),
+                ),
+            )
 
         elif button_data[selected_menu_num] == self.TYPE_PASSPHRASE:
             return Destination(SeedAddPassphraseView)
@@ -2228,6 +2257,7 @@ class SeedOptionsView(View):
 
 class SeedBackupView(View):
     VIEW_WORDS = ButtonOption("查看助记词")
+    VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     EXPORT_SEEDQR = ButtonOption("导出为 SeedQR")
     EXPORT_PLAINTEXTQR = ButtonOption("导出为明文二维码")
     TO_SEEDKEEPER = ButtonOption("写入 SeedKeeper")
@@ -2242,6 +2272,8 @@ class SeedBackupView(View):
     def run(self):
 
         button_data = [self.VIEW_WORDS]
+        if self.seed.bip39_word_indices_supported:
+            button_data.append(self.VIEW_INDICES)
         if self.settings.get_value(SettingsConstants.SETTING__SMARTCARD_SUPPORT) == SettingsConstants.OPTION__ENABLED:
             button_data.append(self.TO_SEEDKEEPER)
         if isinstance(self.seed, Slip39Seed):
@@ -2268,6 +2300,20 @@ class SeedBackupView(View):
             if isinstance(self.seed, Slip39Seed):
                 return Destination(SeedSlip39SelectShareView, view_args={"seed_num": self.seed_num, "next_view": SeedWordsWarningView})
             return Destination(SeedWordsWarningView, view_args={"seed_num": self.seed_num})
+
+        elif button_data[selected_menu_num] == self.VIEW_INDICES:
+            return Destination(
+                SeedWordIndexView,
+                view_args=dict(
+                    seed_num=self.seed_num,
+                    title="BIP39 序号",
+                    return_destination=Destination(
+                        SeedBackupView,
+                        view_args=dict(seed_num=self.seed_num),
+                        skip_current_view=True,
+                    ),
+                ),
+            )
 
         elif button_data[selected_menu_num] == self.EXPORT_PLAINTEXTQR:
             if isinstance(self.seed, Slip39Seed):
@@ -2787,6 +2833,7 @@ class SeedWordsWarningView(View):
 
 class SeedWordsView(View):
     NEXT = ButtonOption("下一页")
+    VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     DONE = ButtonOption("完成")
 
     def __init__(self, seed_num: int, bip85_data: dict = None, page_index: int = 0, share_index: int | None = None):
@@ -2827,9 +2874,12 @@ class SeedWordsView(View):
                     return Destination(BackStackView)
             title = "助记词"
         words = mnemonic[self.page_index*words_per_page:(self.page_index + 1)*words_per_page]
+        can_view_indices = bool(self.bip85_data is not None or getattr(self.seed, "bip39_word_indices_supported", False))
 
         button_data = []
-        num_pages = int(len(mnemonic)/words_per_page)
+        num_pages = max(1, (len(mnemonic) + words_per_page - 1) // words_per_page)
+        if can_view_indices:
+            button_data.append(self.VIEW_INDICES)
         if self.page_index < num_pages - 1 or self.seed_num is None:
             button_data.append(self.NEXT)
         else:
@@ -2846,7 +2896,27 @@ class SeedWordsView(View):
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(BackStackView)
 
-        if button_data[selected_menu_num] == self.NEXT:
+        selected = button_data[selected_menu_num]
+        if selected == self.VIEW_INDICES:
+            return Destination(
+                SeedWordIndexView,
+                view_args=dict(
+                    words=mnemonic,
+                    title="BIP39 序号",
+                    return_destination=Destination(
+                        SeedWordsView,
+                        view_args=dict(
+                            seed_num=self.seed_num,
+                            page_index=self.page_index,
+                            bip85_data=self.bip85_data,
+                            share_index=self.share_index,
+                        ),
+                        skip_current_view=True,
+                    ),
+                ),
+            )
+
+        if selected == self.NEXT:
             if self.seed_num is None and self.page_index == num_pages - 1:
                 return Destination(
                     SeedWordsBackupTestPromptView,
@@ -2858,12 +2928,132 @@ class SeedWordsView(View):
                     view_args=dict(seed_num=self.seed_num, page_index=self.page_index + 1, bip85_data=self.bip85_data, share_index=self.share_index)
                 )
 
-        elif button_data[selected_menu_num] == self.DONE:
+        elif selected == self.DONE:
             # Must clear history to avoid BACK button returning to private info
             return Destination(
                 SeedWordsBackupTestPromptView,
                 view_args=dict(seed_num=self.seed_num, bip85_data=self.bip85_data, share_index=self.share_index),
             )
+
+
+class SeedWordIndexView(View):
+    NEXT = ButtonOption("下一页")
+    DONE = ButtonOption("完成")
+
+    def __init__(
+        self,
+        seed_num: int | None = None,
+        words: list[str] | None = None,
+        page_index: int = 0,
+        title: str = "BIP39 序号",
+        use_steel_cache: bool = False,
+        return_destination: Destination | None = None,
+    ):
+        super().__init__()
+        self.seed_num = seed_num
+        self.words = list(words) if words else None
+        self.page_index = page_index
+        self.title = title
+        self.use_steel_cache = use_steel_cache
+        self.return_destination = return_destination
+
+    def _resolve_words_and_indices(self) -> tuple[list[str], list[int]]:
+        if self.words is not None:
+            normalized_words = list(self.words)
+            return normalized_words, words_to_indices(normalized_words)
+
+        if self.use_steel_cache:
+            normalized_words = self.controller.storage.get_steel_encrypted_mnemonic()
+            if not normalized_words:
+                raise SeedWordsUnavailableException("当前没有可显示的钢板二次加密助记词。")
+            return normalized_words, words_to_indices(normalized_words)
+
+        seed = self.controller.get_seed(self.seed_num) if self.seed_num is not None else self.controller.storage.get_pending_seed()
+        if seed is None:
+            raise SeedWordsUnavailableException("当前没有可显示的助记词。")
+
+        seed.ensure_seed_words_available()
+        return seed.mnemonic_display_list, seed.get_bip39_word_indices()
+
+    def _return(self) -> Destination:
+        if self.return_destination is not None:
+            return self.return_destination
+        return Destination(BackStackView)
+
+    def run(self):
+        try:
+            words, indices = self._resolve_words_and_indices()
+        except SeedWordsUnavailableException as exc:
+            self.run_screen(
+                WarningScreen,
+                title="无法显示序号",
+                status_headline=None,
+                text=str(exc),
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return self._return()
+        except Exception:
+            self.run_screen(
+                WarningScreen,
+                title="无法显示序号",
+                status_headline=None,
+                text="当前助记词不是标准 BIP39 英文词表，无法显示 0-2047 官方序号。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return self._return()
+
+        entries_per_page = 6
+        total_pages = max(1, (len(words) + entries_per_page - 1) // entries_per_page)
+        start = self.page_index * entries_per_page
+        end = start + entries_per_page
+        page_words = words[start:end]
+        page_indices = indices[start:end]
+        max_word_len = max((len(word) for word in page_words), default=0)
+        lines = []
+        for offset, (word, index) in enumerate(zip(page_words, page_indices), start=1):
+            position = start + offset
+            lines.append(f"{position:02d}. {word:<{max_word_len}}  {index:04d}")
+
+        button_data = [self.NEXT] if self.page_index < total_pages - 1 else [self.DONE]
+        selected_menu_num = self.run_screen(
+            ToolsFormattedTextScreen,
+            title=f"{self.title}：{self.page_index + 1}/{total_pages}",
+            text="\n".join(lines),
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            if self.page_index > 0:
+                return Destination(
+                    SeedWordIndexView,
+                    view_args=dict(
+                        seed_num=self.seed_num,
+                        words=self.words,
+                        page_index=self.page_index - 1,
+                        title=self.title,
+                        use_steel_cache=self.use_steel_cache,
+                        return_destination=self.return_destination,
+                    ),
+                    clear_history=True,
+                )
+            return self._return()
+
+        if button_data[selected_menu_num] == self.NEXT:
+            return Destination(
+                SeedWordIndexView,
+                view_args=dict(
+                    seed_num=self.seed_num,
+                    words=self.words,
+                    page_index=self.page_index + 1,
+                    title=self.title,
+                    use_steel_cache=self.use_steel_cache,
+                    return_destination=self.return_destination,
+                ),
+            )
+
+        return self._return()
 
 
 

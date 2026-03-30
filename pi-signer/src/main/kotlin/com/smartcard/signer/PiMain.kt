@@ -453,20 +453,22 @@ private fun parseBitcoinXpubType(raw: String): BitcoinXpubType {
 private fun printUsage() {
     println(
         """
-        TP Satochip Pi Signer
+        离线签名器
+
+        兼容旧命令: pi-signer
 
         用法:
-          pi-signer unlock --pin <PIN> [--path <BIP32>] [--reader <关键字>] [--timeout-sec <秒>]
-          pi-signer sign --pin <PIN> [--path <BIP32>] (--payload <TP字符串> | --payload-file <文件>)
+          offline-signer unlock --pin <PIN> [--path <BIP32>] [--reader <关键字>] [--timeout-sec <秒>]
+          offline-signer sign --pin <PIN> [--path <BIP32>] (--payload <签名请求字符串> | --payload-file <文件>)
                          [--reader <关键字>] [--timeout-sec <秒>] [--out response.txt] [--qr response.png]
-          pi-signer get-xpub --pin <PIN> [--xtype zpub] [--path <BIP32账户路径>]
+          offline-signer get-xpub --pin <PIN> [--xtype zpub] [--path <BIP32账户路径>]
                              [--reader <关键字>] [--timeout-sec <秒>]
 
         例子:
-          pi-signer unlock --pin 123456
-          pi-signer sign --pin 123456 --payload-file request.txt --out response.txt --qr response.png
-          pi-signer get-xpub --pin 123456 --xtype zpub
-          pi-signer sign-psbt --pin 123456 --psbt-file unsigned.psbt --out-psbt signed.psbt
+          offline-signer unlock --pin 123456
+          offline-signer sign --pin 123456 --payload-file request.txt --out response.txt --qr response.png
+          offline-signer get-xpub --pin 123456 --xtype zpub
+          offline-signer sign-psbt --pin 123456 --psbt-file unsigned.psbt --out-psbt signed.psbt
         """.trimIndent()
     )
 }

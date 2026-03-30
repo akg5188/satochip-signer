@@ -34,11 +34,16 @@ from tp_fragment import FragmentParseError, MultiFragmentAssembler, parse_tp_mul
 
 
 APP_DIR = Path(__file__).resolve().parent
-WORK_DIR = Path(os.environ.get("TP_KIOSK_WORK_DIR", "/run/tp-pi-kiosk"))
+WORK_DIR = Path(os.environ.get("OFFLINE_SIGNER_KIOSK_WORK_DIR", os.environ.get("TP_KIOSK_WORK_DIR", "/run/offline-signer-kiosk")))
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = WORK_DIR / "kiosk.log"
 
-PI_SIGNER_BIN = Path(os.environ.get("TP_PI_SIGNER_BIN", "/opt/tp-pi-signer/bin/pi-signer"))
+PI_SIGNER_BIN = Path(
+    os.environ.get(
+        "OFFLINE_SIGNER_BIN",
+        os.environ.get("TP_PI_SIGNER_BIN", "/opt/offline-signer/bin/offline-signer"),
+    )
+)
 DERIVATION_PATH = os.environ.get("TP_DERIVATION_PATH", "m/44'/60'/0'/0/0")
 DEFAULT_READER_HINT = os.environ.get("TP_READER_HINT", "ACR39")
 BOOT_UNLOCK_SHA256 = os.environ.get("TP_BOOT_UNLOCK_SHA256", "").strip().lower()
@@ -933,7 +938,7 @@ def main() -> int:
     )
 
     if not PI_SIGNER_BIN.exists():
-        print(f"pi-signer 可执行文件不存在: {PI_SIGNER_BIN}", file=sys.stderr)
+        print(f"离线签名器可执行文件不存在: {PI_SIGNER_BIN}", file=sys.stderr)
         return 1
 
     try:

@@ -20,6 +20,17 @@ BR2_JLEVEL="${BR2_JLEVEL:-4}"
 TP_BUILD_CPUSET="${TP_BUILD_CPUSET:-0,1,2,3}"
 TP_BUILD_NICE="${TP_BUILD_NICE:-19}"
 TP_BUILD_IONICE_CLASS="${TP_BUILD_IONICE_CLASS:-3}"
+TP_BUILD_CLEAN_MODE="${TP_BUILD_CLEAN_MODE:-clean}"
+
+case "$TP_BUILD_CLEAN_MODE" in
+  clean|no-clean)
+    ;;
+  *)
+    echo "Unsupported TP_BUILD_CLEAN_MODE: $TP_BUILD_CLEAN_MODE" >&2
+    echo "Expected one of: clean, no-clean" >&2
+    exit 1
+    ;;
+esac
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$ASCII_BUILD_DIR" "$ASCII_IMAGE_DIR" "$ASCII_CCACHE_DIR" "$ASCII_CCACHE_TEMPDIR"
@@ -85,11 +96,16 @@ BUILD_PREFIX=(env "BR2_JLEVEL=$BR2_JLEVEL")
 if command -v taskset >/dev/null 2>&1; then
   BUILD_PREFIX=(taskset -c "$TP_BUILD_CPUSET" "${BUILD_PREFIX[@]}")
 fi
+BUILD_ARGS=(./build.sh --pi0 --smartcard --skip-repo)
+if [[ "$TP_BUILD_CLEAN_MODE" == "no-clean" ]]; then
+  BUILD_ARGS+=(--no-clean)
+fi
 
 echo "Starting SeedSigner OS build"
 echo "  BR2_JLEVEL=$BR2_JLEVEL"
 echo "  TP_BUILD_CPUSET=$TP_BUILD_CPUSET"
+echo "  TP_BUILD_CLEAN_MODE=$TP_BUILD_CLEAN_MODE"
 echo "  log=$LOG_FILE"
 
 nice -n "$TP_BUILD_NICE" ionice -c "$TP_BUILD_IONICE_CLASS" \
-  "${BUILD_PREFIX[@]}" ./build.sh --pi0 --smartcard --skip-repo --no-clean 2>&1 | tee "$LOG_FILE"
+  "${BUILD_PREFIX[@]}" "${BUILD_ARGS[@]}" 2>&1 | tee "$LOG_FILE"

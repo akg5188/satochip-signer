@@ -2034,7 +2034,7 @@ class SatochipSigner:
         if not status.is_seeded:
             raise CliError("卡内未导入种子/助记词")
         if status.needs_2fa:
-            raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+            raise CliError("卡已启用 2FA，当前离线签名器暂不支持 2FA")
 
         if status.needs_secure_channel:
             try:
@@ -2047,7 +2047,7 @@ class SatochipSigner:
             if not connector_status.is_seeded:
                 raise CliError("卡内未导入种子/助记词")
             if connector_status.needs_2fa:
-                raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+                raise CliError("卡已启用 2FA，当前离线签名器暂不支持 2FA")
             try:
                 connector_card_verify_pin(connector, pin)
             except Exception as exc:
@@ -2085,7 +2085,7 @@ class SatochipSigner:
         if not status.is_seeded:
             raise CliError("卡内未导入种子/助记词")
         if status.needs_2fa:
-            raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+            raise CliError("卡已启用 2FA，当前离线签名器暂不支持 2FA")
 
         connector = None
         address_hint = self._request_address_hint(request)
@@ -2101,7 +2101,7 @@ class SatochipSigner:
             if not connector_status.is_seeded:
                 raise CliError("卡内未导入种子/助记词")
             if connector_status.needs_2fa:
-                raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+                raise CliError("卡已启用 2FA，当前离线签名器暂不支持 2FA")
             try:
                 connector_card_verify_pin(connector, pin)
             except Exception as exc:
@@ -2270,7 +2270,7 @@ class SatochipSigner:
         if not status.is_seeded:
             raise CliError("卡内未导入种子/助记词")
         if status.needs_2fa:
-            raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+            raise CliError("卡已启用 2FA，当前离线签名器暂不支持 2FA")
 
         try:
             connector = ensure_satochip_connector(card)
@@ -2283,7 +2283,7 @@ class SatochipSigner:
         if not connector_status.is_seeded:
             raise CliError("卡内未导入种子/助记词")
         if connector_status.needs_2fa:
-            raise CliError("卡已启用 2FA，当前 TP 签名器暂不支持 2FA")
+            raise CliError("卡已启用 2FA，当前离线签名器暂不支持 2FA")
 
         try:
             connector_card_verify_pin(connector, pin)
@@ -2805,22 +2805,24 @@ def run_sign_psbt(options: CliOptions) -> None:
 def print_usage() -> None:
     print(
         """
-TP Satochip Pi Signer (Python)
+离线签名器 (Python)
+
+兼容旧命令: pi-signer
 
 用法:
-  pi-signer unlock --pin <PIN> [--path <BIP32>] [--reader <关键字>] [--timeout-sec <秒>]
-  pi-signer sign --pin <PIN> [--path <BIP32>] (--payload <TP字符串> | --payload-file <文件>)
+  offline-signer unlock --pin <PIN> [--path <BIP32>] [--reader <关键字>] [--timeout-sec <秒>]
+  offline-signer sign --pin <PIN> [--path <BIP32>] (--payload <签名请求字符串> | --payload-file <文件>)
                  [--reader <关键字>] [--timeout-sec <秒>] [--out response.txt] [--qr response.png]
-  pi-signer get-xpub --pin <PIN> [--xtype zpub] [--path <BIP32账户路径>] [--reader <关键字>]
-  pi-signer sign-psbt --pin <PIN> (--psbt <Base64> | --psbt-file <文件>)
+  offline-signer get-xpub --pin <PIN> [--xtype zpub] [--path <BIP32账户路径>] [--reader <关键字>]
+  offline-signer sign-psbt --pin <PIN> (--psbt <Base64> | --psbt-file <文件>)
                       [--reader <关键字>] [--timeout-sec <秒>]
                       [--out-psbt signed.psbt] [--out-psbt-base64 signed.psbt.txt] [--out-tx signed.tx.hex]
 
 例子:
-  pi-signer unlock --pin 123456
-  pi-signer sign --pin 123456 --payload-file request.txt --out response.txt --qr response.png
-  pi-signer get-xpub --pin 123456 --xtype zpub
-  pi-signer sign-psbt --pin 123456 --psbt-file unsigned.psbt --out-psbt signed.psbt
+  offline-signer unlock --pin 123456
+  offline-signer sign --pin 123456 --payload-file request.txt --out response.txt --qr response.png
+  offline-signer get-xpub --pin 123456 --xtype zpub
+  offline-signer sign-psbt --pin 123456 --psbt-file unsigned.psbt --out-psbt signed.psbt
         """.strip()
     )
 

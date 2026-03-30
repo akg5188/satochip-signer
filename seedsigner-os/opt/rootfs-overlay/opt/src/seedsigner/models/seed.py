@@ -188,6 +188,19 @@ class Seed:
     def ensure_seed_words_available(self):
         """Raise if this seed type does not expose mnemonic words."""
         return
+
+    @property
+    def bip39_word_indices_supported(self) -> bool:
+        return type(self) is Seed
+
+    def get_bip39_word_indices(self) -> List[int]:
+        if not self.bip39_word_indices_supported:
+            raise SeedWordsUnavailableException("当前这类助记词不支持显示 BIP39 0-2047 序号。")
+
+        try:
+            return [self.wordlist.index(word) for word in self.mnemonic_list]
+        except ValueError as exc:
+            raise SeedWordsUnavailableException("当前这类助记词不支持显示 BIP39 0-2047 序号。") from exc
         
 
     def wipe(self):
@@ -234,6 +247,10 @@ class TransientWordSeed(Seed):
     @property
     def bip85_supported(self) -> bool:
         return False
+
+    @property
+    def bip39_word_indices_supported(self) -> bool:
+        return True
 
     def get_root(self, network: str = SettingsConstants.MAINNET):
         raise InvalidSeedException("TransientWordSeed")

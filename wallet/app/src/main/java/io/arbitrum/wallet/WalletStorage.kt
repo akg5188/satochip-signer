@@ -301,7 +301,7 @@ object WalletStorage {
                             networkLabel = obj.optString("networkLabel").ifBlank { "Bitcoin" },
                             scriptTypeLabel = obj.optString("scriptTypeLabel").ifBlank { "Unknown" },
                             accountPathHint = obj.optString("accountPathHint"),
-                            sourceLabel = obj.optString("sourceLabel").ifBlank { "Imported from pi-signer get-xpub" },
+                            sourceLabel = obj.optString("sourceLabel").ifBlank { "Imported from offline-signer get-xpub" },
                             importedAt = obj.optLong("importedAt"),
                             balanceSats = obj.optLong("balanceSats", 0L),
                             priceUsd = obj.optDouble("priceUsd").takeIf { !it.isNaN() && it > 0.0 },

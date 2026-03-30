@@ -8,11 +8,13 @@ fi
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 KIOSK_SRC="$ROOT_DIR/pi-appliance/app"
-SERVICE_SRC="$ROOT_DIR/pi-appliance/systemd/tp-signer-kiosk.service"
+SERVICE_SRC="$ROOT_DIR/pi-appliance/systemd/offline-signer-kiosk.service"
 
-if [[ -x "$ROOT_DIR/pi-signer/bin/pi-signer" ]]; then
+if [[ -x "$ROOT_DIR/offline-signer/bin/offline-signer" || -x "$ROOT_DIR/offline-signer/bin/pi-signer" ]]; then
+  SIGNER_SRC="$ROOT_DIR/offline-signer"
+elif [[ -x "$ROOT_DIR/pi-signer/bin/pi-signer" ]]; then
   SIGNER_SRC="$ROOT_DIR/pi-signer"
-elif [[ -x "$ROOT_DIR/bin/pi-signer" ]]; then
+elif [[ -x "$ROOT_DIR/bin/offline-signer" || -x "$ROOT_DIR/bin/pi-signer" ]]; then
   SIGNER_SRC="$ROOT_DIR"
 else
   echo "Missing signer binary in release bundle." >&2
@@ -43,7 +45,7 @@ ensure_line() {
   fi
 }
 
-ensure_line "# tp-offline-signer"
+ensure_line "# offline-signer"
 ensure_line "dtparam=spi=on"
 ensure_line "camera_auto_detect=1"
 ensure_line "dtoverlay=ov5647"
@@ -51,20 +53,20 @@ ensure_line "dtoverlay=disable-wifi"
 ensure_line "dtoverlay=disable-bt"
 
 echo "[3/6] Deploying signer binaries..."
-rm -rf /opt/tp-pi-signer
-mkdir -p /opt/tp-pi-signer
-cp -a "$SIGNER_SRC"/* /opt/tp-pi-signer/
+rm -rf /opt/offline-signer
+mkdir -p /opt/offline-signer
+cp -a "$SIGNER_SRC"/* /opt/offline-signer/
 
 echo "[4/6] Deploying kiosk app..."
-rm -rf /opt/tp-pi-kiosk
-mkdir -p /opt/tp-pi-kiosk
-cp -a "$KIOSK_SRC"/* /opt/tp-pi-kiosk/
-chmod +x /opt/tp-pi-kiosk/*.py /opt/tp-pi-kiosk/launch_kiosk.sh
+rm -rf /opt/offline-signer-kiosk
+mkdir -p /opt/offline-signer-kiosk
+cp -a "$KIOSK_SRC"/* /opt/offline-signer-kiosk/
+chmod +x /opt/offline-signer-kiosk/*.py /opt/offline-signer-kiosk/launch_kiosk.sh
 
 echo "[5/6] Installing systemd service..."
-cp "$SERVICE_SRC" /etc/systemd/system/tp-signer-kiosk.service
+cp "$SERVICE_SRC" /etc/systemd/system/offline-signer-kiosk.service
 systemctl daemon-reload
-systemctl enable tp-signer-kiosk.service
+systemctl enable offline-signer-kiosk.service
 
 echo "[6/6] Done"
 echo
@@ -76,5 +78,5 @@ Next step:
 
 After reboot, kiosk should auto-start on the ST7789 display.
 If you need logs:
-  journalctl -u tp-signer-kiosk -f
+  journalctl -u offline-signer-kiosk -f
 MSG

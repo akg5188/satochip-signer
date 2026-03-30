@@ -138,6 +138,35 @@ prepare_app_overlay() {
   prune_app_repo
 }
 
+write_runtime_integrity_manifest() {
+  local repo_root script_path manifest_target build_commit_time repo_head build_time_utc
+
+  repo_root="$(cd "${cur_dir}/../.." && pwd -L)"
+  script_path="${repo_root}/scripts/write_runtime_firmware_manifest.py"
+  manifest_target="${rootfs_overlay}/opt/src/seedsigner/resources/offline-signer-firmware-integrity.json"
+
+  if [ ! -f "${script_path}" ]; then
+    echo "Integrity manifest generator not found, skipping firmware self-check manifest"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "${manifest_target}")"
+  build_commit_time=""
+  if [ -f "${rootfs_overlay}/opt/src/.build_commit_time" ]; then
+    build_commit_time="$(cat "${rootfs_overlay}/opt/src/.build_commit_time")"
+  fi
+  repo_head="$(git -C "${repo_root}" rev-parse HEAD 2>/dev/null || echo unknown)"
+  build_time_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+  python3 "${script_path}" \
+    --repo-root "${repo_root}" \
+    --overlay-root "${rootfs_overlay}" \
+    --output "${manifest_target}" \
+    --repo-head "${repo_head}" \
+    --build-commit-time "${build_commit_time}" \
+    --build-time-utc "${build_time_utc}"
+}
+
 download_app_repo() {
   # remove previous opt seedsigner app repo code if it already exists
   rm -fr ${rootfs_overlay}/opt/
@@ -194,6 +223,10 @@ build_image() {
     download_app_repo
   else
     install_default_settings
+  fi
+
+  if [ "${3}" = "skip-repo" ]; then
+    write_runtime_integrity_manifest
   fi
 
   # Setup external tree

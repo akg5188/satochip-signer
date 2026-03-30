@@ -19,14 +19,14 @@ Usage:
   sudo bash image-builder/build_flashable_image.sh [options]
 
 Options:
-  --bundle <path>      Release bundle directory containing pi-signer/ and pi-appliance/
-                       default: latest dist/tp-pi-signer-*/ directory
+  --bundle <path>      Release bundle directory containing offline-signer/ and pi-appliance/
+                       default: latest dist/offline-signer-*/ directory
   --base-image <path>  Existing .img/.img.xz/.zip base image file
   --base-url <url>     Download URL when --base-image not provided
                        default: $BASE_URL_DEFAULT
   --output <path>      Output image path (.img). xz is generated automatically.
   --signer-runtime <auto|java|python>
-                       Runtime dependency profile for pi-signer
+                       Runtime dependency profile for offline-signer
                        default: auto (detect from bundle content)
   --skip-apt           Skip apt install in chroot (not recommended)
 
@@ -68,6 +68,12 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 find_latest_bundle_dir() {
+  local latest
+  latest="$(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'offline-signer-*' | sort | tail -n1)"
+  if [[ -n "$latest" ]]; then
+    echo "$latest"
+    return
+  fi
   find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'tp-pi-signer-*' | sort | tail -n1
 }
 
@@ -81,14 +87,28 @@ if [[ -z "$BUNDLE_DIR" || ! -d "$BUNDLE_DIR" ]]; then
   exit 1
 fi
 
-if [[ ! -x "$BUNDLE_DIR/pi-signer/bin/pi-signer" ]]; then
-  echo "Invalid bundle: missing pi-signer/bin/pi-signer in $BUNDLE_DIR" >&2
+resolve_bundle_signer_dir() {
+  local bundle="$1"
+  if [[ -x "$bundle/offline-signer/bin/offline-signer" || -x "$bundle/offline-signer/bin/pi-signer" ]]; then
+    echo "$bundle/offline-signer"
+    return 0
+  fi
+  if [[ -x "$bundle/pi-signer/bin/pi-signer" || -x "$bundle/pi-signer/bin/offline-signer" ]]; then
+    echo "$bundle/pi-signer"
+    return 0
+  fi
+  return 1
+}
+
+SIGNER_DIR="$(resolve_bundle_signer_dir "$BUNDLE_DIR" || true)"
+if [[ -z "$SIGNER_DIR" ]]; then
+  echo "Invalid bundle: missing offline-signer binary in $BUNDLE_DIR" >&2
   exit 1
 fi
 
 detect_signer_runtime() {
-  local bundle="$1"
-  if [[ -f "$bundle/pi-signer/lib/pi-signer.jar" ]]; then
+  local signer_dir="$1"
+  if compgen -G "$signer_dir/lib/*.jar" >/dev/null; then
     echo "java"
     return
   fi
@@ -96,7 +116,7 @@ detect_signer_runtime() {
 }
 
 if [[ "$SIGNER_RUNTIME" == "auto" ]]; then
-  SIGNER_RUNTIME="$(detect_signer_runtime "$BUNDLE_DIR")"
+  SIGNER_RUNTIME="$(detect_signer_runtime "$SIGNER_DIR")"
 fi
 
 if [[ "$SIGNER_RUNTIME" != "java" && "$SIGNER_RUNTIME" != "python" ]]; then
@@ -186,7 +206,7 @@ fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 if [[ -z "$OUTPUT_IMAGE" ]]; then
-  OUTPUT_IMAGE="$OUTPUT_DIR/tp-pi-signer-appliance-$STAMP.img"
+  OUTPUT_IMAGE="$OUTPUT_DIR/offline-signer-appliance-$STAMP.img"
 fi
 
 ROOT_MNT="$MOUNT_DIR/root"
@@ -211,14 +231,14 @@ mount "$ROOT_DEV" "$ROOT_MNT"
 mount "$BOOT_DEV" "$BOOT_MNT"
 
 echo "Deploying signer bundle..."
-rm -rf "$ROOT_MNT/opt/tp-pi-signer" "$ROOT_MNT/opt/tp-pi-kiosk"
-mkdir -p "$ROOT_MNT/opt/tp-pi-signer" "$ROOT_MNT/opt/tp-pi-kiosk"
-cp -a "$BUNDLE_DIR/pi-signer"/. "$ROOT_MNT/opt/tp-pi-signer/"
-cp -a "$BUNDLE_DIR/pi-appliance/app"/. "$ROOT_MNT/opt/tp-pi-kiosk/"
-chmod +x "$ROOT_MNT/opt/tp-pi-kiosk"/*.py "$ROOT_MNT/opt/tp-pi-kiosk/launch_kiosk.sh"
+rm -rf "$ROOT_MNT/opt/offline-signer" "$ROOT_MNT/opt/offline-signer-kiosk"
+mkdir -p "$ROOT_MNT/opt/offline-signer" "$ROOT_MNT/opt/offline-signer-kiosk"
+cp -a "$SIGNER_DIR"/. "$ROOT_MNT/opt/offline-signer/"
+cp -a "$BUNDLE_DIR/pi-appliance/app"/. "$ROOT_MNT/opt/offline-signer-kiosk/"
+chmod +x "$ROOT_MNT/opt/offline-signer-kiosk"/*.py "$ROOT_MNT/opt/offline-signer-kiosk/launch_kiosk.sh"
 
-cp "$BUNDLE_DIR/pi-appliance/systemd/tp-signer-kiosk.service" \
-  "$ROOT_MNT/etc/systemd/system/tp-signer-kiosk.service"
+cp "$BUNDLE_DIR/pi-appliance/systemd/offline-signer-kiosk.service" \
+  "$ROOT_MNT/etc/systemd/system/offline-signer-kiosk.service"
 
 # boot config
 BOOT_CFG="$BOOT_MNT/config.txt"
@@ -237,7 +257,7 @@ ensure_cfg_line() {
   fi
 }
 
-ensure_cfg_line "# tp-offline-signer"
+ensure_cfg_line "# offline-signer"
 ensure_cfg_line "dtparam=spi=on"
 ensure_cfg_line "camera_auto_detect=1"
 ensure_cfg_line "dtoverlay=ov5647"
@@ -282,7 +302,7 @@ fi
 
 echo "Enabling services..."
 systemctl --root "$ROOT_MNT" enable pcscd.service >/dev/null || true
-systemctl --root "$ROOT_MNT" enable tp-signer-kiosk.service >/dev/null
+systemctl --root "$ROOT_MNT" enable offline-signer-kiosk.service >/dev/null
 
 # Optional hard-disable network services on first boot.
 systemctl --root "$ROOT_MNT" disable wpa_supplicant.service >/dev/null 2>&1 || true

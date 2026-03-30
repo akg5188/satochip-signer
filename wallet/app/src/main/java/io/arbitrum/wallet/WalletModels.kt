@@ -88,7 +88,7 @@ data class BitcoinWatchAccount(
     val networkLabel: String,
     val scriptTypeLabel: String,
     val accountPathHint: String,
-    val sourceLabel: String = "Imported from pi-signer get-xpub",
+    val sourceLabel: String = "Imported from offline-signer get-xpub",
     val importedAt: Long,
     val accountFingerprintHex: String = "",
     val receivePreview: List<BitcoinDerivedAddressPreview> = emptyList(),

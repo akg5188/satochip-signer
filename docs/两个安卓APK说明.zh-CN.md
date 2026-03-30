@@ -14,10 +14,9 @@
 文件：
 
 - 默认按需构建，不长期回填到仓库 `dist/`
-- 本地构建后产物：
-  `dist/tp-qr-relay-android-latest.apk`
-  `dist/tp-qr-relay-android-latest.apk.sha256`
-  `dist/tp-qr-relay-android-latest.build-info.txt`
+- 本地构建后产物：`dist/tp-qr-relay-android-latest.apk`
+- 对应校验文件：`dist/tp-qr-relay-android-latest.apk.sha256`
+- 对应构建记录：`dist/tp-qr-relay-android-latest.build-info.txt`
 - 源码目录：`app/`
 - 标准构建命令：`bash scripts/build_tp_relay_apk.sh`
 

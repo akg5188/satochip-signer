@@ -1,0 +1,20 @@
+[Unit]
+Description=Offline Signer Kiosk
+After=multi-user.target pcscd.service
+Wants=pcscd.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/offline-signer-kiosk
+Environment=OFFLINE_SIGNER_KIOSK_WORK_DIR=/run/offline-signer-kiosk
+RuntimeDirectory=offline-signer-kiosk
+ExecStart=/opt/offline-signer-kiosk/launch_kiosk.sh
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

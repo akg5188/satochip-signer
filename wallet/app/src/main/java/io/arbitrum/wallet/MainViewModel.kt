@@ -196,7 +196,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun importBitcoinWatchAccountInternal(rawInput: String) {
         val parsed = parseBitcoinWatchAccountImport(rawInput)
-            ?: return setError("请输入有效的 xpub / ypub / zpub / tpub / upub / vpub，或直接粘贴 get-xpub 输出")
+            ?: return setError("请输入有效的 xpub / ypub / zpub / tpub / upub / vpub，或直接粘贴 offline-signer get-xpub 输出")
 
         val now = System.currentTimeMillis()
         var importedAccountId: String? = null

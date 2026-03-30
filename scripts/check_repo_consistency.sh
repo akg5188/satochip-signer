@@ -54,7 +54,7 @@ do
   grep -q "^${key}=" "$DIST_INFO" || fail "Missing build-info key: ${key}"
 done
 
-if rg -n 'repack_runtime_image\.sh|releases/tag/pi-signer-firmware-' \
+if rg -n 'repack_runtime_image\.sh|releases/tag/(pi-signer-firmware-|offline-signer-firmware-)' \
   "$ROOT_DIR/README.md" \
   "$ROOT_DIR/docs" \
   "$ROOT_DIR/seedsigner-os/README.zh-CN.md"

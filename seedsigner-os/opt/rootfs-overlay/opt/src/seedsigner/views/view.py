@@ -144,6 +144,10 @@ class Destination:
         "pin",
         "payload",
         "response_text",
+        "parts",
+        "psbt_base64",
+        "tx_hex",
+        "words",
     }
 
     @classmethod

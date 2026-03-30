@@ -13,13 +13,26 @@ DIST_SUM="${DIST_SUM:-$DIST_IMG.sha256}"
 DIST_INFO="${DIST_INFO:-$DIST_DIR/system-update-latest.build-info.txt}"
 DIST_BASENAME="$(basename "$DIST_IMG")"
 SNAPSHOT_DIR="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt"
+SNAPSHOT_DIR_REL="seedsigner-os/opt/rootfs-overlay/opt"
 SNAPSHOT_TIME_FILE="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt/src/.build_commit_time"
 NFC_BINDINGS_FILE="$ROOT_DIR/seedsigner-os/opt/external-packages/nfc-bindings/nfc-bindings.mk"
 XZ_THREADS="${XZ_THREADS:-1}"
+BUILD_CLEAN_MODE="${TP_BUILD_CLEAN_MODE:-clean}"
+
+case "$BUILD_CLEAN_MODE" in
+  clean|no-clean)
+    ;;
+  *)
+    echo "Unsupported TP_BUILD_CLEAN_MODE: $BUILD_CLEAN_MODE" >&2
+    echo "Expected one of: clean, no-clean" >&2
+    exit 1
+    ;;
+esac
 
 mkdir -p "$DIST_DIR"
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  export TP_BUILD_CLEAN_MODE="$BUILD_CLEAN_MODE"
   "$ROOT_DIR/scripts/run_seedsigner_build.sh"
 fi
 
@@ -62,11 +75,20 @@ if [[ "$repo_dirty" == "1" && "$DIST_BASENAME" == "system-update-latest.img.xz" 
   echo "Override only if you truly want an unreproducible stable artifact: ALLOW_DIRTY_REPO=1" >&2
   exit 1
 fi
+if [[ "$BUILD_CLEAN_MODE" != "clean" && "$DIST_BASENAME" == "system-update-latest.img.xz" && "${ALLOW_NO_CLEAN_RELEASE_BUILD:-0}" != "1" ]]; then
+  echo "Refusing to write dist/system-update-latest.img.xz from a no-clean build." >&2
+  echo "Stable artifacts must come from TP_BUILD_CLEAN_MODE=clean so later rebuilds have a chance to match." >&2
+  echo "Use a scratch DIST_IMG filename for incremental test builds, or override only if you truly want a non-reproducible stable artifact: ALLOW_NO_CLEAN_RELEASE_BUILD=1" >&2
+  exit 1
+fi
 snapshot_tree_sha="$(
-  cd "$SNAPSHOT_DIR"
-  while IFS= read -r -d '' file; do
-    sha256sum "$file"
-  done < <(find . -type f -print0 | LC_ALL=C sort -z) | sha256sum | awk '{print $1}'
+  (
+    cd "$SNAPSHOT_DIR"
+    while IFS= read -r -d '' file; do
+      rel_path="${file#$SNAPSHOT_DIR_REL/}"
+      sha256sum "./$rel_path"
+    done < <(git -C "$ROOT_DIR" ls-files -z -- "$SNAPSHOT_DIR_REL")
+  ) | sha256sum | awk '{print $1}'
 )"
 nfc_bindings_sha="$(sha256sum "$NFC_BINDINGS_FILE" | awk '{print $1}')"
 
@@ -98,6 +120,7 @@ runtime_snapshot_tree_sha256=$snapshot_tree_sha
 nfc_bindings_mk_sha256=$nfc_bindings_sha
 build_script=scripts/run_seedsigner_build.sh
 package_script=scripts/build_pi_firmware_from_snapshot.sh
+build_clean_mode=$BUILD_CLEAN_MODE
 build_time_utc=$build_time_utc
 EOF
 
