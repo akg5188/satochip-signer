@@ -1,6 +1,6 @@
 {
   "build_commit_time": "2026-03-10 16:30",
-  "build_time_utc": "2026-03-30T07:08:36Z",
+  "build_time_utc": "2026-03-30T07:19:39Z",
   "files": [
     {
       "path": "/.gitignore",
@@ -1572,11 +1572,11 @@
   "generated_by": "scripts/write_runtime_firmware_manifest.py",
   "manifest_format_version": 1,
   "overlay_file_tree_sha256": "df54a7182a9edad617e68c40057747aa8f3d92917072955994f04666bc0e5cbe",
-  "repo_head": "d0fd297caa76b5a3ddcc98f1fe4f21cb34e23d1f",
+  "repo_head": "77cfa9a7ef7e2bbd7d82bb7a586dfe511b414c9c",
   "scan_roots": [
     "/opt/src",
     "/opt/pi-signer-py"
   ],
-  "source_snapshot_tree_sha256": "e4e3c7b6611ae627efdd2e8f6da6deefb4b62f350a44e1227bfc1c564fb73219",
+  "source_snapshot_tree_sha256": "237124ccae0882e8aefc52e4f8d9e2af94173d27a499526d9ece658a479fb116",
   "verified_file_count": 313
 }
