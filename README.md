@@ -23,10 +23,12 @@
 
 - [一页式总导航](docs/一页式总导航.zh-CN.md)
 - [快速开始](docs/快速开始.zh-CN.md)
+- [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
 - [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md)
 - [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md)
 - [长期维护总入口](docs/长期维护总入口.zh-CN.md)
 - [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)
+- [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
 
 ## 现在该用什么
 
@@ -147,6 +149,7 @@ bash scripts/build_wallet_release.sh
 - [快速开始](docs/快速开始.zh-CN.md)
 - [两个安卓 APK 说明](docs/两个安卓APK说明.zh-CN.md)
 - [仓库结构说明](docs/仓库结构说明.zh-CN.md)
+- [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
 - [固件下载与写入指南](docs/固件下载与写入指南.zh-CN.md)
 - [安卓构建环境准备](docs/安卓构建环境准备.zh-CN.md)
 - [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md)
