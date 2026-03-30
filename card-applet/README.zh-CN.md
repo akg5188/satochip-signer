@@ -24,7 +24,7 @@
 - [CAP_BUILD_AND_INSTALL.zh-CN.md](CAP_BUILD_AND_INSTALL.zh-CN.md)
 - [prebuilt/README.md](prebuilt/README.md)
 - [../docs/固件下载与写入指南.zh-CN.md](../docs/固件下载与写入指南.zh-CN.md)
-- [J3R180 卡固件 Release 页面](https://github.com/akg5188/satochip-signer/releases/tag/j3r180-card-firmware-20260318)
+- [J3R180 卡固件 Release 页面](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318)
 
 如果你要：
 

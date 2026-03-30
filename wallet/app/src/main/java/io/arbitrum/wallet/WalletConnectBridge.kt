@@ -73,7 +73,7 @@ object WalletConnectBridge : WalletKit.WalletDelegate, CoreClient.CoreDelegate {
         val appMetaData = Core.Model.AppMetaData(
             name = "Satochip Wallet",
             description = "Multi-chain QR relay wallet",
-            url = "https://github.com/akg5188/satochip-signer",
+            url = "https://github.com/akg5188/tp-satochip-signer",
             icons = listOf("https://raw.githubusercontent.com/WalletConnect/walletconnect-assets/master/Icon/Gradient/Icon.png"),
             redirect = "satochipwallet://wc",
             appLink = null,
