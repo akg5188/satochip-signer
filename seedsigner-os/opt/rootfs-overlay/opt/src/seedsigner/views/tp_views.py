@@ -2,22 +2,22 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs
-
-from embit import script as embit_script
-from embit.networks import NETWORKS
 from gettext import gettext as _
 
 from seedsigner.gui.components import GUIConstants
 from seedsigner.gui.screens import RET_CODE__BACK_BUTTON, RET_CODE__POWER_BUTTON, ButtonListScreen, WarningScreen, LargeIconStatusScreen, seed_screens
 from seedsigner.gui.screens.scan_screens import ScanScreen
-from seedsigner.gui.screens.screen import ButtonOption, LoadingScreenThread, QRDisplayScreen
+from seedsigner.gui.screens.screen import BaseScreen, ButtonOption, LoadingScreenThread, QRDisplayScreen
 from seedsigner.helpers.iso7816 import format_sw_error
 from seedsigner.gui.screens.tools_screens import ToolsFormattedTextScreen, ToolsTextQRTextEntryScreen
+from seedsigner.helpers.firmware_integrity import DEFAULT_MANIFEST_PATH, verify_runtime_manifest
 from seedsigner.helpers.tp_fragment import FragmentParseError, MultiFragmentAssembler, parse_tp_multi_fragment
 from seedsigner.helpers.tp_relay import RelayAssembler, RelayParseError, parse_tp_relay_fragment
 from seedsigner.helpers import embit_utils, seedkeeper_utils
@@ -39,6 +39,7 @@ from seedsigner.models.mnemonic_steel import (
 from seedsigner.models.seed import InvalidSeedException, Seed, TransientWordSeed
 from seedsigner.models.steel_plate_scan import recognize_plate_groups_from_image
 from seedsigner.models.settings import SettingsConstants
+from seedsigner.hardware.buttons import HardwareButtonsConstants
 
 from .view import Destination, ErrorView, View
 
@@ -55,8 +56,13 @@ DEFAULT_READER_HINT = None
 CAMO_BUTTON_TEXT = " "
 CAMO_TEXT = " "
 STEEL_WRAP_WIDTH = 18
+SECP256K1_FIELD_PRIME = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
 
 logger = logging.getLogger(__name__)
+
+
+def _smartcard_tools_destination() -> Destination:
+    return Destination(ToolsTpSmartcardToolsView, clear_history=True)
 
 
 def _localize_error_detail(detail: str) -> str:
@@ -66,6 +72,27 @@ def _localize_error_detail(detail: str) -> str:
         (
             "hardwarebuttons.wait_for()" in lowered and "check_release" in lowered,
             "按钮输入模块不兼容，现已改为兼容官方输入流程，请刷新到最新固件。",
+        ),
+        (
+            "不是 tp 协议字符串" in short or "协议前缀不合法" in short,
+            "当前扫码内容不是已接入的签名协议，请把原始二维码样本留给我继续兼容。",
+        ),
+        (
+            "当前仅支持 signtransaction / personalsign / signtypeddata" in lowered
+            or "未知请求类型" in short,
+            "这个钱包发来的签名类型当前还没接入，请把原始二维码样本留给我继续兼容。",
+        ),
+        (
+            "typeddata 解析失败" in short or "typeddata message" in lowered,
+            "这个 typedData 签名请求格式当前不兼容，请把原始二维码样本留给我继续兼容。",
+        ),
+        (
+            "failed to parse bip32 path" in lowered or "path length exceeds maximum depth" in lowered,
+            "请求里的派生路径格式不对，当前无法签名。",
+        ),
+        (
+            "分片未收齐" in short or "补齐所有" in short,
+            "动态二维码没有扫完整，请继续扫描到 100%。",
         ),
         ("no card found" in lowered, "未检测到智能卡，请重新插卡后再试。"),
         ("timed out waiting for a card" in lowered, "等待智能卡超时，请确认读卡器和卡片连接。"),
@@ -96,7 +123,7 @@ def _prompt_for_tp_pin(parent_view):
 
 
 def _is_valid_bip32_path(path: str) -> bool:
-    value = (path or "").strip()
+    value = _normalize_bip32_path(path)
     if not value:
         return False
     if value == "m":
@@ -112,7 +139,28 @@ def _is_valid_bip32_path(path: str) -> bool:
 
 
 def _normalize_bip32_path(path: str) -> str:
-    return (path or "").strip().replace("H", "'").replace("h", "'")
+    value = unicodedata.normalize("NFKC", str(path or "").strip())
+    replacements = {
+        "H": "'",
+        "h": "'",
+        "’": "'",
+        "‘": "'",
+        "′": "'",
+        "`": "'",
+        "／": "/",
+        "\\": "/",
+    }
+    for src, dst in replacements.items():
+        value = value.replace(src, dst)
+    value = "/".join(part.strip() for part in value.split("/"))
+    value = value.replace("m/", "m/", 1)
+    if value == "M":
+        value = "m"
+    elif value.startswith("M/"):
+        value = "m/" + value[2:]
+    elif value and not value.startswith("m/") and value != "m":
+        value = "m/" + value.lstrip("/")
+    return value
 
 
 def _script_type_label(script_type: str) -> str:
@@ -141,6 +189,15 @@ def _chunk_text(text: str, width: int = 16) -> str:
     return "\n".join(value[i:i + width] for i in range(0, len(value), width))
 
 
+def _short_hash(text: str, width: int = 16) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return "unknown"
+    if len(value) <= width:
+        return value
+    return value[:width]
+
+
 def _wrap_path_text(path: str, width: int = 16) -> str:
     normalized = _normalize_bip32_path(path)
     if not normalized:
@@ -162,6 +219,158 @@ def _wrap_path_text(path: str, width: int = 16) -> str:
     return "\n".join(lines)
 
 
+def _is_evm_derivation_path(path: str) -> bool:
+    normalized_path = _normalize_bip32_path(path)
+    path_sections = normalized_path.replace("'", "h").split("/")
+    return len(path_sections) >= 3 and path_sections[2] == "60h"
+
+
+def _paginate_report_lines(lines: list[str], lines_per_page: int = 10) -> list[str]:
+    cleaned = [line.rstrip() for line in lines]
+    if not cleaned:
+        return [""]
+    pages = []
+    for start in range(0, len(cleaned), lines_per_page):
+        page = "\n".join(cleaned[start:start + lines_per_page]).strip("\n")
+        pages.append(page if page else " ")
+    return pages
+
+
+def _append_issue_lines(lines: list[str], title: str, items: list[dict], limit: int = 5) -> None:
+    if not items:
+        return
+    lines.append(title)
+    for item in items[:limit]:
+        lines.append(item.get("path", "unknown"))
+    remaining = len(items) - limit
+    if remaining > 0:
+        lines.append(f"... 还有 {remaining} 项")
+    lines.append("")
+
+
+def _format_firmware_integrity_summary(result: dict) -> str:
+    if not result.get("supported"):
+        return (
+            f"{result.get('error', '当前固件还没有内置完整性清单。')}\n\n"
+            "这项功能会核对关键程序文件是否和刷机时一致。"
+        )
+
+    missing_count = len(result.get("missing", []))
+    modified_count = len(result.get("modified", []))
+    unexpected_count = len(result.get("unexpected", []))
+    error_count = len(result.get("errors", []))
+    status_text = "通过" if result.get("ok") else "发现异常"
+
+    lines = [
+        f"结果: {status_text}",
+        f"关键文件: {result.get('verified_file_count', 0)}",
+        f"缺失: {missing_count}  改动: {modified_count}",
+        f"额外: {unexpected_count}  读取失败: {error_count}",
+        "",
+    ]
+
+    repo_head = result.get("repo_head", "")
+    if repo_head:
+        lines.extend(["构建提交:", _short_hash(repo_head), ""])
+
+    snapshot_sha = result.get("source_snapshot_tree_sha256", "")
+    if snapshot_sha:
+        lines.extend(["快照指纹:", _short_hash(snapshot_sha), ""])
+
+    if result.get("ok"):
+        lines.extend([
+            "说明:",
+            "这能发现关键文件被改动或损坏。",
+            "若担心整卡被重刷，",
+            "还要和 GitHub Release 指纹对照。",
+        ])
+    else:
+        lines.extend([
+            "建议:",
+            "先不要导入助记词或签名。",
+            "先换备用卡，或重新刷正式固件。",
+        ])
+
+    return "\n".join(lines)
+
+
+def _build_firmware_integrity_detail_pages(result: dict) -> list[str]:
+    lines = []
+
+    if not result.get("supported"):
+        lines.extend(
+            [
+                "状态: 不支持",
+                result.get("error", "当前固件还没有内置完整性清单。"),
+                "",
+                "清单路径:",
+                result.get("manifest_path", str(DEFAULT_MANIFEST_PATH)),
+                "",
+                "说明:",
+                "这项功能依赖内置清单，",
+                "请刷新到最新正式版后再试。",
+            ]
+        )
+        return _paginate_report_lines(lines)
+
+    lines.extend(
+        [
+            f"状态: {'通过' if result.get('ok') else '异常'}",
+            f"关键文件: {result.get('verified_file_count', 0)}",
+            "",
+        ]
+    )
+
+    repo_head = result.get("repo_head", "")
+    if repo_head:
+        lines.extend(["构建提交:", _chunk_text(repo_head), ""])
+
+    build_commit_time = result.get("build_commit_time", "")
+    if build_commit_time:
+        lines.append(f"源码时间: {build_commit_time}")
+    build_time_utc = result.get("build_time_utc", "")
+    if build_time_utc:
+        lines.append(f"构建时间: {build_time_utc}")
+    if build_commit_time or build_time_utc:
+        lines.append("")
+
+    snapshot_sha = result.get("source_snapshot_tree_sha256", "")
+    if snapshot_sha:
+        lines.extend(["快照指纹:", _chunk_text(snapshot_sha), ""])
+
+    expected_tree = result.get("expected_overlay_file_tree_sha256", "")
+    if expected_tree:
+        lines.extend(["内置树摘要:", _chunk_text(expected_tree), ""])
+
+    current_tree = result.get("current_overlay_file_tree_sha256", "")
+    if current_tree:
+        lines.extend(["当前树摘要:", _chunk_text(current_tree), ""])
+
+    _append_issue_lines(lines, "被改动:", result.get("modified", []))
+    _append_issue_lines(lines, "已缺失:", result.get("missing", []))
+    _append_issue_lines(lines, "额外文件:", result.get("unexpected", []))
+    _append_issue_lines(lines, "读取失败:", result.get("errors", []))
+
+    lines.extend(
+        [
+            "提示:",
+            "自检只能发现关键文件和内置清单不一致。",
+            "若有人整卡重刷，仍要把这里的提交和指纹",
+            "与 GitHub Release 上的 build-info 对照。",
+        ]
+    )
+    return _paginate_report_lines(lines)
+
+
+def _format_derivation_failure(exc: Exception, derivation_path: str, fallback: str) -> str:
+    detail = str(exc).strip() or fallback
+    headline = detail if detail.startswith(exc.__class__.__name__) else f"{exc.__class__.__name__}: {detail}"
+    return (
+        f"{headline}\n\n"
+        f"路径:\n{_wrap_path_text(derivation_path)}"
+    )
+
+
 def _resolve_derivation_network(path_details: dict, current_network: str) -> str:
     parsed_network = path_details.get("network")
     if isinstance(parsed_network, list):
@@ -173,12 +382,184 @@ def _resolve_derivation_network(path_details: dict, current_network: str) -> str
     return current_network
 
 
-def _derive_btc_address_from_seed(seed: Seed, derivation_path: str, current_network: str) -> dict:
+def _get_evm_vendor_dir() -> Path | None:
+    candidates = [
+        Path("/opt/pi-signer-py/vendor"),
+        Path(__file__).resolve().parents[3] / "pi-signer-py/vendor",
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _keccak256(data: bytes) -> bytes:
+    try:
+        from Crypto.Hash import keccak  # type: ignore
+
+        digest = keccak.new(digest_bits=256)
+        digest.update(data)
+        return digest.digest()
+    except Exception:
+        pass
+
+    vendor_dir = _get_evm_vendor_dir()
+    if vendor_dir and str(vendor_dir) not in sys.path:
+        sys.path.insert(0, str(vendor_dir))
+
+    try:
+        import sha3  # type: ignore
+
+        return sha3.keccak_256(data).digest()
+    except Exception:
+        pass
+
+    try:
+        from eth_hash.auto import keccak as eth_keccak  # type: ignore
+
+        return eth_keccak(data)
+    except Exception as exc:
+        raise ValueError("当前固件缺少 EVM 地址计算依赖，请刷新到最新测试包后再试。") from exc
+
+
+def _to_eip55_address(address_hex: str) -> str:
+    normalized = address_hex.lower().removeprefix("0x")
+    checksum = _keccak256(normalized.encode("ascii")).hex()
+    encoded = "".join(
+        char.upper() if char in "abcdef" and int(checksum[index], 16) >= 8 else char
+        for index, char in enumerate(normalized)
+    )
+    return f"0x{encoded}"
+
+
+def _to_uncompressed_secp256k1_pubkey(pubkey: bytes | str) -> bytes:
+    if isinstance(pubkey, str):
+        pubkey = bytes.fromhex(pubkey)
+    if not pubkey:
+        raise ValueError("当前固件无法读取派生公钥。")
+    if len(pubkey) == 65 and pubkey[0] == 0x04:
+        return pubkey
+    if len(pubkey) == 33 and pubkey[0] in (0x02, 0x03):
+        x = int.from_bytes(pubkey[1:], "big")
+        y_squared = (pow(x, 3, SECP256K1_FIELD_PRIME) + 7) % SECP256K1_FIELD_PRIME
+        y = pow(y_squared, (SECP256K1_FIELD_PRIME + 1) // 4, SECP256K1_FIELD_PRIME)
+        if (y & 1) != (pubkey[0] & 1):
+            y = SECP256K1_FIELD_PRIME - y
+        return b"\x04" + x.to_bytes(32, "big") + y.to_bytes(32, "big")
+    raise ValueError("当前固件无法识别这条公钥格式。")
+
+
+def _derive_evm_address_from_pubkey_bytes(pubkey: bytes | str) -> str:
+    uncompressed_pubkey = _to_uncompressed_secp256k1_pubkey(pubkey)
+    return _to_eip55_address(_keccak256(uncompressed_pubkey[1:])[-20:].hex())
+
+
+def _derive_evm_address_from_seed(seed: Seed, derivation_path: str) -> dict:
+    root = seed.get_root(SettingsConstants.MAINNET)
+    pubkey = root.derive(derivation_path).key.get_public_key().sec()
+    address = _derive_evm_address_from_pubkey_bytes(pubkey)
+    return {
+        "address_family": "evm",
+        "derivation_path": derivation_path,
+        "network": "EVM",
+        "script_type": "0x 地址",
+        "address": address,
+        "notes": "同一个 0x 地址通常可用于 ETH、ARB、Base、OP、BSC、Polygon 等 EVM 网络。",
+    }
+
+
+def _derive_evm_address_from_satochip(connector, derivation_path: str) -> dict:
+    from seedsigner.helpers.satochip_signer import format_path_string
+
+    key, _chaincode = connector.card_bip32_get_extendedkey(format_path_string(derivation_path))
+    pubkey = key.get_public_key_bytes(compressed=False)
+    address = _derive_evm_address_from_pubkey_bytes(pubkey)
+    return {
+        "address_family": "evm",
+        "derivation_path": derivation_path,
+        "network": "EVM",
+        "script_type": "0x 地址",
+        "address": address,
+        "notes": "同一个 0x 地址通常可用于 ETH、ARB、Base、OP、BSC、Polygon 等 EVM 网络。",
+    }
+
+
+def _extract_unlock_address(stdout: str) -> str:
+    for line in (stdout or "").splitlines():
+        text = line.strip()
+        if text.startswith("地址:") or text.startswith("地址："):
+            return text.split(":", 1)[-1].split("：", 1)[-1].strip()
+        if text.lower().startswith("address:"):
+            return text.split(":", 1)[1].strip()
+    return ""
+
+
+def _derive_evm_address_via_signer_unlock(pin: str, derivation_path: str) -> dict:
+    signer_bin = _resolve_signer_bin()
+    if not signer_bin.is_file():
+        raise ValueError("未找到离线签名器命令，无法读取智能卡 EVM 地址。")
+
+    normalized_path = _normalize_bip32_path(derivation_path)
+    cmd = [
+        str(signer_bin),
+        "unlock",
+        "--pin",
+        pin,
+        "--path",
+        normalized_path,
+        "--timeout-sec",
+        "120",
+    ]
+    if DEFAULT_READER_HINT:
+        cmd.extend(["--reader", DEFAULT_READER_HINT])
+
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        timeout=150,
+    )
+    if proc.returncode != 0:
+        detail = _extract_error(proc.stdout, proc.stderr, "unlock failed")
+        raise ValueError(_localize_error_detail(detail) or detail)
+
+    address = _extract_unlock_address(proc.stdout)
+    if not address:
+        raise ValueError("已解锁智能卡，但没有拿到地址。")
+
+    return {
+        "address_family": "evm",
+        "derivation_path": normalized_path,
+        "network": "EVM",
+        "script_type": "0x 地址",
+        "address": _to_eip55_address(address),
+        "notes": "同一个 0x 地址通常可用于 ETH、ARB、Base、OP、BSC、Polygon 等 EVM 网络。",
+    }
+
+
+def _satochip_btc_xtype(script_type: str) -> str:
+    if script_type == SettingsConstants.NATIVE_SEGWIT:
+        return "p2wpkh"
+    if script_type == SettingsConstants.NESTED_SEGWIT:
+        return "p2wpkh-p2sh"
+    if script_type in (SettingsConstants.LEGACY_P2PKH, SettingsConstants.TAPROOT):
+        return "standard"
+    raise ValueError("当前路径类型暂不支持智能卡地址显示。")
+
+
+def _derive_address_from_satochip(connector, derivation_path: str, current_network: str) -> dict:
     normalized_path = _normalize_bip32_path(derivation_path)
     if not _is_valid_bip32_path(normalized_path):
         raise ValueError("派生路径格式不正确。")
-    if isinstance(seed, TransientWordSeed):
-        raise ValueError("当前这条助记词不是有效 BIP39，无法派生地址。")
+
+    path_sections = normalized_path.replace("'", "h").split("/")
+    if len(path_sections) >= 3 and path_sections[2] == "60h":
+        return _derive_evm_address_from_satochip(connector, normalized_path)
+
+    from embit import bip32
+    from seedsigner.helpers.satochip_signer import format_path_string
 
     path_details = embit_utils.parse_derivation_path(normalized_path.replace("'", "h"))
     script_type = path_details.get("script_type")
@@ -190,25 +571,76 @@ def _derive_btc_address_from_seed(seed: Seed, derivation_path: str, current_netw
     if not embit_network:
         raise ValueError("无法识别这条路径对应的网络。")
 
-    root = seed.get_root(network)
-    pubkey = root.derive(normalized_path).key
+    wallet_derivation_path = path_details.get("wallet_derivation_path")
+    index = path_details.get("index")
+    is_change = path_details.get("is_change")
+    if wallet_derivation_path is None or index is None or is_change is None:
+        raise ValueError("BTC 地址路径请完整输入到地址层，例如 m/84'/0'/0'/0/0。")
 
-    if script_type == SettingsConstants.LEGACY_P2PKH:
-        address = embit_script.p2pkh(pubkey).address(network=NETWORKS[embit_network])
-    elif script_type == SettingsConstants.NESTED_SEGWIT:
-        address = embit_script.p2sh(embit_script.p2wpkh(pubkey)).address(network=NETWORKS[embit_network])
-    elif script_type == SettingsConstants.NATIVE_SEGWIT:
-        address = embit_script.p2wpkh(pubkey).address(network=NETWORKS[embit_network])
-    elif script_type == SettingsConstants.TAPROOT:
-        address = embit_script.p2tr(pubkey).address(network=NETWORKS[embit_network])
-    else:
-        raise ValueError("当前路径类型暂不支持显示地址。")
-
+    xtype = _satochip_btc_xtype(script_type)
+    is_mainnet = network == SettingsConstants.MAINNET
+    xpub_base58 = connector.card_bip32_get_xpub(format_path_string(wallet_derivation_path), xtype, is_mainnet)
+    xpub = bip32.HDKey.from_base58(xpub_base58)
+    address = embit_utils.get_single_sig_address(
+        xpub=xpub,
+        script_type=script_type,
+        index=index,
+        is_change=is_change,
+        embit_network=embit_network,
+    )
     return {
+        "address_family": "btc",
         "derivation_path": normalized_path,
         "network": network,
         "script_type": script_type,
         "address": address,
+        "notes": "",
+    }
+
+
+def _derive_btc_address_from_seed(seed: Seed, derivation_path: str, current_network: str) -> dict:
+    normalized_path = _normalize_bip32_path(derivation_path)
+    if not _is_valid_bip32_path(normalized_path):
+        raise ValueError("派生路径格式不正确。")
+    if isinstance(seed, TransientWordSeed):
+        raise ValueError("当前这条助记词不是有效 BIP39，无法派生地址。")
+
+    path_sections = normalized_path.replace("'", "h").split("/")
+    if len(path_sections) >= 3 and path_sections[2] == "60h":
+        return _derive_evm_address_from_seed(seed, normalized_path)
+
+    path_details = embit_utils.parse_derivation_path(normalized_path.replace("'", "h"))
+    script_type = path_details.get("script_type")
+    if script_type in (None, SettingsConstants.CUSTOM_DERIVATION):
+        raise ValueError("当前只支持 44'/49'/84'/86' 这几类 BTC 路径。")
+
+    network = _resolve_derivation_network(path_details, current_network)
+    embit_network = SettingsConstants.map_network_to_embit(network)
+    if not embit_network:
+        raise ValueError("无法识别这条路径对应的网络。")
+
+    wallet_derivation_path = path_details.get("wallet_derivation_path")
+    index = path_details.get("index")
+    is_change = path_details.get("is_change")
+    if wallet_derivation_path is None or index is None or is_change is None:
+        raise ValueError("BTC 地址路径请完整输入到地址层，例如 m/84'/0'/0'/0/0。")
+
+    xpub = seed.get_xpub(wallet_path=wallet_derivation_path, network=network)
+    address = embit_utils.get_single_sig_address(
+        xpub=xpub,
+        script_type=script_type,
+        index=index,
+        is_change=is_change,
+        embit_network=embit_network,
+    )
+
+    return {
+        "address_family": "btc",
+        "derivation_path": normalized_path,
+        "network": network,
+        "script_type": script_type,
+        "address": address,
+        "notes": "",
     }
 
 
@@ -223,6 +655,14 @@ def _extract_requested_derivation_path(payload: str) -> str:
     except Exception:
         return DEFAULT_DERIVATION_PATH
     return candidate if _is_valid_bip32_path(candidate) else DEFAULT_DERIVATION_PATH
+
+
+def _collect_manual_qr_parts(qr_encoder) -> list[str]:
+    part_count = max(1, int(qr_encoder.seq_len()))
+    qr_encoder.restart()
+    parts = [qr_encoder.next_part() for _ in range(part_count)]
+    qr_encoder.restart()
+    return parts
 
 
 def _extract_psbt_request(payload: str):
@@ -458,12 +898,17 @@ def _extract_error(stdout: str, stderr: str, fallback: str) -> str:
 
 def _resolve_signer_bin() -> Path:
     candidates = []
-    env_path = os.environ.get("TP_PI_SIGNER_BIN", "").strip()
-    if env_path:
-        candidates.append(Path(env_path))
+    for env_name in ("OFFLINE_SIGNER_BIN", "TP_PI_SIGNER_BIN"):
+        env_path = os.environ.get(env_name, "").strip()
+        if env_path:
+            candidates.append(Path(env_path))
+    candidates.append(Path("/opt/offline-signer/bin/pi-signer"))
+    candidates.append(Path("/opt/offline-signer/bin/offline-signer"))
     candidates.append(Path("/opt/tp-pi-signer/bin/pi-signer"))
     candidates.append(Path("/opt/pi-signer-py/bin/pi-signer"))
+    candidates.append(Path("/opt/pi-signer-py/bin/offline-signer"))
     candidates.append(Path(__file__).resolve().parents[3] / "pi-signer-py/bin/pi-signer")
+    candidates.append(Path(__file__).resolve().parents[3] / "pi-signer-py/bin/offline-signer")
     for candidate in candidates:
         if candidate.is_file():
             return candidate
@@ -735,26 +1180,7 @@ def _build_bip39_index_report(raw_index: str) -> str:
 
 
 class ModeSelectView(View):
-    TP_MODE = ButtonOption("TP / Satochip")
-    OFFICIAL_MODE = ButtonOption("官方 SeedSigner")
-
     def run(self):
-        from seedsigner.views.view import PowerOptionsView
-
-        button_data = [self.TP_MODE, self.OFFICIAL_MODE]
-        selected_menu_num = self.run_screen(
-            ButtonListScreen,
-            title="选择模式",
-            is_button_text_centered=False,
-            button_data=button_data,
-        )
-
-        if selected_menu_num == RET_CODE__POWER_BUTTON:
-            return Destination(PowerOptionsView)
-        if selected_menu_num == RET_CODE__BACK_BUTTON:
-            return Destination(ModeSelectView, clear_history=True)
-        if button_data[selected_menu_num] == self.OFFICIAL_MODE:
-            return _official_home_destination()
         return _tp_home_destination()
 
 
@@ -764,27 +1190,24 @@ def _operator_display_label(operator: str) -> str:
 
 class ToolsTpHomeView(View):
     SCAN = ButtonOption("扫码签名")
-    OFFICIAL_MODE = ButtonOption("官方模式")
-    EXPORT_BTC_ZPUB = ButtonOption("导出 BTC zpub")
-    EXPORT_BTC_XPUB = ButtonOption("导出 BTC xpub")
     SEED_TOOLS = ButtonOption("助记词工具")
+    FIRMWARE_CHECK = ButtonOption("固件完整性自检")
     SMARTCARD_TOOLS = ButtonOption("智能卡工具")
 
     def run(self):
         button_data = [
             self.SCAN,
-            self.OFFICIAL_MODE,
-            self.EXPORT_BTC_ZPUB,
-            self.EXPORT_BTC_XPUB,
             self.SEED_TOOLS,
+            self.FIRMWARE_CHECK,
             self.SMARTCARD_TOOLS,
         ]
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title="TP 签名器",
+            title="离线签名器",
             is_button_text_centered=False,
             button_data=button_data,
+            show_back_button=False,
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
@@ -792,14 +1215,10 @@ class ToolsTpHomeView(View):
 
         if button_data[selected_menu_num] == self.SCAN:
             return Destination(ToolsTpSignerScanView)
-        if button_data[selected_menu_num] == self.OFFICIAL_MODE:
-            return _official_home_destination()
-        if button_data[selected_menu_num] == self.EXPORT_BTC_ZPUB:
-            return Destination(ToolsTpBtcXpubPinEntryView, view_args=dict(xtype="zpub"))
-        if button_data[selected_menu_num] == self.EXPORT_BTC_XPUB:
-            return Destination(ToolsTpBtcXpubPinEntryView, view_args=dict(xtype="xpub"))
         if button_data[selected_menu_num] == self.SEED_TOOLS:
             return Destination(ToolsTpSeedToolsView)
+        if button_data[selected_menu_num] == self.FIRMWARE_CHECK:
+            return Destination(ToolsTpFirmwareIntegrityRunView)
         if button_data[selected_menu_num] == self.SMARTCARD_TOOLS:
             return Destination(ToolsTpSmartcardToolsView)
 
@@ -814,7 +1233,6 @@ class ToolsTpSeedToolsView(View):
     STEEL_RESTORE = ButtonOption("从钢板数字恢复二次助记词")
     STEEL_SCAN = ButtonOption("拍照识别钢板/纸张点位")
     MANAGE_SEEDS = ButtonOption("已加载助记词")
-    WRITE_TO_SATOCHIP = ButtonOption("写入助记词到 Satochip")
 
     def run(self):
         button_data = [
@@ -825,7 +1243,6 @@ class ToolsTpSeedToolsView(View):
             self.STEEL_RESTORE,
             self.STEEL_SCAN,
             self.MANAGE_SEEDS,
-            self.WRITE_TO_SATOCHIP,
         ]
 
         selected_menu_num = self.run_screen(
@@ -879,22 +1296,6 @@ class ToolsTpSeedToolsView(View):
             from seedsigner.views.seed_views import SeedsMenuView
 
             return Destination(SeedsMenuView)
-
-        if selected == self.WRITE_TO_SATOCHIP:
-            if not self.controller.storage.seeds:
-                self.run_screen(
-                    WarningScreen,
-                    title="提示",
-                    status_headline=None,
-                    text="请先用“拍照创建”“摇骰子创建”或“导入助记词”把助记词加载到内存，然后再执行写入。",
-                    show_back_button=True,
-                    button_data=[ButtonOption("继续")],
-                )
-                return Destination(ToolsTpSeedToolsView)
-
-            from seedsigner.views.tools_views import ToolsSatochipImportSeedView
-
-            return Destination(ToolsSatochipImportSeedView)
 
         return _tp_home_destination()
 
@@ -1053,11 +1454,13 @@ class ToolsTpBip39CheckResultView(View):
 
 class ToolsTpLoadedSeedOptionsView(View):
     VIEW_WORDS = ButtonOption("查看助记词")
+    VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     DERIVE_ADDRESS = ButtonOption("派生路径算地址")
+    EXPORT_BTC_ZPUB = ButtonOption("导出当前助记词 BTC zpub")
+    EXPORT_BTC_XPUB = ButtonOption("导出当前助记词 BTC xpub")
     SECONDARY_ENCRYPT = ButtonOption("二次加密助记词")
     SECONDARY_DECRYPT = ButtonOption("二次还原助记词")
     PLATE_NUMBERS = ButtonOption("转成钢板打孔数字")
-    WRITE_TO_SATOCHIP = ButtonOption("写入助记词到 Satochip")
     DISCARD = ButtonOption("删除助记词", button_label_color="red")
 
     def __init__(self, seed_num: int):
@@ -1075,9 +1478,12 @@ class ToolsTpLoadedSeedOptionsView(View):
             self.PLATE_NUMBERS,
             self.DISCARD,
         ]
+        if self.seed.bip39_word_indices_supported:
+            button_data.insert(1, self.VIEW_INDICES)
         if not isinstance(self.seed, TransientWordSeed):
             button_data.insert(1, self.DERIVE_ADDRESS)
-            button_data.insert(5, self.WRITE_TO_SATOCHIP)
+            button_data.insert(2, self.EXPORT_BTC_ZPUB)
+            button_data.insert(3, self.EXPORT_BTC_XPUB)
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
@@ -1094,17 +1500,32 @@ class ToolsTpLoadedSeedOptionsView(View):
         if selected == self.VIEW_WORDS:
             from seedsigner.views.seed_views import SeedWordsWarningView
             return Destination(SeedWordsWarningView, view_args=dict(seed_num=self.seed_num))
+        if selected == self.VIEW_INDICES:
+            from seedsigner.views.seed_views import SeedWordIndexView
+            return Destination(
+                SeedWordIndexView,
+                view_args=dict(
+                    seed_num=self.seed_num,
+                    title="BIP39 序号",
+                    return_destination=Destination(
+                        ToolsTpLoadedSeedOptionsView,
+                        view_args=dict(seed_num=self.seed_num),
+                        skip_current_view=True,
+                    ),
+                ),
+            )
         if selected == self.DERIVE_ADDRESS:
             return Destination(ToolsTpDeriveAddressPathView, view_args=dict(seed_num=self.seed_num))
+        if selected == self.EXPORT_BTC_ZPUB:
+            return Destination(ToolsTpSeedBtcXpubQrView, view_args=dict(seed_num=self.seed_num, xtype="zpub"))
+        if selected == self.EXPORT_BTC_XPUB:
+            return Destination(ToolsTpSeedBtcXpubQrView, view_args=dict(seed_num=self.seed_num, xtype="xpub"))
         if selected == self.SECONDARY_ENCRYPT:
             return Destination(ToolsTpSteelShiftInputView, view_args=dict(mode="encrypt_seed", seed_num=self.seed_num, word_index=0))
         if selected == self.SECONDARY_DECRYPT:
             return Destination(ToolsTpSteelShiftInputView, view_args=dict(mode="decrypt_seed", seed_num=self.seed_num, word_index=0))
         if selected == self.PLATE_NUMBERS:
             return Destination(ToolsTpSteelShiftInputView, view_args=dict(mode="encrypt_seed_plate", seed_num=self.seed_num, word_index=0))
-        if selected == self.WRITE_TO_SATOCHIP:
-            from seedsigner.views.tools_views import ToolsSatochipImportSeedView
-            return Destination(ToolsSatochipImportSeedView)
         if selected == self.DISCARD:
             from seedsigner.views.seed_views import SeedDiscardView
             return Destination(SeedDiscardView, view_args=dict(seed_num=self.seed_num))
@@ -1143,6 +1564,8 @@ class ToolsTpDeriveAddressPathView(View):
                     address=result["address"],
                     network=result["network"],
                     script_type=result["script_type"],
+                    address_family=result.get("address_family", "btc"),
+                    notes=result.get("notes", ""),
                 ),
             )
         except Exception as exc:
@@ -1150,7 +1573,7 @@ class ToolsTpDeriveAddressPathView(View):
                 WarningScreen,
                 title="派生失败",
                 status_headline=None,
-                text=str(exc) or "无法根据这条路径计算地址。",
+                text=_format_derivation_failure(exc, normalized_path or DEFAULT_BTC_ADDRESS_PATH, "无法根据这条路径计算地址。"),
                 show_back_button=False,
                 button_data=[ButtonOption("继续")],
             )
@@ -1162,38 +1585,97 @@ class ToolsTpDeriveAddressPathView(View):
 
 
 class ToolsTpDerivedAddressResultView(View):
+    SHOW_QR = ButtonOption("显示二维码")
     RETRY = ButtonOption("重新输入")
     DONE = ButtonOption("完成")
 
-    def __init__(self, seed_num: int, derivation_path: str, address: str, network: str, script_type: str):
+    def __init__(
+        self,
+        seed_num: int | None,
+        derivation_path: str,
+        address: str,
+        network: str,
+        script_type: str,
+        address_family: str = "btc",
+        notes: str = "",
+        return_to: str = "seed",
+    ):
         super().__init__()
         self.seed_num = seed_num
         self.derivation_path = derivation_path
         self.address = address
         self.network = network
         self.script_type = script_type
+        self.address_family = address_family
+        self.notes = notes
+        self.return_to = return_to
+
+    def _done_destination(self) -> Destination:
+        if self.return_to == "smartcard":
+            return _smartcard_tools_destination()
+        return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
+
+    def _retry_destination(self) -> Destination:
+        if self.return_to == "smartcard":
+            return Destination(
+                ToolsTpSmartcardAddressPathView,
+                view_args=dict(derivation_path=self.derivation_path),
+                clear_history=True,
+            )
+        return Destination(
+            ToolsTpDeriveAddressPathView,
+            view_args=dict(seed_num=self.seed_num, derivation_path=self.derivation_path),
+            clear_history=True,
+        )
 
     def _text(self) -> str:
-        return (
+        text = (
             f"网络: {_network_label(self.network)}\n"
             f"类型: {_script_type_label(self.script_type)}\n\n"
             f"路径:\n{self.derivation_path}\n\n"
             f"地址:\n{self.address}"
         )
+        if self.notes:
+            text += f"\n\n说明:\n{self.notes}"
+        return text
 
     def _pages(self) -> list[str]:
+        address_text = f"地址:\n{_chunk_text(self.address)}"
+        if self.notes:
+            address_text += f"\n\n说明:\n{self.notes}"
         return [
             (
                 f"网络: {_network_label(self.network)}\n"
                 f"类型: {_script_type_label(self.script_type)}\n\n"
                 f"路径:\n{_wrap_path_text(self.derivation_path)}"
             ),
-            f"地址:\n{_chunk_text(self.address)}",
+            address_text,
         ]
+
+    def _show_qr(self) -> None:
+        encoder = GenericStaticQrEncoder(data=self.address)
+        self.run_screen(QRDisplayScreen, qr_encoder=encoder)
+
+    def _address_page_menu(self) -> ButtonOption:
+        page_buttons = [self.SHOW_QR, self.RETRY, self.DONE]
+        while True:
+            selected_menu_num = self.run_screen(
+                ToolsFormattedTextScreen,
+                title="派生地址",
+                text=self._pages()[1],
+                button_data=page_buttons,
+            )
+            if selected_menu_num == RET_CODE__BACK_BUTTON:
+                return self.DONE
+            selected = page_buttons[selected_menu_num]
+            if selected == self.SHOW_QR:
+                self._show_qr()
+                continue
+            return selected
 
     def run(self):
         pages = self._pages()
-        button_data = [ButtonOption("下一页"), self.DONE] if len(pages) > 1 else [self.RETRY, self.DONE]
+        button_data = [ButtonOption("下一页"), self.DONE] if len(pages) > 1 else [self.SHOW_QR, self.RETRY, self.DONE]
         selected_menu_num = self.run_screen(
             ToolsFormattedTextScreen,
             title="派生地址",
@@ -1202,35 +1684,88 @@ class ToolsTpDerivedAddressResultView(View):
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
-            return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
+            return self._done_destination()
 
         if len(pages) > 1 and button_data[selected_menu_num].button_label == "下一页":
-            selected_menu_num = self.run_screen(
-                ToolsFormattedTextScreen,
-                title="派生地址",
-                text=pages[1],
-                button_data=[self.RETRY, self.DONE],
-            )
-            if selected_menu_num == RET_CODE__BACK_BUTTON or [self.RETRY, self.DONE][selected_menu_num] == self.DONE:
-                return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
+            selected = self._address_page_menu()
+            if selected == self.RETRY:
+                return self._retry_destination()
+            return self._done_destination()
+
+        if button_data[selected_menu_num] == self.SHOW_QR:
+            self._show_qr()
             return Destination(
-                ToolsTpDeriveAddressPathView,
-                view_args=dict(seed_num=self.seed_num, derivation_path=self.derivation_path),
+                ToolsTpDerivedAddressResultView,
+                view_args=dict(
+                    seed_num=self.seed_num,
+                    derivation_path=self.derivation_path,
+                    address=self.address,
+                    network=self.network,
+                    script_type=self.script_type,
+                    address_family=self.address_family,
+                    notes=self.notes,
+                    return_to=self.return_to,
+                ),
                 clear_history=True,
             )
 
         if button_data[selected_menu_num] == self.DONE:
+            return self._done_destination()
+
+        return self._retry_destination()
+
+
+class ToolsTpSeedBtcXpubQrView(View):
+    def __init__(self, seed_num: int, xtype: str):
+        super().__init__()
+        self.seed_num = seed_num
+        self.xtype = xtype.strip().lower()
+
+    def run(self):
+        export_profile = TP_BTC_XPUB_EXPORTS.get(self.xtype)
+        if export_profile is None:
+            return _debug_error_destination("32", f"unsupported seed xpub type: {self.xtype}")
+
+        derivation_path = export_profile[0]
+        seed = self.controller.get_seed(self.seed_num)
+
+        loading = LoadingScreenThread(text="Generating xpub...")
+        loading.start()
+        try:
+            version = seed.detect_version(
+                derivation_path,
+                SettingsConstants.MAINNET,
+                SettingsConstants.SINGLE_SIG,
+            )
+            xpub_value = seed.get_root(SettingsConstants.MAINNET).derive(derivation_path).to_public().to_string(version=version)
+        except Exception as exc:
+            logger.exception("TP seed xpub export failed")
+            return _debug_error_destination("53", str(exc))
+        finally:
+            loading.stop()
+
+        ret = self.run_screen(
+            WarningScreen,
+            title="提示",
+            status_headline=None,
+            text=(
+                f"当前助记词的 {self.xtype} 可用于观察全部后续 BTC 地址和交易，请只导入自己的手机。\n\n"
+                f"账户路径:\n{derivation_path}"
+            ),
+            show_back_button=True,
+            button_data=[ButtonOption("继续")],
+        )
+        if ret == RET_CODE__BACK_BUTTON:
             return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
 
-        return Destination(
-            ToolsTpDeriveAddressPathView,
-            view_args=dict(seed_num=self.seed_num, derivation_path=self.derivation_path),
-            clear_history=True,
-        )
+        encoder = GenericStaticQrEncoder(data=xpub_value)
+        self.run_screen(QRDisplayScreen, qr_encoder=encoder)
+        return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
 
 
 class ToolsTpSteelCipherOptionsView(View):
     VIEW_WORDS = ButtonOption("查看二次加密助记词")
+    VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     VIEW_PLATE = ButtonOption("查看钢板打孔数字")
     DECRYPT = ButtonOption("二次还原为真实助记词")
     CLEAR = ButtonOption("删除钢板缓存", button_label_color="red")
@@ -1249,6 +1784,7 @@ class ToolsTpSteelCipherOptionsView(View):
 
         button_data = [
             self.VIEW_WORDS,
+            self.VIEW_INDICES,
             self.VIEW_PLATE,
             self.DECRYPT,
             self.CLEAR,
@@ -1267,6 +1803,16 @@ class ToolsTpSteelCipherOptionsView(View):
         selected = button_data[selected_menu_num]
         if selected == self.VIEW_WORDS:
             return Destination(ToolsTpSteelCipherWordsView, view_args=dict(page_index=0))
+        if selected == self.VIEW_INDICES:
+            from seedsigner.views.seed_views import SeedWordIndexView
+            return Destination(
+                SeedWordIndexView,
+                view_args=dict(
+                    title="钢板缓存 BIP39 序号",
+                    use_steel_cache=True,
+                    return_destination=Destination(ToolsTpSteelCipherOptionsView, skip_current_view=True),
+                ),
+            )
         if selected == self.VIEW_PLATE:
             groups = words_to_plate_groups(self.controller.storage.get_steel_encrypted_mnemonic())
             self.controller.storage.set_steel_plate_groups(groups)
@@ -1439,6 +1985,7 @@ class ToolsTpSteelShiftInputView(View):
 class ToolsTpSteelShiftReviewView(View):
     NEXT = ButtonOption("下一页")
     REENTER = ButtonOption("重新输入")
+    PREVIEW_INDICES = ButtonOption("预览结果序号")
     CONFIRM = ButtonOption("确认执行")
 
     def __init__(self, mode: str, entries: list[str], seed_num: int | None = None, page_index: int = 0, warned_lossy: bool = False):
@@ -1478,7 +2025,7 @@ class ToolsTpSteelShiftReviewView(View):
         entries_per_page = 4
         total_pages = max(1, (len(self.entries) + entries_per_page - 1) // entries_per_page)
         is_last_page = self.page_index >= total_pages - 1
-        button_data = [self.NEXT] if not is_last_page else [self.REENTER, self.CONFIRM]
+        button_data = [self.PREVIEW_INDICES, self.NEXT] if not is_last_page else [self.REENTER, self.PREVIEW_INDICES, self.CONFIRM]
         selected_menu_num = self.run_screen(
             ToolsFormattedTextScreen,
             title=self._review_title(total_pages),
@@ -1534,6 +2081,66 @@ class ToolsTpSteelShiftReviewView(View):
                 ),
                 clear_history=True,
             )
+
+        if selected == self.PREVIEW_INDICES:
+            try:
+                source_words = self._source_words()
+                parsed_entries = [
+                    _parse_shift_entry(
+                        entry,
+                        default_operator=DEFAULT_SHIFT_OPERATOR,
+                        require_operator=True,
+                        allow_blank=True,
+                    )
+                    for entry in self.entries[:len(source_words)]
+                ]
+                operators = [operator for operator, _ in parsed_entries]
+                operands = [value for _, value in parsed_entries]
+                preview_words = shift_mnemonic(
+                    source_words,
+                    operands,
+                    encrypt=self.mode in ("encrypt_seed", "encrypt_seed_plate"),
+                    operators=operators,
+                )
+                from seedsigner.views.seed_views import SeedWordIndexView
+                return Destination(
+                    SeedWordIndexView,
+                    view_args=dict(
+                        words=preview_words,
+                        title="结果 BIP39 序号",
+                        return_destination=Destination(
+                            ToolsTpSteelShiftReviewView,
+                            view_args=dict(
+                                mode=self.mode,
+                                seed_num=self.seed_num,
+                                entries=self.entries,
+                                page_index=self.page_index,
+                                warned_lossy=self.warned_lossy,
+                            ),
+                            skip_current_view=True,
+                        ),
+                    ),
+                )
+            except Exception as exc:
+                self.run_screen(
+                    WarningScreen,
+                    title="无法预览序号",
+                    status_headline=None,
+                    text=str(exc) or "当前结果不能转换成 BIP39 0-2047 序号。",
+                    show_back_button=False,
+                    button_data=[ButtonOption("继续")],
+                )
+                return Destination(
+                    ToolsTpSteelShiftReviewView,
+                    view_args=dict(
+                        mode=self.mode,
+                        seed_num=self.seed_num,
+                        entries=self.entries,
+                        page_index=self.page_index,
+                        warned_lossy=self.warned_lossy,
+                    ),
+                    clear_history=True,
+                )
 
         if not self.warned_lossy and self._has_lossy_entries():
             warning_selected = self.run_screen(
@@ -1686,6 +2293,7 @@ class ToolsTpSteelPlateEntryView(View):
 class ToolsTpSteelPlateReviewView(View):
     NEXT = ButtonOption("下一页")
     REENTER = ButtonOption("重新输入")
+    PREVIEW_INDICES = ButtonOption("预览恢复序号")
     CONFIRM = ButtonOption("确认恢复")
 
     def __init__(self, entries: list[str], page_index: int = 0, source: str = "manual"):
@@ -1698,7 +2306,7 @@ class ToolsTpSteelPlateReviewView(View):
         page_text, total_pages = _format_number_groups(self.entries, self.page_index, entries_per_page=2)
         is_last_page = self.page_index >= total_pages - 1
         reshoot_button = ButtonOption("重新拍照")
-        button_data = [self.NEXT] if not is_last_page else [reshoot_button if self.source == "camera" else self.REENTER, self.CONFIRM]
+        button_data = [self.PREVIEW_INDICES, self.NEXT] if not is_last_page else [reshoot_button if self.source == "camera" else self.REENTER, self.PREVIEW_INDICES, self.CONFIRM]
         selected_menu_num = self.run_screen(
             ToolsFormattedTextScreen,
             title=f"检查钢板数字：{self.page_index + 1}/{total_pages}",
@@ -1733,6 +2341,38 @@ class ToolsTpSteelPlateReviewView(View):
 
         if selected == self.REENTER:
             return Destination(ToolsTpSteelPlateEntryView, view_args=dict(entries=self.entries, word_index=0), clear_history=True)
+
+        if selected == self.PREVIEW_INDICES:
+            try:
+                indices = parse_restore_indices(",".join(self.entries))
+                words = indices_to_words(indices)
+                from seedsigner.views.seed_views import SeedWordIndexView
+                return Destination(
+                    SeedWordIndexView,
+                    view_args=dict(
+                        words=words,
+                        title="恢复结果 BIP39 序号",
+                        return_destination=Destination(
+                            ToolsTpSteelPlateReviewView,
+                            view_args=dict(entries=self.entries, page_index=self.page_index, source=self.source),
+                            skip_current_view=True,
+                        ),
+                    ),
+                )
+            except Exception as exc:
+                self.run_screen(
+                    WarningScreen,
+                    title="无法预览序号",
+                    status_headline=None,
+                    text=str(exc) or "钢板数字当前不能转换成 BIP39 0-2047 序号。",
+                    show_back_button=False,
+                    button_data=[ButtonOption("继续")],
+                )
+                return Destination(
+                    ToolsTpSteelPlateReviewView,
+                    view_args=dict(entries=self.entries, page_index=self.page_index, source=self.source),
+                    clear_history=True,
+                )
 
         try:
             indices = parse_restore_indices(",".join(self.entries))
@@ -1791,6 +2431,7 @@ class ToolsTpSteelPlatePhotoProcessView(View):
 
 class ToolsTpSteelCipherWordsView(View):
     NEXT = ButtonOption("下一页")
+    VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     DONE = ButtonOption("完成")
 
     def __init__(self, page_index: int = 0):
@@ -1805,7 +2446,7 @@ class ToolsTpSteelCipherWordsView(View):
         words_per_page = 4
         num_pages = max(1, (len(words) + words_per_page - 1) // words_per_page)
         page_words = words[self.page_index * words_per_page:(self.page_index + 1) * words_per_page]
-        button_data = [self.NEXT if self.page_index < num_pages - 1 else self.DONE]
+        button_data = [self.VIEW_INDICES, self.NEXT] if self.page_index < num_pages - 1 else [self.VIEW_INDICES, self.DONE]
         selected_menu_num = seed_screens.SeedWordsScreen(
             title=f"二次加密助记词：{self.page_index + 1}/{num_pages}",
             words=page_words,
@@ -1819,11 +2460,26 @@ class ToolsTpSteelCipherWordsView(View):
 
         if button_data[selected_menu_num] == self.NEXT:
             return Destination(ToolsTpSteelCipherWordsView, view_args=dict(page_index=self.page_index + 1))
+        if button_data[selected_menu_num] == self.VIEW_INDICES:
+            from seedsigner.views.seed_views import SeedWordIndexView
+            return Destination(
+                SeedWordIndexView,
+                view_args=dict(
+                    title="钢板缓存 BIP39 序号",
+                    use_steel_cache=True,
+                    return_destination=Destination(
+                        ToolsTpSteelCipherWordsView,
+                        view_args=dict(page_index=self.page_index),
+                        skip_current_view=True,
+                    ),
+                ),
+            )
         return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
 
 class ToolsTpSteelPlateWordsView(View):
     NEXT = ButtonOption("下一页")
+    VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     DONE = ButtonOption("完成")
 
     def __init__(self, page_index: int = 0):
@@ -1839,7 +2495,7 @@ class ToolsTpSteelPlateWordsView(View):
             return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
         page_text, num_pages = _format_number_groups(groups, self.page_index, entries_per_page=2)
-        button_data = [self.NEXT if self.page_index < num_pages - 1 else self.DONE]
+        button_data = [self.VIEW_INDICES, self.NEXT] if self.page_index < num_pages - 1 else [self.VIEW_INDICES, self.DONE]
         selected_menu_num = self.run_screen(
             ToolsFormattedTextScreen,
             title=f"钢板打孔数字：{self.page_index + 1}/{num_pages}",
@@ -1852,15 +2508,37 @@ class ToolsTpSteelPlateWordsView(View):
 
         if button_data[selected_menu_num] == self.NEXT:
             return Destination(ToolsTpSteelPlateWordsView, view_args=dict(page_index=self.page_index + 1))
+        if button_data[selected_menu_num] == self.VIEW_INDICES:
+            from seedsigner.views.seed_views import SeedWordIndexView
+            return Destination(
+                SeedWordIndexView,
+                view_args=dict(
+                    title="钢板打孔对应 BIP39 序号",
+                    use_steel_cache=True,
+                    return_destination=Destination(
+                        ToolsTpSteelPlateWordsView,
+                        view_args=dict(page_index=self.page_index),
+                        skip_current_view=True,
+                    ),
+                ),
+            )
         return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
 
 class ToolsTpSmartcardToolsView(View):
+    VIEW_ADDRESS = ButtonOption("按路径查看智能卡地址")
+    EXPORT_BTC_ZPUB = ButtonOption("导出智能卡 BTC zpub")
+    EXPORT_BTC_XPUB = ButtonOption("导出智能卡 BTC xpub")
+    IMPORT_LOADED_SEED = ButtonOption("写入已加载助记词到智能卡")
     CHANGE_PIN = ButtonOption("更改智能卡 PIN")
     FACTORY_RESET = ButtonOption("重置智能卡")
 
     def run(self):
         button_data = [
+            self.VIEW_ADDRESS,
+            self.EXPORT_BTC_ZPUB,
+            self.EXPORT_BTC_XPUB,
+            self.IMPORT_LOADED_SEED,
             self.CHANGE_PIN,
             self.FACTORY_RESET,
         ]
@@ -1877,6 +2555,31 @@ class ToolsTpSmartcardToolsView(View):
 
         selected = button_data[selected_menu_num]
 
+        if selected == self.VIEW_ADDRESS:
+            return Destination(ToolsTpSmartcardAddressPathView)
+
+        if selected == self.EXPORT_BTC_ZPUB:
+            return Destination(ToolsTpBtcXpubPinEntryView, view_args=dict(xtype="zpub"))
+
+        if selected == self.EXPORT_BTC_XPUB:
+            return Destination(ToolsTpBtcXpubPinEntryView, view_args=dict(xtype="xpub"))
+
+        if selected == self.IMPORT_LOADED_SEED:
+            if not self.controller.storage.seeds:
+                self.run_screen(
+                    WarningScreen,
+                    title="提示",
+                    status_headline=None,
+                    text="请先在“助记词工具”里导入或创建助记词，再写入智能卡。",
+                    show_back_button=True,
+                    button_data=[ButtonOption("继续")],
+                )
+                return _smartcard_tools_destination()
+
+            from seedsigner.views.tools_views import ToolsSatochipImportSeedView
+
+            return Destination(ToolsSatochipImportSeedView)
+
         if selected == self.CHANGE_PIN:
             from seedsigner.views.tools_views import ToolsSatochipChangePinView
 
@@ -1888,6 +2591,255 @@ class ToolsTpSmartcardToolsView(View):
             return Destination(ToolsSatochipFactoryResetView)
 
         return _tp_home_destination()
+
+
+class ToolsTpSmartcardAddressPathView(View):
+    def __init__(self, derivation_path: str = DEFAULT_BTC_ADDRESS_PATH):
+        super().__init__()
+        self.derivation_path = derivation_path
+
+    def run(self):
+        ret = ToolsTextQRTextEntryScreen(
+            textToEncode=self.derivation_path,
+            title="智能卡派生路径",
+            initial_keyboard=ToolsTextQRTextEntryScreen.KEYBOARD__DIGITS_BUTTON_TEXT,
+        ).display()
+
+        if ret.get("is_back_button"):
+            return _smartcard_tools_destination()
+
+        normalized_path = _normalize_bip32_path(ret.get("textToEncode", ""))
+
+        try:
+            pin = _prompt_for_tp_pin(self)
+        except Exception as exc:
+            logger.exception("TP smartcard address PIN prompt failed")
+            return _debug_error_destination("21", str(exc))
+
+        if pin is None:
+            return _smartcard_tools_destination()
+
+        pin = pin.strip()
+        if not pin or len(pin) < 4:
+            return _smartcard_tools_destination()
+
+        return Destination(
+            ToolsTpSmartcardAddressRunView,
+            view_args=dict(derivation_path=normalized_path, pin=pin),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpSmartcardAddressRunView(View):
+    def __init__(self, derivation_path: str, pin: str):
+        super().__init__()
+        self.derivation_path = derivation_path
+        self.pin = pin
+
+    def run(self):
+        normalized_path = _normalize_bip32_path(self.derivation_path)
+        if _is_evm_derivation_path(normalized_path):
+            loading = LoadingScreenThread(text="Calculating address...")
+            loading.start()
+            try:
+                result = _derive_evm_address_via_signer_unlock(self.pin, normalized_path)
+            except Exception as exc:
+                logger.exception("TP smartcard EVM address derivation failed")
+                self.run_screen(
+                    WarningScreen,
+                    title="派生失败",
+                    status_headline=None,
+                    text=_format_derivation_failure(exc, normalized_path or DEFAULT_DERIVATION_PATH, "无法根据这条路径计算智能卡地址。"),
+                    show_back_button=False,
+                    button_data=[ButtonOption("继续")],
+                )
+                return Destination(
+                    ToolsTpSmartcardAddressPathView,
+                    view_args=dict(derivation_path=normalized_path or DEFAULT_DERIVATION_PATH),
+                    clear_history=True,
+                )
+            finally:
+                loading.stop()
+
+            return Destination(
+                ToolsTpDerivedAddressResultView,
+                view_args=dict(
+                    seed_num=None,
+                    derivation_path=result["derivation_path"],
+                    address=result["address"],
+                    network=result["network"],
+                    script_type=result["script_type"],
+                    address_family=result.get("address_family", "btc"),
+                    notes=result.get("notes", ""),
+                    return_to="smartcard",
+                ),
+                skip_current_view=True,
+            )
+
+        connector = seedkeeper_utils.init_satochip(
+            self,
+            init_card_filter=["satochip"],
+            require_pin=False,
+        )
+        if not connector:
+            return _smartcard_tools_destination()
+
+        loading = LoadingScreenThread(text="Verifying PIN")
+        loading.start()
+        try:
+            connector.set_pin(0, list(self.pin.encode("utf-8")))
+            _response, sw1, sw2 = connector.card_verify_PIN()
+            if sw1 != 0x90 or sw2 != 0x00:
+                return _debug_error_destination("45", format_sw_error(sw1, sw2))
+        except Exception as exc:
+            logger.exception("TP smartcard address PIN verify failed")
+            return _debug_error_destination("45", str(exc))
+        finally:
+            loading.stop()
+
+        loading = LoadingScreenThread(text="Calculating address...")
+        loading.start()
+        try:
+            result = _derive_address_from_satochip(
+                connector,
+                normalized_path,
+                self.settings.get_value(SettingsConstants.SETTING__NETWORK),
+            )
+        except Exception as exc:
+            logger.exception("TP smartcard address derivation failed")
+            self.run_screen(
+                WarningScreen,
+                title="派生失败",
+                status_headline=None,
+                text=_format_derivation_failure(exc, normalized_path or DEFAULT_BTC_ADDRESS_PATH, "无法根据这条路径计算智能卡地址。"),
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return Destination(
+                ToolsTpSmartcardAddressPathView,
+                view_args=dict(derivation_path=normalized_path or DEFAULT_BTC_ADDRESS_PATH),
+                clear_history=True,
+            )
+        finally:
+            loading.stop()
+
+        return Destination(
+            ToolsTpDerivedAddressResultView,
+            view_args=dict(
+                seed_num=None,
+                derivation_path=result["derivation_path"],
+                address=result["address"],
+                network=result["network"],
+                script_type=result["script_type"],
+                address_family=result.get("address_family", "btc"),
+                notes=result.get("notes", ""),
+                return_to="smartcard",
+            ),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpFirmwareIntegrityRunView(View):
+    def run(self):
+        loading = LoadingScreenThread(text="校验固件...")
+        loading.start()
+        try:
+            result = verify_runtime_manifest()
+        except Exception as exc:
+            logger.exception("Firmware integrity self-check failed")
+            result = {
+                "supported": False,
+                "ok": False,
+                "status": "runtime-error",
+                "manifest_path": str(DEFAULT_MANIFEST_PATH),
+                "error": f"固件自检运行失败: {exc}",
+            }
+        finally:
+            loading.stop()
+
+        return Destination(
+            ToolsTpFirmwareIntegrityResultView,
+            view_args=dict(result=result),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpFirmwareIntegrityResultView(View):
+    VIEW_DETAILS = ButtonOption("查看详情")
+    RETRY = ButtonOption("重新自检")
+    DONE = ButtonOption("完成")
+
+    def __init__(self, result: dict):
+        super().__init__()
+        self.result = result
+
+    def run(self):
+        button_data = [self.VIEW_DETAILS, self.RETRY, self.DONE]
+        selected_menu_num = self.run_screen(
+            ToolsFormattedTextScreen,
+            title="固件完整性",
+            text=_format_firmware_integrity_summary(self.result),
+            text_font_name=GUIConstants.get_body_font_name(),
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return _tp_home_destination()
+
+        selected = button_data[selected_menu_num]
+        if selected == self.VIEW_DETAILS:
+            return Destination(
+                ToolsTpFirmwareIntegrityDetailsView,
+                view_args=dict(result=self.result, page_index=0),
+                clear_history=True,
+            )
+        if selected == self.RETRY:
+            return Destination(ToolsTpFirmwareIntegrityRunView, clear_history=True)
+        return _tp_home_destination()
+
+
+class ToolsTpFirmwareIntegrityDetailsView(View):
+    NEXT = ButtonOption("下一页")
+    BACK = ButtonOption("返回")
+
+    def __init__(self, result: dict, page_index: int = 0):
+        super().__init__()
+        self.result = result
+        self.page_index = page_index
+
+    def run(self):
+        pages = _build_firmware_integrity_detail_pages(self.result)
+        current_page = max(0, min(self.page_index, len(pages) - 1))
+        has_next = current_page < len(pages) - 1
+        button_data = [self.NEXT, self.BACK] if has_next else [self.BACK]
+
+        selected_menu_num = self.run_screen(
+            ToolsFormattedTextScreen,
+            title="固件完整性",
+            text=pages[current_page],
+            text_font_name=GUIConstants.get_body_font_name(),
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(
+                ToolsTpFirmwareIntegrityResultView,
+                view_args=dict(result=self.result),
+                clear_history=True,
+            )
+
+        selected = button_data[selected_menu_num]
+        if selected == self.NEXT:
+            return Destination(
+                ToolsTpFirmwareIntegrityDetailsView,
+                view_args=dict(result=self.result, page_index=current_page + 1),
+                clear_history=True,
+            )
+        return Destination(
+            ToolsTpFirmwareIntegrityResultView,
+            view_args=dict(result=self.result),
+            clear_history=True,
+        )
 
 
 class ToolsTpSignerScanView(View):
@@ -1934,11 +2886,11 @@ class ToolsTpBtcXpubPinEntryView(View):
             return _debug_error_destination("21", str(exc))
 
         if pin is None:
-            return _tp_home_destination()
+            return _smartcard_tools_destination()
 
         pin = pin.strip()
         if not pin or len(pin) < 4:
-            return _tp_home_destination()
+            return _smartcard_tools_destination()
 
         return Destination(
             ToolsTpBtcXpubRunView,
@@ -1965,7 +2917,7 @@ class ToolsTpBtcXpubRunView(View):
             require_pin=False,
         )
         if not connector:
-            return _tp_home_destination()
+            return _smartcard_tools_destination()
 
         loading = LoadingScreenThread(text="Verifying PIN")
         loading.start()
@@ -2008,15 +2960,154 @@ class ToolsTpBtcXpubQrView(View):
             WarningScreen,
             title="提示",
             status_headline=None,
-            text=f"{self.xtype} 可用于观察全部后续地址和交易，请只导入自己的手机。",
+            text=f"智能卡 {self.xtype} 可用于观察全部后续 BTC 地址和交易，请只导入自己的手机。",
             show_back_button=True,
             button_data=[ButtonOption("继续")],
         )
         if ret == RET_CODE__BACK_BUTTON:
-            return _tp_home_destination()
+            return _smartcard_tools_destination()
 
         encoder = GenericStaticQrEncoder(data=self.xpub)
         self.run_screen(QRDisplayScreen, qr_encoder=encoder)
+        return _smartcard_tools_destination()
+
+
+@dataclass
+class ToolsTpDirectQrPagerScreen(BaseScreen):
+    title: str = ""
+    parts: list[str] = None
+    current_index: int = 0
+
+    def __post_init__(self):
+        from seedsigner.models.settings import Settings
+
+        super().__post_init__()
+        self.parts = [str(part) for part in (self.parts or [""])]
+        self.current_index = max(0, min(int(self.current_index), len(self.parts) - 1))
+        self.qr_brightness = int(Settings.get_instance().get_value(SettingsConstants.SETTING__QR_BRIGHTNESS))
+
+    def _render(self):
+        self.clear_screen()
+        hex_color = (hex(max(31, min(255, self.qr_brightness))).split("x")[1]) * 3
+        qr_part = self.parts[self.current_index]
+        qr_image = GenericStaticQrEncoder(data=qr_part).part_to_image(
+            qr_part,
+            240,
+            240,
+            border=2,
+            background_color=hex_color,
+        )
+        self.canvas.paste(qr_image, (0, 0))
+
+    def _run(self):
+        from seedsigner.models.settings import Settings
+
+        while True:
+            user_input = self.hw_inputs.wait_for(
+                [
+                    HardwareButtonsConstants.KEY1,
+                    HardwareButtonsConstants.KEY2,
+                    HardwareButtonsConstants.KEY3,
+                    HardwareButtonsConstants.KEY_PRESS,
+                    HardwareButtonsConstants.KEY_LEFT,
+                    HardwareButtonsConstants.KEY_RIGHT,
+                    HardwareButtonsConstants.KEY_UP,
+                    HardwareButtonsConstants.KEY_DOWN,
+                ]
+            )
+
+            should_rerender = False
+            if user_input in (HardwareButtonsConstants.KEY1, HardwareButtonsConstants.KEY_LEFT):
+                if self.current_index > 0:
+                    self.current_index -= 1
+                    should_rerender = True
+            elif user_input in (HardwareButtonsConstants.KEY2, HardwareButtonsConstants.KEY_RIGHT):
+                if self.current_index < len(self.parts) - 1:
+                    self.current_index += 1
+                    should_rerender = True
+            elif user_input == HardwareButtonsConstants.KEY_UP:
+                new_value = min(self.qr_brightness + 31, 255)
+                if new_value != self.qr_brightness:
+                    self.qr_brightness = new_value
+                    should_rerender = True
+            elif user_input == HardwareButtonsConstants.KEY_DOWN:
+                new_value = max(31, self.qr_brightness - 31)
+                if new_value != self.qr_brightness:
+                    self.qr_brightness = new_value
+                    should_rerender = True
+            else:
+                break
+
+            if should_rerender:
+                with self.renderer.lock:
+                    self._render()
+                    self.renderer.show_image()
+
+        Settings.get_instance().set_value(SettingsConstants.SETTING__QR_BRIGHTNESS, self.qr_brightness)
+
+
+class ToolsTpManualQrPartsView(View):
+    SHOW_QR = ButtonOption("显示当前二维码")
+    PREV = ButtonOption("上一张")
+    NEXT = ButtonOption("下一张")
+    DONE = ButtonOption("完成")
+
+    def __init__(self, title: str, parts: list[str], current_index: int = 0):
+        super().__init__()
+        self.title = title
+        self.parts = parts or [""]
+        self.current_index = max(0, min(current_index, len(self.parts) - 1))
+
+    def _text(self) -> str:
+        part_count = len(self.parts)
+        return (
+            f"当前第 {self.current_index + 1}/{part_count} 张\n\n"
+            "先显示这一张二维码，让手机扫完后，再手动切到下一张。\n\n"
+            "如果手机漏扫了，可以回到上一张重扫。"
+        )
+
+    def _button_data(self) -> list[ButtonOption]:
+        button_data = [self.SHOW_QR]
+        if self.current_index > 0:
+            button_data.append(self.PREV)
+        if self.current_index < len(self.parts) - 1:
+            button_data.append(self.NEXT)
+        button_data.append(self.DONE)
+        return button_data
+
+    def _reload(self, current_index: int) -> Destination:
+        return Destination(
+            ToolsTpManualQrPartsView,
+            view_args=dict(
+                title=self.title,
+                parts=self.parts,
+                current_index=current_index,
+            ),
+            clear_history=True,
+        )
+
+    def run(self):
+        button_data = self._button_data()
+        selected_menu_num = self.run_screen(
+            ToolsFormattedTextScreen,
+            title=self.title,
+            text=self._text(),
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            if self.current_index > 0:
+                return self._reload(self.current_index - 1)
+            return _tp_home_destination()
+
+        selected = button_data[selected_menu_num]
+        if selected == self.SHOW_QR:
+            self.run_screen(QRDisplayScreen, qr_encoder=GenericStaticQrEncoder(data=self.parts[self.current_index]))
+            return self._reload(self.current_index)
+        if selected == self.PREV:
+            return self._reload(self.current_index - 1)
+        if selected == self.NEXT:
+            return self._reload(self.current_index + 1)
         return _tp_home_destination()
 
 
@@ -2136,6 +3227,8 @@ class ToolsTpSignerPsbtRunView(View):
                     detail = _extract_error(proc.stdout, proc.stderr, "sign-psbt failed")
                     logger.warning("TP-only BTC PSBT signer failed: %s", detail)
                     code = _map_signer_error_code(detail)
+                    if code == "32":
+                        return _debug_error_destination(code, detail)
                     return _masked_error_destination(code)
 
                 signed_psbt_base64 = ""
@@ -2235,6 +3328,8 @@ class ToolsTpSignerRunView(View):
                     code = _map_signer_error_code(detail)
                     if code == "51":
                         return _debug_error_destination(code, detail)
+                    if code == "32":
+                        return _debug_error_destination(code, detail)
                     return _masked_error_destination(code)
 
                 if not response_path.exists():
@@ -2286,9 +3381,13 @@ class ToolsTpSignerPsbtQrView(View):
                 max_version=4,
                 min_split=1,
                 max_split=8,
-                frame_repeat=2,
+                frame_repeat=1,
             )
-            self.run_screen(QRDisplayScreen, qr_encoder=encoder)
+            parts = _collect_manual_qr_parts(encoder)
+            if len(parts) > 1:
+                self.run_screen(ToolsTpDirectQrPagerScreen, title="手动切换交易二维码", parts=parts)
+                return _tp_home_destination()
+            self.run_screen(QRDisplayScreen, qr_encoder=GenericStaticQrEncoder(data=parts[0]))
             return _tp_home_destination()
 
         from embit.psbt import PSBT
@@ -2319,6 +3418,18 @@ class ToolsTpSignerPsbtQrView(View):
             if not self.tx_hex:
                 return _masked_error_destination("33")
             encoder = GenericStaticQrEncoder(data=self.tx_hex)
+        try:
+            parts = _collect_manual_qr_parts(encoder)
+        except Exception as exc:
+            logger.warning("TP-only signed PSBT QR part collection failed: %s", exc)
+            parts = []
 
-        self.run_screen(QRDisplayScreen, qr_encoder=encoder)
+        if len(parts) > 1:
+            self.run_screen(ToolsTpDirectQrPagerScreen, title="手动切换签名二维码", parts=parts)
+            return _tp_home_destination()
+
+        if parts:
+            self.run_screen(QRDisplayScreen, qr_encoder=GenericStaticQrEncoder(data=parts[0]))
+        else:
+            self.run_screen(QRDisplayScreen, qr_encoder=encoder)
         return _tp_home_destination()
