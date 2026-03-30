@@ -13,9 +13,21 @@ OUT_INFO="$OUT_DIR/tp-qr-relay-android-latest.build-info.txt"
 detect_java_home() {
   local candidate=""
 
+  find_local_jdk17() {
+    local dir
+    shopt -s nullglob
+    for dir in "$HOME"/.local-jdk/jdk-17*; do
+      if [[ -x "$dir/bin/java" && -x "$dir/bin/javac" ]]; then
+        printf '%s\n' "$dir"
+        return 0
+      fi
+    done
+    return 1
+  }
+
   for candidate in \
     "${JAVA_HOME:-}" \
-    "/home/ak/.local-jdk/jdk-17.0.18+8"
+    "$(find_local_jdk17 || true)"
   do
     if [[ -n "$candidate" && -x "$candidate/bin/java" && -x "$candidate/bin/javac" ]]; then
       printf '%s\n' "$candidate"
@@ -57,7 +69,6 @@ detect_android_sdk() {
     "$(read_sdk_dir_from_properties "$ROOT_DIR/local.properties")" \
     "${ANDROID_SDK_ROOT:-}" \
     "${ANDROID_HOME:-}" \
-    "/home/ak/Android/Sdk" \
     "$HOME/Android/Sdk" \
     "$HOME/Android/sdk" \
     "/usr/lib/android-sdk" \

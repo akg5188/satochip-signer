@@ -1,3 +1,4 @@
+import java.io.File
 import java.util.Properties
 import java.security.KeyStore
 import java.security.MessageDigest
@@ -12,7 +13,12 @@ val localProperties = Properties().apply {
 val sdkDir = localProperties.getProperty("sdk.dir")
     ?: System.getenv("ANDROID_SDK_ROOT")
     ?: System.getenv("ANDROID_HOME")
-    ?: "/home/ak/Android/Sdk"
+    ?: ""
+
+val coreSystemModulesJar = sdkDir
+    .takeIf { it.isNotBlank() }
+    ?.let { File(it, "platforms/android-34/core-for-system-modules.jar") }
+    ?.takeIf { it.isFile }
 
 val keystoreProperties = Properties().apply {
     val f = rootProject.file("keystore.properties")
@@ -164,7 +170,7 @@ configurations.all {
 
 dependencies {
     implementation(platform("org.jetbrains.kotlin:kotlin-bom:1.9.24"))
-    compileOnly(files("$sdkDir/platforms/android-34/core-for-system-modules.jar"))
+    coreSystemModulesJar?.let { compileOnly(files(it)) }
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.biometric:biometric:1.1.0")

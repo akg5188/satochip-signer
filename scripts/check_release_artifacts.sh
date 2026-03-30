@@ -21,6 +21,8 @@ check_pi_firmware_artifact() {
   local artifact="$1"
   local sha_file="$2"
   local info_file="$3"
+  local require_clean="${4:-0}"
+  local allow_missing_build_clean_mode="${5:-0}"
 
   require_file "$artifact"
   require_file "$sha_file"
@@ -48,15 +50,24 @@ check_pi_firmware_artifact() {
   grep -q '^nfc_bindings_mk_sha256=' "$info_file" || fail "Missing nfc_bindings_mk_sha256 in $info_file"
   grep -q '^build_script=' "$info_file" || fail "Missing build_script in $info_file"
   grep -q '^package_script=' "$info_file" || fail "Missing package_script in $info_file"
-  grep -q '^build_clean_mode=' "$info_file" || fail "Missing build_clean_mode in $info_file"
-
   local repo_dirty
   repo_dirty="$(awk -F= '/^repo_dirty=/{print $2}' "$info_file")"
-  [[ "$repo_dirty" == "0" ]] || fail "Pi firmware build-info repo_dirty must be 0"
-
   local build_clean_mode
-  build_clean_mode="$(awk -F= '/^build_clean_mode=/{print $2}' "$info_file")"
-  [[ "$build_clean_mode" == "clean" ]] || fail "Pi firmware build-info build_clean_mode must be clean"
+  if grep -q '^build_clean_mode=' "$info_file"; then
+    build_clean_mode="$(awk -F= '/^build_clean_mode=/{print $2}' "$info_file")"
+  elif [[ "$allow_missing_build_clean_mode" == "1" ]]; then
+    warn "Missing build_clean_mode in $info_file; treating as legacy clean-baseline metadata"
+    build_clean_mode=""
+  else
+    fail "Missing build_clean_mode in $info_file"
+  fi
+
+  if [[ "$require_clean" == "1" ]]; then
+    [[ "$repo_dirty" == "0" ]] || fail "Pi firmware build-info repo_dirty must be 0"
+    if [[ -n "$build_clean_mode" ]]; then
+      [[ "$build_clean_mode" == "clean" ]] || fail "Pi firmware build-info build_clean_mode must be clean"
+    fi
+  fi
 
   local repo_head
   repo_head="$(awk -F= '/^repo_head=/{print $2}' "$info_file")"
@@ -66,6 +77,10 @@ check_pi_firmware_artifact() {
   local package_script
   package_script="$(awk -F= '/^package_script=/{print $2}' "$info_file")"
   [[ "$package_script" != "manual-low-impact-xz" ]] || fail "Pi firmware build-info still uses obsolete manual-low-impact-xz package_script"
+}
+
+check_pi_firmware_backup_artifact() {
+  check_pi_firmware_artifact "$1" "$2" "$3" 0 0
 }
 
 check_artifact() {
@@ -120,7 +135,18 @@ require_file "$ROOT_DIR/card-applet/prebuilt/SHA256SUMS.txt"
 check_pi_firmware_artifact \
   "$ROOT_DIR/dist/system-update-latest.img.xz" \
   "$ROOT_DIR/dist/system-update-latest.img.xz.sha256" \
-  "$ROOT_DIR/dist/system-update-latest.build-info.txt"
+  "$ROOT_DIR/dist/system-update-latest.build-info.txt" \
+  1 \
+  1
+
+if [[ -f "$ROOT_DIR/dist/system-update-offline-signer-repair7.img.xz" || \
+      -f "$ROOT_DIR/dist/system-update-offline-signer-repair7.img.xz.sha256" || \
+      -f "$ROOT_DIR/dist/system-update-offline-signer-repair7.build-info.txt" ]]; then
+  check_pi_firmware_backup_artifact \
+    "$ROOT_DIR/dist/system-update-offline-signer-repair7.img.xz" \
+    "$ROOT_DIR/dist/system-update-offline-signer-repair7.img.xz.sha256" \
+    "$ROOT_DIR/dist/system-update-offline-signer-repair7.build-info.txt"
+fi
 
 check_optional_artifact \
   "TP relay APK" \
