@@ -54,9 +54,15 @@ do
   grep -q "^${key}=" "$DIST_INFO" || fail "Missing build-info key: ${key}"
 done
 
+mapfile -t docs_to_scan < <(
+  find "$ROOT_DIR/docs" -maxdepth 1 -type f -name '*.md' \
+    ! -name '版本时间线与发布入口.zh-CN.md' \
+    -print
+)
+
 if rg -n 'repack_runtime_image\.sh|releases/tag/(pi-signer-firmware-|offline-signer-firmware-)' \
   "$ROOT_DIR/README.md" \
-  "$ROOT_DIR/docs" \
+  "${docs_to_scan[@]}" \
   "$ROOT_DIR/seedsigner-os/README.zh-CN.md"
 then
   fail "Found obsolete Pi firmware docs references"

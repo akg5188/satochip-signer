@@ -106,11 +106,34 @@ check_artifact() {
   grep -q '^build_script=' "$info_file" || fail "Missing build_script in $info_file"
 }
 
+warn_if_optional_artifact_stale() {
+  local label="$1"
+  local info_file="$2"
+  local expected_build_script="${3:-}"
+  local repo_head
+  local current_head
+  local build_script
+
+  repo_head="$(awk -F= '/^repo_head=/{print $2}' "$info_file")"
+  current_head="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  if [[ -n "$repo_head" && "$repo_head" != "$current_head" ]]; then
+    warn "$label is not rebuilt from current HEAD: repo_head=$repo_head current_head=$current_head"
+  fi
+
+  if [[ -n "$expected_build_script" ]]; then
+    build_script="$(awk -F= '/^build_script=/{print $2}' "$info_file")"
+    if [[ -n "$build_script" && "$build_script" != "$expected_build_script" ]]; then
+      warn "$label uses non-canonical build_script=$build_script expected=$expected_build_script"
+    fi
+  fi
+}
+
 check_optional_artifact() {
   local label="$1"
   local artifact="$2"
   local sha_file="$3"
   local info_file="$4"
+  local expected_build_script="${5:-}"
   local present_count=0
 
   [[ -f "$artifact" ]] && present_count=$((present_count + 1))
@@ -126,6 +149,7 @@ check_optional_artifact() {
   fi
 
   check_artifact "$artifact" "$sha_file" "$info_file"
+  warn_if_optional_artifact_stale "$label" "$info_file" "$expected_build_script"
 }
 
 require_file "$ROOT_DIR/card-applet/prebuilt/SatoChip-3.0.4.cap"
@@ -152,12 +176,14 @@ check_optional_artifact \
   "TP relay APK" \
   "$ROOT_DIR/dist/tp-qr-relay-android-latest.apk" \
   "$ROOT_DIR/dist/tp-qr-relay-android-latest.apk.sha256" \
-  "$ROOT_DIR/dist/tp-qr-relay-android-latest.build-info.txt"
+  "$ROOT_DIR/dist/tp-qr-relay-android-latest.build-info.txt" \
+  "scripts/build_tp_relay_apk.sh"
 
 check_optional_artifact \
   "wallet release APK" \
   "$ROOT_DIR/dist/satochip-wallet-release.apk" \
   "$ROOT_DIR/dist/satochip-wallet-release.apk.sha256" \
-  "$ROOT_DIR/dist/satochip-wallet-release.build-info.txt"
+  "$ROOT_DIR/dist/satochip-wallet-release.build-info.txt" \
+  "scripts/build_wallet_release.sh"
 
 echo "Release artifact checks passed."
