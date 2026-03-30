@@ -33,7 +33,7 @@
 
 - [固件下载与写入指南](../docs/固件下载与写入指南.zh-CN.md)
 - [离线签名器使用教程](../docs/离线签名器使用教程.zh-CN.md)
-- [树莓派固件 GitHub Releases 页面](https://github.com/akg5188/tp-satochip-signer/releases)
+- [树莓派固件 GitHub Releases 页面](https://github.com/akg5188/satochip-signer/releases)
 
 如果你要继续研究原始构建方式：
 
