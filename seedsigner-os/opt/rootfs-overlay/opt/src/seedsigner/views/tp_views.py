@@ -904,11 +904,13 @@ def _resolve_signer_bin() -> Path:
             candidates.append(Path(env_path))
     candidates.append(Path("/opt/offline-signer/bin/pi-signer"))
     candidates.append(Path("/opt/offline-signer/bin/offline-signer"))
-    candidates.append(Path("/opt/tp-pi-signer/bin/pi-signer"))
     candidates.append(Path("/opt/pi-signer-py/bin/pi-signer"))
     candidates.append(Path("/opt/pi-signer-py/bin/offline-signer"))
     candidates.append(Path(__file__).resolve().parents[3] / "pi-signer-py/bin/pi-signer")
     candidates.append(Path(__file__).resolve().parents[3] / "pi-signer-py/bin/offline-signer")
+    for legacy_root in Path("/opt").glob("*pi-signer/bin"):
+        candidates.append(legacy_root / "pi-signer")
+        candidates.append(legacy_root / "offline-signer")
     for candidate in candidates:
         if candidate.is_file():
             return candidate
@@ -3284,7 +3286,7 @@ class ToolsTpSignerRunView(View):
         loading = LoadingScreenThread(text="")
         loading.start()
         try:
-            with tempfile.TemporaryDirectory(prefix="tp-signer-") as tmpdir:
+            with tempfile.TemporaryDirectory(prefix="satochip-signer-") as tmpdir:
                 tmpdir_path = Path(tmpdir)
                 request_path = tmpdir_path / "request.txt"
                 response_path = tmpdir_path / "response.txt"

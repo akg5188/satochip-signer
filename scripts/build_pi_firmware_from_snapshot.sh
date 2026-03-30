@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-ASCII_BASE="${TP_ASCII_BASE:-$HOME/tp-signer-ascii}"
+ASCII_BASE="${TP_ASCII_BASE:-$HOME/satochip-signer-ascii}"
 ASCII_IMAGE_DIR="${TP_IMAGE_DIR:-$ASCII_BASE/images}"
 DEFAULT_RAW_IMG="$ASCII_IMAGE_DIR/seedsigner_os.dev_.pi0-smartcard.img"
 LEGACY_RAW_IMG="$ROOT_DIR/seedsigner-os/images/seedsigner_os.dev_.pi0-smartcard.img"

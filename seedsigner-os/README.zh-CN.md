@@ -6,7 +6,7 @@
 
 - 提供树莓派设备侧系统
 - 提供运行环境、构建环境和镜像相关内容
-- 给树莓派签名器和界面运行做底座
+- 给树莓派离线签名器和界面运行做底座
 
 ## 这个目录不是什么
 
@@ -32,8 +32,8 @@
 直接看：
 
 - [固件下载与写入指南](../docs/固件下载与写入指南.zh-CN.md)
-- [树莓派签名器使用教程](../docs/树莓派签名器使用教程.zh-CN.md)
-- [树莓派固件 GitHub Releases 页面](https://github.com/akg5188/tp-satochip-signer/releases)
+- [离线签名器使用教程](../docs/离线签名器使用教程.zh-CN.md)
+- [树莓派固件 GitHub Releases 页面](https://github.com/akg5188/satochip-signer/releases)
 
 如果你要继续研究原始构建方式：
 

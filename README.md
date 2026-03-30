@@ -1,142 +1,156 @@
-# TP Satochip Signer
+# satochip-signer 仓库说明
 
-这个仓库不是单一项目，而是同一套方案下的 5 个部分。
+这个项目现在更适合叫 `satochip-signer`。
 
-以后时间久了忘了，不要先翻源码，先看下面这些入口：
+仓库旧名是：
+
+- `tp-satochip-signer`
+
+按现在源码里的真实状态，它包含 5 条主线：
+
+- `seedsigner-os/` 与 `dist/`
+  树莓派 `Pi Zero` 离线签名器固件与镜像备份
+- `app/`
+  安卓“智能卡”App，负责 `TokenPocket` 请求扫码、智能卡签名，也能把 TP 动态码转成树莓派更容易扫的静态码
+- `wallet/`
+  安卓高安全观察钱包，当前主打 `Arbitrum One` 观察地址、`WalletConnect v2` 协调、树莓派离线签名，以及 `BTC xpub/ypub/zpub` 观察账户原型
+- `card-applet/`
+  `J3R180` 智能卡固件
+- `backups/satochip-utils/`
+  `Tails` 离线卡初始化工具备份
+
+先看这些入口，别先翻源码：
 
 - [一页式总导航](docs/一页式总导航.zh-CN.md)
-- [树莓派签名器一页备忘](docs/树莓派签名器一页备忘.zh-CN.md)
+- [快速开始](docs/快速开始.zh-CN.md)
+- [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md)
+- [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md)
 - [长期维护总入口](docs/长期维护总入口.zh-CN.md)
-- [安卓构建环境准备](docs/安卓构建环境准备.zh-CN.md)
-- [固件下载与写入指南](docs/固件下载与写入指南.zh-CN.md)
-- [树莓派签名器使用教程](docs/树莓派签名器使用教程.zh-CN.md)
+- [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)
 
-如果以后要把独立钱包扩到 `BTC` 或闪电网络，先看：
+## 现在该用什么
 
-- [独立钱包扩展到BTC与闪电网络方案](docs/独立钱包扩展到BTC与闪电网络方案.zh-CN.md)
-
-## 我现在要做什么
-
-| 现在要做的事 | 去哪个目录 | 看哪份说明 | 下载入口 |
-| --- | --- | --- | --- |
-| 给 `TokenPocket` 商业钱包做签名中转 | `app/` | [app/README.md](app/README.md) | 对应 Release，或本地执行 `bash scripts/build_tp_relay_apk.sh` 现编 |
-| 用独立钱包看资产、转账、连 `Hyperliquid` | `wallet/` | [wallet/README.md](wallet/README.md) | 对应 Release，或本地执行 `bash scripts/build_wallet_release.sh` 生成 `dist/satochip-wallet-release.apk` |
-| 给 `J3R180` 卡设置 `PIN` 和助记词 | `backups/satochip-utils/` | [Tails 离线使用教程](backups/satochip-utils/Tails-离线使用教程.zh-CN.md) | 本仓库离线备份 |
-| 下载或写入 `J3R180` 卡固件 | `card-applet/` | [card-applet 中文说明](card-applet/README.zh-CN.md) | [卡固件 Release](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318) |
-| 下载或写入树莓派固件 | `seedsigner-os/` 和 `dist/` | [seedsigner-os 中文说明](seedsigner-os/README.zh-CN.md)、[固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md) | [树莓派固件稳定备份](dist/system-update-latest.img.xz) |
-
-## 下载总表
-
-| 内容 | 文件名 | 推荐下载位置 | 仓库内稳定备份 |
-| --- | --- | --- | --- |
-| TP 签名中转安卓 APK | `tp-qr-relay-android-latest.apk` | 对应 Release，或本地执行 `bash scripts/build_tp_relay_apk.sh` 现编 | 默认不回填到 `dist/` 快照 |
-| 独立钱包安卓 APK | `satochip-wallet-release.apk` | 对应 Release，或本地生成后回填 `dist/satochip-wallet-release.apk` | `dist/satochip-wallet-release.apk` |
-| `J3R180` 卡固件 | `SatoChip-3.0.4.cap` | [j3r180-card-firmware-20260318](https://github.com/akg5188/tp-satochip-signer/releases/tag/j3r180-card-firmware-20260318) | `card-applet/prebuilt/SatoChip-3.0.4.cap` |
-| 树莓派固件 | `system-update-latest.img.xz` | 仓库里的稳定文件名 `dist/system-update-latest.img.xz` | `dist/system-update-latest.img.xz` |
-| `Tails` 离线卡初始化工具 | `Satochip-Utils-linux-x86_64-0.3.0-beta` 等 | 本地离线包和 `backups/satochip-utils/` | `backups/satochip-utils/` |
-
-树莓派固件补充说明：
-
-- 当前仓库里有两类树莓派镜像：`system-update-latest.img.xz` 是历史稳定备份；`system-update-offline-signer-repair7.img.xz` 是你已经实机验证通过的备份版。
-- `repair7` 固件不要直接拿 `main` 头来猜源码，请看 [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md) 里的精确 tag。
-
-## 五个核心部分
-
-| 目录 | 它是什么 | 主要用途 | 不要和什么混用 |
-| --- | --- | --- | --- |
-| `card-applet` | `J3R180` 智能卡固件 | 卡内签名逻辑、卡固件文件 | 树莓派固件、安卓 APK |
-| `seedsigner-os` | 树莓派固件源码 | 设备系统、运行环境、镜像相关 | 卡固件、安卓 APK |
-| `wallet` | 独立钱包安卓工程 | 观察钱包、资产、转账、`Hyperliquid` | TP 中转 App |
-| `app` | TP 配套安卓工程 | 手机扫码中转签名 | 独立钱包 |
-| `backups/satochip-utils` | 离线桌面工具备份 | 设置 `PIN`、导入助记词 | 固件、安卓 APK |
-
-## 两个安卓 APK 一眼区分
-
-| APK | 用途 | 源码目录 |
+| 你要做的事 | 该看哪里 | 当前产物/入口 |
 | --- | --- | --- |
-| `tp-qr-relay-android-latest.apk` | 给 `TokenPocket` 商业钱包做签名中转 | `app/` |
-| `satochip-wallet-release.apk` | 独立钱包，带资产、转账和 `Hyperliquid` | `wallet/` |
+| 给 `TokenPocket` 做手机端扫码与智能卡签名 | `app/` | `bash scripts/build_tp_relay_apk.sh` |
+| 用自己的安卓观察钱包发起 EVM / BTC 冷签 | `wallet/` | `bash scripts/build_wallet_release.sh` |
+| 给 `BlueWallet` 做 `BTC PSBT` 冷签 | 树莓派离线签名器 | [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md) |
+| 刷树莓派固件 | `dist/` | `system-update-offline-signer-repair7.img.xz` 或 `system-update-latest.img.xz` |
+| 写 `J3R180` 卡固件 | `card-applet/prebuilt/` | `SatoChip-3.0.4.cap` |
+| 在 `Tails` 里初始化卡、设 PIN、导助记词 | `backups/satochip-utils/` | 对应中文教程 |
 
-详细说明：
+## 两张最重要的树莓派镜像
 
-- [两个安卓APK说明](docs/两个安卓APK说明.zh-CN.md)
+仓库里现在要分清两张镜像：
 
-## 最常用重新编译命令
+- `dist/system-update-offline-signer-repair7.img.xz`
+  这是当前“实机验证通过、功能最新”的备份版。
+  已确认支持：
+  - 自有安卓钱包扫码签名
+  - `BlueWallet` 的 `BTC PSBT`
+  - `TokenPocket` 中转场景
+  - 助记词/BIP39 序号查看、钢板数字流程、智能卡工具、固件完整性自检
 
-### 重新编独立钱包
+- `dist/system-update-latest.img.xz`
+  这是“历史 clean 稳定备份”。
+  它更适合拿来做构建与校验基线，不要和 `repair7` 当成同一张包。
 
-首次换机器前，先看：
-[安卓构建环境准备](docs/安卓构建环境准备.zh-CN.md)
+怎么对应源码，看这里：
 
-```bash
-bash scripts/build_wallet_release.sh
-```
+- [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)
 
-输出：
+## 当前主界面长什么样
 
-```text
-dist/satochip-wallet-release.apk
-dist/satochip-wallet-release.apk.sha256
-```
+树莓派开机后的首页不是旧文档里的 `TP only mode` 了。
 
-### 重新编 TP 签名中转 App
+当前源码里的首页标题就是：
 
-首次换机器前，先看：
-[安卓构建环境准备](docs/安卓构建环境准备.zh-CN.md)
+- `离线签名器`
 
-```bash
-bash scripts/build_tp_relay_apk.sh
-```
+首页 4 个入口：
 
-输出：
+- `扫码签名`
+- `助记词工具`
+- `固件完整性自检`
+- `智能卡工具`
 
-```text
-dist/tp-qr-relay-android-latest.apk
-dist/tp-qr-relay-android-latest.apk.sha256
-dist/tp-qr-relay-android-latest.build-info.txt
-```
+## 三条常用使用链路
 
-这些是本地构建输出，不是仓库里默认长期保留的 `dist/` 快照。
+### 1. 自己的安卓钱包 `satochip-wallet-release.apk`
 
-### 重新生成树莓派运行时镜像
+1. 手机生成待签名二维码
+2. 树莓派进 `扫码签名`
+3. 输入智能卡 `PIN`
+4. 树莓派显示签名结果
+5. 手机扫回并人工确认广播
+
+### 2. `BlueWallet`
+
+1. `BlueWallet` 显示 `BTC PSBT` 动态二维码
+2. 树莓派进 `扫码签名`
+3. 输入智能卡 `PIN`
+4. 树莓派回显结果二维码
+5. `BlueWallet` 扫回并广播
+
+当前固件已接入：
+
+- `BBQR`
+- `UR`
+- 常见 `PSBT` 回传格式
+
+### 3. `TokenPocket`
+
+有两条路：
+
+- 手机直接用 `app/` 里的“智能卡”App 扫 `TP` 请求并配合智能卡签名
+- 或者先用这款 App 把 `TP` 动态码转成树莓派更容易扫的静态码，再让树莓派签名
+
+所以 `app/` 不是独立钱包，也不只是“给 Pi 的中转器”，它现在同时承担：
+
+- `TP` 请求解析
+- `NFC / USB-OTG` 智能卡签名
+- 可选的树莓派静态中转二维码生成
+- 结果二维码回传
+
+## 最常用构建命令
+
+### 树莓派固件
 
 ```bash
 bash scripts/build_pi_firmware_from_snapshot.sh
 bash scripts/check_release_artifacts.sh
 ```
 
-说明：
+### 安卓智能卡 App
 
-- 正式稳定固件默认必须用 `clean` 模式构建
-- 如果只是想做测试包，再显式加：
-  `TP_BUILD_CLEAN_MODE=no-clean DIST_IMG=dist/xxx-test.img.xz`
-
-### 卡固件优先直接用预编译文件
-
-```text
-card-applet/prebuilt/SatoChip-3.0.4.cap
+```bash
+bash scripts/build_tp_relay_apk.sh
 ```
 
-## 最短维护顺序
+### 安卓观察钱包
 
-1. 先看 [一页式总导航](docs/一页式总导航.zh-CN.md)，确认这次要动哪一块。
-2. 源码和文档先提交成一个干净 commit。
-3. 用这个干净 commit 重新编译或重新打包正式产物。
-4. 跑 `bash scripts/check_release_artifacts.sh`，确认 `build-info` 里的 `repo_head`、`repo_dirty`、`sha256` 都正确。
-   从下一张按新流程重打的正式固件开始，还要确认 `build_clean_mode=clean`。
-5. 再单独提交 `dist/` 里的稳定备份文件。
-6. 上传到 GitHub Release 时，以 `build-info` 里的 `repo_head` 对应提交或 tag 作为源码基准。
+```bash
+bash scripts/build_wallet_release.sh
+```
 
-## 配套文档
+## 最容易写错的地方
 
-- [一页式总导航](docs/一页式总导航.zh-CN.md)
-- [长期维护总入口](docs/长期维护总入口.zh-CN.md)
-- [安卓构建环境准备](docs/安卓构建环境准备.zh-CN.md)
-- [仓库结构说明](docs/仓库结构说明.zh-CN.md)
-- [两个安卓APK说明](docs/两个安卓APK说明.zh-CN.md)
-- [固件下载与写入指南](docs/固件下载与写入指南.zh-CN.md)
-- [树莓派签名器使用教程](docs/树莓派签名器使用教程.zh-CN.md)
-- [3D 打印外壳改造方案](docs/3D打印外壳改造方案.zh-CN.md)
+- `wallet/` 当前不是内置 `Hyperliquid` 浏览器钱包。
+- `wallet/` 现在是高安全观察钱包 + `WalletConnect` 协调器。
+- `app/` 不是独立钱包，它是 `TokenPocket` 配套的智能卡签名/中转 App。
+- 树莓派首页已经不是 `TP only mode`，也没有“官方模式”入口了。
+- `system-update-latest.img.xz` 和 `system-update-offline-signer-repair7.img.xz` 不是同一版本。
+- `repair7` 的精确源码不要拿 `main` 猜，必须看 [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)。
+
+## 文档入口
+
 - [快速开始](docs/快速开始.zh-CN.md)
-- [维护说明](docs/维护说明.zh-CN.md)
+- [两个安卓 APK 说明](docs/两个安卓APK说明.zh-CN.md)
+- [仓库结构说明](docs/仓库结构说明.zh-CN.md)
+- [固件下载与写入指南](docs/固件下载与写入指南.zh-CN.md)
+- [安卓构建环境准备](docs/安卓构建环境准备.zh-CN.md)
+- [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md)
+- [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md)
 - [树莓派固件构建与备份](docs/树莓派固件构建与备份.zh-CN.md)
+- [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)
+- [长期维护总入口](docs/长期维护总入口.zh-CN.md)

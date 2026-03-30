@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE="${1:-/home/ak/zero/tp-satochip-signer/dist/system-update-latest.img.xz}"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+IMAGE="${1:-$ROOT_DIR/dist/system-update-latest.img.xz}"
 DEVICE="${2:-/dev/sdc}"
 
 if [[ $EUID -ne 0 ]]; then

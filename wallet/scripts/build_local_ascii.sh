@@ -162,6 +162,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 mkdir -p "$OUT_DIR"
 cp -f "$SRC_APK" "$OUT_APK"
-sha256sum "$OUT_APK" > "$OUT_APK.sha256"
+apk_sha="$(sha256sum "$OUT_APK" | awk '{print $1}')"
+printf '%s  %s\n' "$apk_sha" "$(basename "$OUT_APK")" > "$OUT_APK.sha256"
 
 echo "APK written to: $OUT_APK"

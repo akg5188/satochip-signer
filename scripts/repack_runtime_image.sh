@@ -14,13 +14,13 @@ STAMP="${STAMP:-$(date +%Y%m%d-%H%M%S)}"
 OUT_IMG="$ROOT_DIR/dist/system-update-${STAMP}.img"
 OUT_SUM="$OUT_IMG.SHA256SUMS"
 BOOT_OFFSET=$((2048 * 512))
-export PATH="/tmp/tp-mtools/usr/bin:$PATH"
+export PATH="/tmp/satochip-mtools/usr/bin:/tmp/tp-mtools/usr/bin:$PATH"
 if ! command -v mcopy >/dev/null 2>&1 || ! command -v mdel >/dev/null 2>&1; then
-  echo "mtools not found in /tmp/tp-mtools/usr/bin" >&2
+  echo "mtools not found in /tmp/satochip-mtools/usr/bin or /tmp/tp-mtools/usr/bin" >&2
   exit 1
 fi
 
-WORK_DIR="$(mktemp -d /tmp/tp-image-repack.XXXXXX)"
+WORK_DIR="$(mktemp -d /tmp/satochip-image-repack.XXXXXX)"
 ROOTFS_DIR="$WORK_DIR/root"
 OVERLAY_DIR="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay"
 IMG_SPEC="$BASE_IMG@@$BOOT_OFFSET"

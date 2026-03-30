@@ -23,7 +23,7 @@ Release bundle task:
 
 Bundle directory:
 
-- `pi-signer/build/release/tp-pi-signer/`
+- `pi-signer/build/release/offline-signer/`
 
 ## Runtime dependencies on Pi OS
 

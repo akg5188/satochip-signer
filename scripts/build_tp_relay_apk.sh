@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_ROOT="${BUILD_ROOT:-/tmp/tp-relay-ascii-build}"
-BUILD_DIR="${BUILD_DIR:-$BUILD_ROOT/tp-satochip-signer-android}"
+BUILD_ROOT="${BUILD_ROOT:-/tmp/satochip-relay-ascii-build}"
+BUILD_DIR="${BUILD_DIR:-$BUILD_ROOT/satochip-signer-android}"
 GRADLE_USER_HOME="${GRADLE_USER_HOME:-$BUILD_ROOT/.gradle}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/dist}"
 OUT_APK="$OUT_DIR/tp-qr-relay-android-latest.apk"
@@ -155,10 +155,10 @@ export PATH="$JAVA_HOME/bin:$PATH"
 ./gradlew --no-daemon :app:assembleRelease --console=plain
 
 cp -f "$BUILD_DIR/app/build/outputs/apk/release/app-release.apk" "$OUT_APK"
-sha256sum "$OUT_APK" > "$OUT_SUM"
+apk_sha="$(sha256sum "$OUT_APK" | awk '{print $1}')"
+printf '%s  %s\n' "$apk_sha" "$(basename "$OUT_APK")" > "$OUT_SUM"
 
 repo_head="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-apk_sha="$(awk 'NR==1 {print $1}' "$OUT_SUM")"
 version_name="$(awk -F'"' '/versionName = / {print $2; exit}' "$ROOT_DIR/app/build.gradle.kts")"
 build_time_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 

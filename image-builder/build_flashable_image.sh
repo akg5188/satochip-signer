@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WORK_DIR="${WORK_DIR:-/tmp/tp_pi_image_build}"
+WORK_DIR="${WORK_DIR:-/tmp/satochip_pi_image_build}"
 DOWNLOAD_DIR="$WORK_DIR/download"
 MOUNT_DIR="$WORK_DIR/mnt"
 OUTPUT_DIR="$ROOT_DIR/dist"
@@ -31,7 +31,7 @@ Options:
   --skip-apt           Skip apt install in chroot (not recommended)
 
 Environment overrides:
-  WORK_DIR=/tmp/tp_pi_image_build
+  WORK_DIR=/tmp/satochip_pi_image_build
 USAGE
 }
 
@@ -74,7 +74,7 @@ find_latest_bundle_dir() {
     echo "$latest"
     return
   fi
-  find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'tp-pi-signer-*' | sort | tail -n1
+  find "$OUTPUT_DIR" -maxdepth 1 -type d \( -name '*pi-signer-*' -o -name 'offline-signer-*' \) | sort | tail -n1
 }
 
 if [[ -z "$BUNDLE_DIR" ]]; then

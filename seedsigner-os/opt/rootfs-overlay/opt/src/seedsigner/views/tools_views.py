@@ -349,7 +349,7 @@ class ToolsMenuView(View):
     ADDRESS_EXPLORER = ButtonOption("Address Explorer")
     VERIFY_ADDRESS = ButtonOption("Verify address")
     TEXTQRCODE = ButtonOption("Text QR Code")
-    TP_SIGNER = ButtonOption("TP Signer")
+    TP_SIGNER = ButtonOption("Offline Signer")
     PASSWORD_GENERATOR = ButtonOption("Password Generator", FontAwesomeIconConstants.LOCK)
     SMARTCARD = ButtonOption("Smartcard Tools", FontAwesomeIconConstants.LOCK)
     MICROSD = ButtonOption("MicroSD Tools")

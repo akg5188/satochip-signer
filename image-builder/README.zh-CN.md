@@ -4,8 +4,8 @@
 
 生成结果：
 
-- `dist/tp-pi-signer-appliance-*.img`
-- `dist/tp-pi-signer-appliance-*.img.xz`
+- `dist/offline-signer-appliance-*.img`
+- `dist/offline-signer-appliance-*.img.xz`
 
 ## 一键构建
 
@@ -19,14 +19,14 @@ sudo bash image-builder/build_flashable_image.sh
 2. 注入 `pi-signer` 和 `pi-appliance` 到镜像
 3. 在镜像内预装运行依赖（自动识别 Java/Python signer，安装对应依赖）
 4. 配置 `ST7789 + OV5647` 和禁用 WiFi/BT
-5. 启用开机自启动 `tp-signer-kiosk.service`
+5. 启用开机自启动 `offline-signer-kiosk.service`
 6. 输出可直接烧录镜像
 
 ## 可选参数
 
 ```bash
 sudo bash image-builder/build_flashable_image.sh \
-  --bundle dist/tp-pi-signer-20260308-142005 \
+  --bundle dist/offline-signer-20260308-142005 \
   --base-image /path/to/raspios.img.xz \
   --output dist/my-offline-signer.img \
   --signer-runtime auto

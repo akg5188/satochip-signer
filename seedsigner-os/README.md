@@ -15,15 +15,15 @@
 </p>
 
 * [Overview](#overview)
-* [Building](docs/building.md)
-* [Building (without Docker)](docs/without_docker.md)
-* [SeedSigner OS structure](docs/structure.md)
-* [Dev workflow](docs/dev_workflow.md)
-* [Customizing Buildroot](docs/customize_buildroot.md)
+* [Chinese overview](README.zh-CN.md)
+* [Quickstart](../docs/快速开始.zh-CN.md)
+* [Offline signer usage](../docs/离线签名器使用教程.zh-CN.md)
+* [Firmware build and backup](../docs/树莓派固件构建与备份.zh-CN.md)
+* [Firmware to source mapping](../docs/固件与源码对应关系.zh-CN.md)
 
 <br/>
 
-JUMP STRAIGHT TO: [🔥🔥🔥🛠 Quickstart: SeedSigner Reproducible Build! 🛠🔥🔥🔥](docs/building.md)
+JUMP STRAIGHT TO: [Quickstart](../docs/快速开始.zh-CN.md)
 
 <br/>
 
@@ -56,5 +56,4 @@ SeedSigner OS is built to reduce the attack surface area and enable additional a
 - NO Serial connection TTL support
 - NO Software supporting any wireless or networking chips
 - A single read only zImage file on the boot partition containing the entire Linux kernel and filesystem
-
 

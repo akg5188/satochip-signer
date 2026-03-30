@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-export PATH="/tmp/tp-mtools/usr/bin:$PATH"
+export PATH="/tmp/satochip-mtools/usr/bin:/tmp/tp-mtools/usr/bin:$PATH"
 
 BASE_PART_00="${BASE_PART_00:-$ROOT_DIR/dist/system-update-latest.img.xz.part-00}"
 BASE_PART_01="${BASE_PART_01:-$ROOT_DIR/dist/system-update-latest.img.xz.part-01}"
@@ -26,7 +26,7 @@ for part in "$BASE_PART_00" "$BASE_PART_01" "$BASE_PART_02"; do
   }
 done
 
-WORK_DIR="$(mktemp -d /tmp/tp-minfw.XXXXXX)"
+WORK_DIR="$(mktemp -d /tmp/satochip-minfw.XXXXXX)"
 cleanup() {
   set +e
   rm -rf "$WORK_DIR"

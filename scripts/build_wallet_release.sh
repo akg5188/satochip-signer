@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/dist}"
-BUILD_ROOT="${BUILD_ROOT:-/tmp/tp-wallet-ascii-build}"
+BUILD_ROOT="${BUILD_ROOT:-/tmp/satochip-wallet-ascii-build}"
 OUT_APK="$OUT_DIR/satochip-wallet-release.apk"
 OUT_SUM="$OUT_APK.sha256"
 OUT_INFO="$OUT_DIR/satochip-wallet-release.build-info.txt"

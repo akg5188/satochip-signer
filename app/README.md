@@ -1,23 +1,52 @@
-# 智能卡 App（TP 签名中转）
+# 智能卡 App（TokenPocket 配套）
 
-这个目录对应的是给 `TokenPocket` 商业钱包配套使用的安卓工程。
+这个目录对应安卓“智能卡”App。
 
-它不是独立钱包。
+按当前源码，它不是独立钱包，而是一个离线冷签辅助工具：
 
-## 作用
+- 扫描 `TokenPocket` 请求二维码
+- 配合智能卡直接签名
+- 显示回扫给 `TP` 的结果二维码
+- 可选把 `TP` 动态码转成树莓派更容易扫的静态码
 
-- 手机先扫 TP 动态二维码
-- 再把静态中转码给树莓派扫描
-- 专门用于 TP 商业钱包签名中转
+当前 App 不申请 `INTERNET` 权限。
 
-## 对应 APK
+## 主要能力
 
-- 当前默认不把 release APK 长期回填到仓库 `dist/`
-- 需要时通过 `bash scripts/build_tp_relay_apk.sh` 现编生成
-- 构建后会产出：
-  `dist/tp-qr-relay-android-latest.apk`、
-  `dist/tp-qr-relay-android-latest.apk.sha256`、
-  `dist/tp-qr-relay-android-latest.build-info.txt`
+- 支持 `NFC` 贴卡签名
+- 支持 `USB-OTG + ACR39U` 读卡器签名
+- 支持 `signTransaction`
+- 支持 `personalSign`
+- 支持 `signTypedData / signTypedDataV4`
+- 支持把 `TP` 动态请求拆成树莓派静态中转二维码
+
+## 不负责什么
+
+- 不做资产页
+- 不做观察钱包
+- 不保存助记词
+- 不替代 `BlueWallet`
+
+## 标准构建
+
+```bash
+bash scripts/build_tp_relay_apk.sh
+```
+
+输出：
+
+- `dist/tp-qr-relay-android-latest.apk`
+- `dist/tp-qr-relay-android-latest.apk.sha256`
+- `dist/tp-qr-relay-android-latest.build-info.txt`
+
+## 签名说明
+
+当前 `app/build.gradle.kts` 的规则是：
+
+- 有 `keystore.properties` 就用正式 keystore
+- 没有就回退到 `debug` 签名
+
+所以它适合自己安装测试，但如果你想长期平滑升级，最好尽早换成自己的正式 keystore。
 
 ## 文档入口
 
@@ -25,65 +54,8 @@
 - [开发维护指南](docs/开发维护指南.zh-CN.md)
 - [安卓构建环境准备](../docs/安卓构建环境准备.zh-CN.md)
 
-## 标准构建
+## 如果你要的是观察钱包
 
-优先使用仓库根目录下的标准脚本：
-
-```bash
-bash scripts/build_tp_relay_apk.sh
-```
-
-输出路径：
-
-```text
-dist/tp-qr-relay-android-latest.apk
-dist/tp-qr-relay-android-latest.apk.sha256
-```
-
-如果你只是想在当前机器上快速直编，也可以：
-
-```bash
-cp local.properties.example local.properties
-./gradlew :app:assembleRelease --console=plain
-```
-
-直编输出：
-
-```text
-app/build/outputs/apk/release/app-release.apk
-```
-
-## 环境要求
-
-- JDK 17
-- Android SDK 34
-- Android Build Tools 35.0.0
-- Android 5.0 及以上设备
-
-第一次换机器时，优先看：
-
-- [../docs/安卓构建环境准备.zh-CN.md](../docs/安卓构建环境准备.zh-CN.md)
-
-## 当前签名说明
-
-- 当前 `release` 仍使用调试签名，适合你自己安装、备份和继续维护
-- 如果以后换了电脑或调试 keystore 变了，覆盖安装旧包可能失败，需要先卸载再装
-- 如果你要长期平滑升级，建议尽早换成自己的正式 keystore
-- 仓库根目录已经提供 `keystore.properties.example`
-
-如果以后只是忘了整个项目怎么维护，直接看：
-
-- [../docs/长期维护总入口.zh-CN.md](../docs/长期维护总入口.zh-CN.md)
-
-## 不要混用
-
-如果你要找的是：
-
-- 资产页
-- 转账
-- Hyperliquid
-- 独立钱包
-
-那应该去看：
+那应该去：
 
 - [../wallet/README.md](../wallet/README.md)

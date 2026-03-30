@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SDK_DIR="${ANDROID_SDK_ROOT:-/tmp/tp-android-sdk}"
+SDK_DIR="${ANDROID_SDK_ROOT:-/tmp/satochip-android-sdk}"
 TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
 TOOLS_DIR="$SDK_DIR/cmdline-tools"
 LATEST_DIR="$TOOLS_DIR/latest"

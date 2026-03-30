@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export PATH="/tmp/tp-mtools/usr/bin:$PATH"
+export PATH="/tmp/satochip-mtools/usr/bin:/tmp/tp-mtools/usr/bin:$PATH"
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RAW_IMG="${RAW_IMG:-$ROOT_DIR/seedsigner-os/images/seedsigner_os.dev_.pi0-smartcard.img}"

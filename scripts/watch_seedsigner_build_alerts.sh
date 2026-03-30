@@ -9,19 +9,20 @@ EVENT_LOG="$LOG_DIR/build-alert-events.log"
 STATE_FILE="$LOG_DIR/build-alert-state.env"
 
 BUILD_LOG="${BUILD_LOG:-$LOG_DIR/seedsigner-build-live.log}"
-BUILD_TIME_LOG="${BUILD_TIME_LOG:-$HOME/tp-signer-ascii/output/build/build-time.log}"
-OUTPUT_IMAGE_DIR="${OUTPUT_IMAGE_DIR:-$HOME/tp-signer-ascii/output/images}"
-FINAL_IMAGE_DIR="${FINAL_IMAGE_DIR:-$HOME/tp-signer-ascii/images}"
+ASCII_BASE="${TP_ASCII_BASE:-$HOME/satochip-signer-ascii}"
+BUILD_TIME_LOG="${BUILD_TIME_LOG:-$ASCII_BASE/output/build/build-time.log}"
+OUTPUT_IMAGE_DIR="${OUTPUT_IMAGE_DIR:-$ASCII_BASE/output/images}"
+FINAL_IMAGE_DIR="${FINAL_IMAGE_DIR:-$ASCII_BASE/images}"
 POLL_INTERVAL="${POLL_INTERVAL:-1}"
-OFFICIAL_RUNTIME_DIR="${OFFICIAL_RUNTIME_DIR:-/home/ak/树莓派/tp-satochip-signer/.br-smartcard-runtime}"
-DIST_DIR="${DIST_DIR:-/home/ak/树莓派/tp-satochip-signer/dist}"
+OFFICIAL_RUNTIME_DIR="${OFFICIAL_RUNTIME_DIR:-$ROOT_DIR/.br-smartcard-runtime}"
+DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
 XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 mkdir -p "$LOG_DIR"
 
 build_running() {
-  pgrep -af "build.sh --pi0 --smartcard --skip-repo --no-clean|O=$HOME/tp-signer-ascii/output|/home/ak/tp-signer-ascii/output|O=$OFFICIAL_RUNTIME_DIR|$OFFICIAL_RUNTIME_DIR|build_official_pi0_base_image.sh" >/dev/null
+  pgrep -af "build.sh --pi0 --smartcard --skip-repo --no-clean|O=$ASCII_BASE/output|$ASCII_BASE/output|O=$OFFICIAL_RUNTIME_DIR|$OFFICIAL_RUNTIME_DIR|build_official_pi0_base_image.sh" >/dev/null
 }
 
 latest_image() {
@@ -53,7 +54,7 @@ notify_user() {
     env \
       DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
       XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-      notify-send -u "$urgency" -a "tp-satochip-signer" "$title" "$body" || true
+      notify-send -u "$urgency" -a "satochip-signer" "$title" "$body" || true
   fi
 }
 

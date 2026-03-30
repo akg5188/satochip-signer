@@ -1,79 +1,91 @@
 # 两个安卓 APK 说明
 
-这个仓库里有两个不同用途的安卓 APK。
+这个仓库里只有两个安卓 APK，需要分清。
 
-如果你以后想到的是 `BlueWallet`，先记住一件事：
+`BlueWallet` 不在这个仓库里，它是外部钱包。
 
-- `BlueWallet` 不是这个仓库里的 APK
-- 它是外部钱包
-- 它现在可以直接配合当前树莓派固件做 `BTC PSBT` 签名
-- 具体流程看：[树莓派签名器使用教程](树莓派签名器使用教程.zh-CN.md)
+## 一眼区分
 
-## 1. TP 签名中转 APK
+| APK | 源码目录 | 当前定位 |
+| --- | --- | --- |
+| `tp-qr-relay-android-latest.apk` | `app/` | `TokenPocket` 配套的智能卡签名/中转 App |
+| `satochip-wallet-release.apk` | `wallet/` | 高安全观察钱包 |
 
-文件：
+## 1. `tp-qr-relay-android-latest.apk`
 
-- 默认按需构建，不长期回填到仓库 `dist/`
-- 本地构建后产物：`dist/tp-qr-relay-android-latest.apk`
-- 对应校验文件：`dist/tp-qr-relay-android-latest.apk.sha256`
-- 对应构建记录：`dist/tp-qr-relay-android-latest.build-info.txt`
-- 源码目录：`app/`
-- 标准构建命令：`bash scripts/build_tp_relay_apk.sh`
+标准构建命令：
 
-用途：
+```bash
+bash scripts/build_tp_relay_apk.sh
+```
 
-- 配合 `TokenPocket` 商业钱包使用
-- 手机先扫 TP 动态二维码
-- 手机再展示给树莓派扫描的中转二维码
-- 主要是“扫码中转器”，不是独立观察钱包
+构建产物：
 
-## 2. 独立钱包 APK
+- `dist/tp-qr-relay-android-latest.apk`
+- `dist/tp-qr-relay-android-latest.apk.sha256`
+- `dist/tp-qr-relay-android-latest.build-info.txt`
 
-文件：
+当前真实能力：
 
-- 目标稳定文件名：`dist/satochip-wallet-release.apk`
-- 对应校验文件：`dist/satochip-wallet-release.apk.sha256`
-- GitHub Release：`wallet-android-20260318-1717`
-- 源码目录：`wallet/`
-- 标准构建命令：`bash scripts/build_wallet_release.sh`
+- 扫 `TokenPocket` 动态二维码
+- 解析 `TP` 的 `signTransaction / personalSign / signTypedData`
+- 输入 `PIN` 后用 `NFC` 或 `USB-OTG + ACR39U` 配合智能卡直接签名
+- 显示回扫给 `TP` 的结果二维码
+- 也可以把 `TP` 动态码转成树莓派更容易扫的静态码
 
-如果仓库里当前没有这两个文件，先本地运行标准构建命令生成。
-
-共同环境准备看：
-
-- [安卓构建环境准备](安卓构建环境准备.zh-CN.md)
-
-用途：
-
-- `Arbitrum One` 观察钱包
-- 查看资产
-- 发起转账
-- 处理签名请求
-- 内置 `Hyperliquid`
-
-源码：
-
-- `wallet/`
-
-## 3. 不要混用
-
-如果你只是要：
-
-- 给 TP 商业钱包做签名中转
-
-就用：
-
-- `tp-qr-relay-android-latest.apk`
-- `app/`
-
-如果你要：
+它不是：
 
 - 独立钱包
-- 资产页面
-- Hyperliquid
-- 转账
+- 资产页 App
+- `BlueWallet` 兼容层
 
-就用：
+签名说明：
 
-- `satochip-wallet-release.apk`
-- `wallet/`
+- `app/` 的 `release` 构建如果没有配置 `keystore.properties`，会回退到 `debug` 签名
+- 如果你想长期平滑升级，最好尽早配置自己的正式 keystore
+
+## 2. `satochip-wallet-release.apk`
+
+标准构建命令：
+
+```bash
+bash scripts/build_wallet_release.sh
+```
+
+构建产物：
+
+- `dist/satochip-wallet-release.apk`
+- `dist/satochip-wallet-release.apk.sha256`
+- `dist/satochip-wallet-release.build-info.txt`
+
+当前真实能力：
+
+- `Arbitrum One` 观察地址与资产查看
+- 生成给树莓派扫描的签名请求二维码
+- 扫描树莓派签名结果并人工确认广播
+- 高安全 `WalletConnect v2` 协调
+- `BTC xpub / ypub / zpub` 观察账户导入、同步与 `PSBT` 冷签请求准备
+
+它不是：
+
+- 热钱包
+- 内置 `Hyperliquid` 浏览器
+- 手机本地私钥钱包
+
+签名说明：
+
+- `wallet/` 的 `release` 构建必须配置 `wallet/keystore.properties`
+- 没有 keystore，`release` 构建会直接失败
+
+## 3. 外部钱包怎么归类
+
+- `BlueWallet`
+  外部 `BTC` 钱包，直接配合树莓派离线签名器使用
+- `TokenPocket`
+  外部 EVM 钱包，需要配合 `app/` 里的安卓“智能卡”App
+
+## 4. 最常见误解
+
+- 想看资产、地址、活动、DApp，就去 `wallet/`
+- 想处理 `TokenPocket` 动态码，就去 `app/`
+- 想给 `BlueWallet` 签 `PSBT`，直接用树莓派，不要装 TP 中转 App
