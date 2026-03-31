@@ -7,6 +7,9 @@ from pathlib import Path
 
 
 DEFAULT_SCAN_ROOTS = ("/opt/src", "/opt/pi-signer-py")
+IGNORED_SOURCE_SNAPSHOT_REL_PATHS = {
+    "seedsigner-os/opt/rootfs-overlay/opt/src/seedsigner/resources/offline-signer-firmware-integrity.json",
+}
 IGNORED_RUNTIME_PARTS = {"__pycache__"}
 IGNORED_RUNTIME_SUFFIXES = (".pyc", ".pyo", ".swp", ".tmp", ".bak", "~")
 IGNORED_RUNTIME_PREFIXES = ("/var/run/", "/run/", "/tmp/", "/var/tmp/", "/app-assets/")
@@ -50,6 +53,8 @@ def compute_source_snapshot_tree_sha(repo_root: Path) -> str:
         if not rel_bytes:
             continue
         rel_path = rel_bytes.decode("utf-8")
+        if rel_path in IGNORED_SOURCE_SNAPSHOT_REL_PATHS:
+            continue
         file_path = repo_root / rel_path
         if not file_path.is_file():
             continue

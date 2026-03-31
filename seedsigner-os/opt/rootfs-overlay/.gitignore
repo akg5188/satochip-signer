@@ -1,3 +1,4 @@
 opt/**/__pycache__/
 opt/**/*.pyc
 opt/**/*.pyo
+opt/src/seedsigner/resources/offline-signer-firmware-integrity.json

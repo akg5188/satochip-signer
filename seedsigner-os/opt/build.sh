@@ -8,6 +8,7 @@ cur_dir_name=${PWD##*/}
 cur_dir=$(pwd -L)
 seedsigner_app_repo="https://github.com/3rditeration/seedsigner.git"
 seedsigner_app_repo_branch="dev"
+source_rootfs_overlay="./rootfs-overlay"
 
 help()
 {
@@ -43,7 +44,7 @@ tail_endless() {
 }
 
 install_local_translations() {
-  local bundled_l10n_dir="./rootfs-overlay/app-assets/seedsigner-translations/l10n"
+  local bundled_l10n_dir="${source_rootfs_overlay}/app-assets/seedsigner-translations/l10n"
   local target_l10n_dir="${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n"
 
   if [ ! -d "${bundled_l10n_dir}" ]; then
@@ -57,7 +58,7 @@ install_local_translations() {
 }
 
 install_default_settings() {
-  local settings_template="./rootfs-overlay/default-settings.json"
+  local settings_template="${source_rootfs_overlay}/default-settings.json"
   local settings_target="${rootfs_overlay}/opt/src/settings.json"
 
   if [ ! -f "${settings_template}" ] || [ ! -d "${rootfs_overlay}/opt/src" ]; then
@@ -200,10 +201,11 @@ build_image() {
   # Variables
   config_name="${1:-pi0}"
   config_dir="./${config_name}"
-  rootfs_overlay="./rootfs-overlay"
+  rootfs_overlay="${source_rootfs_overlay}"
   config_file="${config_dir}/configs/pi0"
   build_dir="${TP_BUILD_DIR:-${cur_dir}/../output}"
   image_dir="${TP_IMAGE_DIR:-${cur_dir}/../images}"
+  generated_rootfs_overlay="${build_dir}/generated-rootfs-overlay"
 
   if [ ! -d "${config_dir}" ]; then
     # config does not exists
@@ -217,6 +219,13 @@ build_image() {
     rm -rf "${build_dir}"
     mkdir -p "${build_dir}"
     
+  fi
+
+  if [ "${3}" = "skip-repo" ]; then
+    rm -rf "${generated_rootfs_overlay}"
+    mkdir -p "${generated_rootfs_overlay}"
+    cp -a "${source_rootfs_overlay}/." "${generated_rootfs_overlay}/"
+    rootfs_overlay="${generated_rootfs_overlay}"
   fi
   
   if [ "${3}" != "skip-repo" ]; then
@@ -233,6 +242,26 @@ build_image() {
   #make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ #2> /dev/null > /dev/null
 
   PATH="/usr/lib/ccache:${PATH}" make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ ${config_name}_defconfig
+  if [ "${3}" = "skip-repo" ] && [ -f "${build_dir}/.config" ]; then
+    python3 - "${build_dir}/.config" "${rootfs_overlay}" <<'EOF'
+import re
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+overlay_path = Path(sys.argv[2]).resolve().as_posix()
+content = config_path.read_text(encoding="utf-8")
+updated = re.sub(
+    r'^BR2_ROOTFS_OVERLAY=".*"$',
+    f'BR2_ROOTFS_OVERLAY="{overlay_path}"',
+    content,
+    flags=re.MULTILINE,
+)
+if updated == content:
+    raise SystemExit("BR2_ROOTFS_OVERLAY not found in generated Buildroot config")
+config_path.write_text(updated, encoding="utf-8")
+EOF
+  fi
 
   # Meson/pkgconf breaks on non-ASCII sysroot paths. Expose stable ASCII aliases
   # so generated cross-compilation files never point at the Chinese workspace path.

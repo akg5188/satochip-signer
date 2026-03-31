@@ -14,6 +14,7 @@ DIST_INFO="${DIST_INFO:-$DIST_DIR/system-update-latest.build-info.txt}"
 DIST_BASENAME="$(basename "$DIST_IMG")"
 SNAPSHOT_DIR="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt"
 SNAPSHOT_DIR_REL="seedsigner-os/opt/rootfs-overlay/opt"
+GENERATED_MANIFEST_REL="seedsigner-os/opt/rootfs-overlay/opt/src/seedsigner/resources/offline-signer-firmware-integrity.json"
 SNAPSHOT_TIME_FILE="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt/src/.build_commit_time"
 NFC_BINDINGS_FILE="$ROOT_DIR/seedsigner-os/opt/external-packages/nfc-bindings/nfc-bindings.mk"
 XZ_THREADS="${XZ_THREADS:-1}"
@@ -62,8 +63,8 @@ fi
 
 raw_sha="$(sha256sum "$RAW_IMG" | awk '{print $1}')"
 snapshot_time="$(cat "$SNAPSHOT_TIME_FILE")"
-build_time_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 repo_head="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+build_time_utc="$(git -C "$ROOT_DIR" show -s --format=%cI "$repo_head" 2>/dev/null || echo "")"
 repo_status="$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || true)"
 repo_dirty=0
 if [[ -n "$repo_status" ]]; then
@@ -86,6 +87,9 @@ snapshot_tree_sha="$(
     cd "$SNAPSHOT_DIR"
     while IFS= read -r -d '' file; do
       rel_path="${file#$SNAPSHOT_DIR_REL/}"
+      if [[ "$rel_path" == "${GENERATED_MANIFEST_REL#$SNAPSHOT_DIR_REL/}" ]]; then
+        continue
+      fi
       sha256sum "./$rel_path"
     done < <(git -C "$ROOT_DIR" ls-files -z -- "$SNAPSHOT_DIR_REL")
   ) | sha256sum | awk '{print $1}'
