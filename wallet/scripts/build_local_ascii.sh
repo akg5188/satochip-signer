@@ -117,6 +117,9 @@ case "$VARIANT" in
     ;;
 esac
 
+GRADLE_JVMARGS="${WALLET_GRADLE_JVMARGS:-}"
+GRADLE_WORKERS_MAX="${WALLET_GRADLE_WORKERS_MAX:-}"
+
 SDK_DIR="$(detect_android_sdk)"
 if [[ -z "$SDK_DIR" ]]; then
   cat >&2 <<'EOF'
@@ -169,7 +172,14 @@ fi
 export GRADLE_USER_HOME
 export ORG_GRADLE_JAVA_INSTALLATIONS_PATHS="$JAVA_HOME"
 export PATH="$JAVA_HOME/bin:$PATH"
-./gradlew --no-daemon "$GRADLE_TASK" --console=plain
+GRADLE_ARGS=(--no-daemon "$GRADLE_TASK" --console=plain)
+if [[ -n "$GRADLE_JVMARGS" ]]; then
+  GRADLE_ARGS=("-Dorg.gradle.jvmargs=${GRADLE_JVMARGS}" "${GRADLE_ARGS[@]}")
+fi
+if [[ -n "$GRADLE_WORKERS_MAX" ]]; then
+  GRADLE_ARGS=("-Dorg.gradle.workers.max=${GRADLE_WORKERS_MAX}" "${GRADLE_ARGS[@]}")
+fi
+./gradlew "${GRADLE_ARGS[@]}"
 
 mkdir -p "$OUT_DIR"
 cp -f "$SRC_APK" "$OUT_APK"
