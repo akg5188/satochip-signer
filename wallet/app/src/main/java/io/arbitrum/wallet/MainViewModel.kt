@@ -40,6 +40,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val REQUIRE_VERIFIED_WALLETCONNECT = true
         private const val TRUSTED_DAPP_ENTRY_TTL_MS = 24L * 60L * 60L * 1000L
         private const val MAX_TRUSTED_DAPP_ENTRIES = 64
+        private const val BITCOIN_SNAPSHOT_CACHE_TTL_MS = 2L * 60L * 1000L
         private val STRICT_WALLETCONNECT_METHODS = setOf(
             "eth_sendtransaction",
             "eth_signtransaction",
@@ -59,6 +60,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val localActivityItems = mutableListOf<WalletActivityItem>()
     private val syncedActivityByChain = linkedMapOf<Long, List<WalletActivityItem>>()
+    private val bitcoinSnapshotCache = linkedMapOf<String, BitcoinAccountSnapshot>()
     private val sessionSecurityObserver = object : DefaultLifecycleObserver {
         override fun onStop(owner: LifecycleOwner) {
             clearSensitiveSessionState()
@@ -244,6 +246,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun removeBitcoinWatchAccount(accountId: String) {
+        bitcoinSnapshotCache.remove(accountId)
         _uiState.update { state ->
             val accounts = state.bitcoinWatchAccounts.filterNot { it.id == accountId }
             state.copy(
@@ -268,19 +271,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         viewModelScope.launch {
-            runCatching { BitcoinTransferService.syncAccount(current) }
+            runCatching { BitcoinTransferService.syncAccount(current, includeActivity = false) }
                 .onSuccess { snapshot ->
+                    cacheBitcoinSnapshot(accountId, snapshot)
+                    val syncedAt = System.currentTimeMillis()
                     updateBitcoinWatchAccount(accountId) { account ->
                         account.copy(
                             balanceSats = snapshot.balanceSats,
-                            priceUsd = snapshot.priceUsd,
+                            priceUsd = snapshot.priceUsd ?: account.priceUsd,
                             utxoCount = snapshot.utxoCount,
                             nextReceiveAddress = snapshot.nextReceiveAddress,
                             nextChangeAddress = snapshot.nextChangeAddress,
                             lastSyncStatus = snapshot.status,
-                            lastSyncAt = System.currentTimeMillis(),
+                            lastSyncAt = syncedAt,
                             syncing = false,
-                            recentActivity = snapshot.recentActivity,
+                            recentActivity = if (snapshot.recentActivity.isNotEmpty()) snapshot.recentActivity else account.recentActivity,
                         )
                     }
                     _uiState.update {
@@ -289,11 +294,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             error = "",
                         )
                     }
+                    if (snapshot.ownedAddresses.isNotEmpty()) {
+                        launch {
+                            runCatching {
+                                BitcoinTransferService.fetchRecentActivitySnapshot(
+                                    prefix = current.prefix,
+                                    ownedAddresses = snapshot.ownedAddresses.toSet(),
+                                )
+                            }.onSuccess { recentActivity ->
+                                updateBitcoinWatchAccount(accountId) { account ->
+                                    account.copy(
+                                        recentActivity = recentActivity,
+                                        lastSyncStatus = account.lastSyncStatus.replace(" 最近交易后台更新。", ""),
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
                 .onFailure { error ->
                     updateBitcoinWatchAccount(accountId) { account ->
                         account.copy(
                             syncing = false,
+                            lastSyncAt = System.currentTimeMillis(),
                             lastSyncStatus = "同步失败：${error.message ?: "未知错误"}",
                         )
                     }
@@ -312,6 +335,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?: return setError("未找到 BTC 观察账户")
         _uiState.update {
             it.copy(
+                preparingRequest = true,
                 requestTitle = "",
                 requestSummary = "",
                 transferInfo = "",
@@ -333,30 +357,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         viewModelScope.launch {
+            val cachedSnapshot = currentBitcoinSnapshot(account)
             runCatching {
                 BitcoinTransferService.prepareTransfer(
                     account = account,
                     destinationAddress = destinationAddress,
                     amountText = amountText,
                     feeRateText = feeRateText,
+                    snapshot = cachedSnapshot,
                 )
             }.onSuccess { prepared ->
+                cacheBitcoinSnapshot(accountId, prepared.snapshot)
+                val syncedAt = System.currentTimeMillis()
                 val bundle = RelayQrCodec.buildRelayPayloads(prepared.requestPayload)
                 val qr = generateQrBitmap(bundle.payloads.first())
                 updateBitcoinWatchAccount(accountId) {
                     it.copy(
                         balanceSats = prepared.snapshot.balanceSats,
-                        priceUsd = prepared.snapshot.priceUsd,
+                        priceUsd = prepared.snapshot.priceUsd ?: it.priceUsd,
                         utxoCount = prepared.snapshot.utxoCount,
                         nextReceiveAddress = prepared.snapshot.nextReceiveAddress,
                         nextChangeAddress = prepared.snapshot.nextChangeAddress,
                         lastSyncStatus = prepared.snapshot.status,
-                        lastSyncAt = System.currentTimeMillis(),
+                        lastSyncAt = syncedAt,
                         syncing = false,
                     )
                 }
                 _uiState.update {
                     it.copy(
+                        preparingRequest = false,
                         requestTitle = "BTC 转账待树莓派签名",
                         requestSummary = buildString {
                             appendLine("账户: ${account.label}")
@@ -914,6 +943,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearPreparedRequest() {
         _uiState.update {
             it.copy(
+                preparingRequest = false,
                 requestTitle = "",
                 requestSummary = "",
                 transferInfo = "",
@@ -952,6 +982,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         _uiState.update {
             it.copy(
+                preparingRequest = false,
                 signQrPages = emptyList(),
                 signQrPageIndex = 0,
                 signQrBitmap = null,
@@ -1348,6 +1379,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun persistBitcoinWatchAccounts() {
         WalletStorage.writeBitcoinWatchAccounts(prefs, _uiState.value.bitcoinWatchAccounts)
+    }
+
+    private fun cacheBitcoinSnapshot(accountId: String, snapshot: BitcoinAccountSnapshot) {
+        bitcoinSnapshotCache[accountId] = snapshot
+    }
+
+    private fun currentBitcoinSnapshot(account: BitcoinWatchAccount): BitcoinAccountSnapshot? {
+        val snapshot = bitcoinSnapshotCache[account.id] ?: return null
+        val snapshotAgeMs = System.currentTimeMillis() - account.lastSyncAt
+        return snapshot.takeIf { account.lastSyncAt > 0L && snapshotAgeMs in 0..BITCOIN_SNAPSHOT_CACHE_TTL_MS }
     }
 
     private fun updateBitcoinWatchAccount(
@@ -1808,6 +1849,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         disconnectWalletConnectSessionsForSecurity()
         _uiState.update {
             it.copy(
+                preparingRequest = false,
                 signQrPages = emptyList(),
                 signQrPageIndex = 0,
                 signQrBitmap = null,
@@ -2027,7 +2069,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun setError(message: String) {
-        _uiState.update { it.copy(error = message, info = "") }
+        _uiState.update { it.copy(error = message, info = "", preparingRequest = false) }
     }
 
     private fun confirmPendingBitcoinBroadcast(state: WalletUiState) {

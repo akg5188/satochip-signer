@@ -169,7 +169,9 @@ class Controller(Singleton):
     psbt_seed: Seed = None
     psbt_parser: PSBTParser = None
     psbt_input_qr_type: str | None = None
+    psbt_response_mode: str | None = None
     psbt_sign_with_satochip: bool = False
+    psbt_external_signer_flow: bool = False
     psbt_from_microsd: bool = False
     psbt_microsd_save_path: Path | None = None
     psbt_microsd_seed_warning_shown: bool = False
@@ -287,6 +289,7 @@ class Controller(Singleton):
         controller.psbt = None
         controller.psbt_parser = None
         controller.psbt_input_qr_type = None
+        controller.psbt_response_mode = None
         controller.psbt_sign_with_satochip = False
         controller.psbt_from_microsd = False
         controller.psbt_microsd_save_path = None
@@ -467,8 +470,10 @@ class Controller(Singleton):
                     self.psbt = None
                     self.psbt_parser = None
                     self.psbt_input_qr_type = None
+                    self.psbt_response_mode = None
                     self.psbt_seed = None
                     self.psbt_sign_with_satochip = False
+                    self.psbt_external_signer_flow = False
                     self.sign_message_with_satochip = False
 
                     # Clear camera entropy data so it cannot be used to
@@ -636,8 +641,10 @@ class Controller(Singleton):
         self.psbt = None
         self.psbt_parser = None
         self.psbt_input_qr_type = None
+        self.psbt_response_mode = None
         self.psbt_seed = None
         self.psbt_sign_with_satochip = False
+        self.psbt_external_signer_flow = False
         self.sign_message_with_satochip = False
         self.multisig_wallet_descriptor = None
         self.unverified_address = None

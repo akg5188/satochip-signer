@@ -7,6 +7,9 @@ import tempfile
 import time
 import unicodedata
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_DOWN
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 from urllib.parse import parse_qs
 from gettext import gettext as _
@@ -59,6 +62,7 @@ STEEL_WRAP_WIDTH = 18
 SECP256K1_FIELD_PRIME = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
 
 logger = logging.getLogger(__name__)
+_SIGNER_PREVIEW_MODULE = None
 
 
 def _smartcard_tools_destination() -> Destination:
@@ -915,6 +919,196 @@ def _resolve_signer_bin() -> Path:
         if candidate.is_file():
             return candidate
     return candidates[-1]
+
+
+def _load_signer_preview_module():
+    global _SIGNER_PREVIEW_MODULE
+
+    if _SIGNER_PREVIEW_MODULE is not None:
+        return _SIGNER_PREVIEW_MODULE
+
+    signer_bin = _resolve_signer_bin()
+    if not signer_bin.is_file():
+        raise FileNotFoundError("未找到离线签名器解析脚本。")
+
+    loader = SourceFileLoader("_offline_signer_preview_module", str(signer_bin))
+    spec = spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise ImportError("无法加载离线签名器解析模块。")
+
+    module = module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    _SIGNER_PREVIEW_MODULE = module
+    return module
+
+
+def _evm_chain_name(chain_id: int) -> str:
+    names = {
+        1: "Ethereum Mainnet",
+        10: "Optimism",
+        56: "BSC",
+        137: "Polygon",
+        42161: "Arbitrum One",
+        8453: "Base",
+        11155111: "Sepolia",
+        421614: "Arbitrum Sepolia",
+        84532: "Base Sepolia",
+        11155420: "Optimism Sepolia",
+    }
+    return names.get(int(chain_id), "EVM")
+
+
+def _append_chunked_value(lines: list[str], label: str, value: str, width: int = 18) -> None:
+    text = str(value or "").strip() or "-"
+    lines.append(label)
+    lines.extend(_chunk_text(text, width=width).splitlines() or ["-"])
+
+
+def _preview_text_line(text: str, max_len: int = 160) -> str:
+    single_line = str(text or "").replace("\n", " ").strip()
+    if len(single_line) <= max_len:
+        return single_line
+    return single_line[:max_len] + "..."
+
+
+def _decode_message_bytes_for_preview(message: str) -> bytes:
+    text = str(message or "")
+    if text.startswith(("0x", "0X")):
+        try:
+            return bytes.fromhex(text[2:])
+        except Exception:
+            return text.encode("utf-8", errors="replace")
+    return text.encode("utf-8", errors="replace")
+
+
+def _format_native_amount_wei(value_wei: int) -> str:
+    try:
+        scaled = (Decimal(int(value_wei)) / (Decimal(10) ** 18)).quantize(
+            Decimal("0.00000001"),
+            rounding=ROUND_DOWN,
+        )
+        text = format(scaled.normalize(), "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return text or "0"
+    except Exception:
+        return "?"
+
+
+def _build_tp_request_review_pages(payload: str) -> tuple[str, list[str]]:
+    signer = _load_signer_preview_module()
+    request = signer.parse_sign_request(payload)
+    request_type = type(request).__name__
+    pages: list[str] = []
+
+    if request_type == "TpSignTransactionRequest":
+        tx = signer.EvmTxEncoder.from_tp_request(request)
+        data_hex = "0x" + tx.data.hex() if tx.data else "0x"
+        method_id = f"0x{tx.data[:4].hex()}" if len(tx.data) >= 4 else "-"
+        lines = [
+            f"类型: 交易签名",
+            f"动作: {request.action}",
+            f"网络: {_evm_chain_name(request.chain_id)}",
+            f"chainId: {request.chain_id}",
+        ]
+        _append_chunked_value(lines, "签名地址:", request.address or "-")
+        _append_chunked_value(lines, "接收方:", tx.to or "(合约创建)")
+        lines.extend(
+            [
+                f"金额: {tx.value} wei",
+                f"约等于: {_format_native_amount_wei(tx.value)} ETH",
+                f"nonce: {tx.nonce}",
+                f"交易类型: {tx.tx_type}",
+                f"requestId: {request.request_id or '-'}",
+            ]
+        )
+        pages.extend(_paginate_report_lines(lines, lines_per_page=9))
+
+        fee_lines = [f"gasLimit: {tx.gas_limit}"]
+        if tx.gas_price is not None:
+            fee_lines.append(f"gasPrice: {tx.gas_price}")
+        else:
+            fee_lines.append(f"maxPriorityFee: {tx.max_priority_fee_per_gas or 0}")
+            fee_lines.append(f"maxFee: {tx.max_fee_per_gas or 0}")
+        fee_lines.extend(
+            [
+                f"合约调用: {'是' if len(tx.data) > 0 else '否'}",
+                f"methodId: {method_id}",
+                f"dataBytes: {len(tx.data)}",
+                f"accessList: {len(tx.access_list)}",
+            ]
+        )
+        pages.extend(_paginate_report_lines(fee_lines, lines_per_page=9))
+
+        if tx.data:
+            data_lines = ["data 预览:"]
+            data_lines.extend(_chunk_text(data_hex[:258], width=18).splitlines())
+            if len(data_hex) > 258:
+                data_lines.append("...")
+            pages.extend(_paginate_report_lines(data_lines, lines_per_page=9))
+
+        return "交易核对", pages
+
+    if request_type == "TpSignPersonalMessageRequest":
+        message_preview = _preview_text_line(request.message, max_len=180)
+        lines = [
+            "类型: personalSign",
+            f"动作: {request.action}",
+            f"网络: {_evm_chain_name(request.chain_id)}",
+            f"chainId: {request.chain_id}",
+        ]
+        _append_chunked_value(lines, "签名地址:", request.address or "-")
+        lines.extend(
+            [
+                f"消息字节数: {len(_decode_message_bytes_for_preview(request.message))}",
+                f"requestId: {request.request_id or '-'}",
+                "消息预览:",
+            ]
+        )
+        lines.extend(_chunk_text(message_preview, width=18).splitlines())
+        return "消息核对", _paginate_report_lines(lines, lines_per_page=9)
+
+    if request_type == "TpSignTypedDataRequest":
+        try:
+            typed_data = json.loads(request.typed_data_json)
+        except Exception:
+            typed_data = {}
+        domain = typed_data.get("domain") if isinstance(typed_data, dict) else {}
+        if not isinstance(domain, dict):
+            domain = {}
+        message = typed_data.get("message") if isinstance(typed_data, dict) else None
+        message_keys = len(message) if isinstance(message, dict) else 0
+        lines = [
+            "类型: signTypedData",
+            f"动作: {request.action}",
+            f"网络: {_evm_chain_name(request.chain_id)}",
+            f"chainId: {request.chain_id}",
+        ]
+        _append_chunked_value(lines, "签名地址:", request.address or "-")
+        lines.extend(
+            [
+                f"primaryType: {request.primary_type or '-'}",
+                f"legacy: {'是' if request.is_legacy else '否'}",
+                f"typedDataBytes: {len(request.typed_data_json.encode('utf-8'))}",
+                f"messageFields: {message_keys}",
+                f"requestId: {request.request_id or '-'}",
+            ]
+        )
+        if domain.get("name"):
+            _append_chunked_value(lines, "domain.name:", str(domain.get("name")))
+        if domain.get("verifyingContract"):
+            _append_chunked_value(lines, "verifyingContract:", str(domain.get("verifyingContract")))
+        pages.extend(_paginate_report_lines(lines, lines_per_page=9))
+
+        preview_lines = ["typedData 预览:"]
+        preview_lines.extend(
+            _chunk_text(_preview_text_line(request.typed_data_json, max_len=220), width=18).splitlines()
+        )
+        pages.extend(_paginate_report_lines(preview_lines, lines_per_page=9))
+        return "TypedData 核对", pages
+
+    raise ValueError(f"不支持的签名请求类型: {request_type}")
 
 
 def _extract_xpub_from_output(stdout: str, xtype: str) -> str:
@@ -2855,7 +3049,7 @@ class ToolsTpSignerScanView(View):
         if decoder.is_complete:
             if decoder.has_psbt:
                 return Destination(
-                    ToolsTpSignerPinEntryView,
+                    ToolsTpSignerPsbtReviewPrepView,
                     view_args=dict(
                         psbt_base64=decoder.get_psbt_base64(),
                         psbt_input_qr_type=decoder.get_psbt_input_qr_type(),
@@ -2865,7 +3059,7 @@ class ToolsTpSignerScanView(View):
             if not payload.startswith(("ethereum:", "tp:")):
                 return _tp_home_destination()
             return Destination(
-                ToolsTpSignerPinEntryView,
+                ToolsTpSignerPayloadReviewView,
                 view_args=dict(payload=payload),
             )
 
@@ -3113,17 +3307,243 @@ class ToolsTpManualQrPartsView(View):
         return _tp_home_destination()
 
 
+class ToolsTpSignerPayloadReviewView(View):
+    def __init__(self, payload: str, page_index: int = 0):
+        super().__init__()
+        self.payload = (payload or "").strip()
+        self.page_index = max(0, int(page_index))
+
+    def run(self):
+        if self.payload.lower().startswith("tp:signpsbt-"):
+            try:
+                _request_id, psbt_base64 = _extract_psbt_request(self.payload)
+            except Exception as exc:
+                logger.warning("Failed to extract legacy TP PSBT request: %s", exc)
+                return _debug_error_destination("32", str(exc))
+            return Destination(
+                ToolsTpSignerPsbtReviewPrepView,
+                view_args=dict(
+                    psbt_base64=psbt_base64,
+                    psbt_input_qr_type=None,
+                    response_mode="btctx",
+                ),
+                skip_current_view=True,
+            )
+
+        try:
+            title_base, pages = _build_tp_request_review_pages(self.payload)
+        except Exception as exc:
+            logger.warning("TP-only review parse failed; falling back to direct sign: %s", exc)
+            selected = self.run_screen(
+                WarningScreen,
+                title="无法完整核对",
+                status_headline=None,
+                text=_localize_error_detail(str(exc)) or "当前无法生成详情页，可以直接输入 PIN 签名。",
+                show_back_button=True,
+                button_data=[ButtonOption("继续签名")],
+            )
+            if selected == RET_CODE__BACK_BUTTON:
+                return _tp_home_destination()
+            return Destination(
+                ToolsTpSignerPinEntryView,
+                view_args=dict(payload=self.payload),
+                skip_current_view=True,
+            )
+
+        if not pages:
+            return Destination(
+                ToolsTpSignerPinEntryView,
+                view_args=dict(payload=self.payload),
+                skip_current_view=True,
+            )
+
+        page_index = max(0, min(self.page_index, len(pages) - 1))
+        if len(pages) == 1:
+            title = title_base
+        else:
+            title = f"{title_base} {page_index + 1}/{len(pages)}"
+
+        if page_index < len(pages) - 1:
+            button_data = [ButtonOption("下一页")]
+        else:
+            button_data = [ButtonOption("输入 PIN 并签名")]
+
+        selected = self.run_screen(
+            ToolsFormattedTextScreen,
+            title=title,
+            text=pages[page_index],
+            button_data=button_data,
+        )
+
+        if selected == RET_CODE__BACK_BUTTON:
+            if page_index > 0:
+                return Destination(
+                    ToolsTpSignerPayloadReviewView,
+                    view_args=dict(payload=self.payload, page_index=page_index - 1),
+                    clear_history=True,
+                )
+            return _tp_home_destination()
+
+        if page_index < len(pages) - 1:
+            return Destination(
+                ToolsTpSignerPayloadReviewView,
+                view_args=dict(payload=self.payload, page_index=page_index + 1),
+                clear_history=True,
+            )
+
+        return Destination(
+            ToolsTpSignerPinEntryView,
+            view_args=dict(payload=self.payload),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpSignerPsbtReviewPrepView(View):
+    def __init__(
+        self,
+        psbt_base64: str,
+        psbt_input_qr_type: str | None = None,
+        response_mode: str | None = None,
+    ):
+        super().__init__()
+        self.psbt_base64 = (psbt_base64 or "").strip()
+        self.psbt_input_qr_type = psbt_input_qr_type
+        self.response_mode = (response_mode or "").strip().lower() or None
+
+    def _warning(self, title: str, text: str):
+        self.run_screen(
+            WarningScreen,
+            title=title,
+            status_headline=None,
+            text=text,
+            show_back_button=False,
+            button_data=[ButtonOption("继续")],
+        )
+
+    def run(self):
+        from embit.psbt import PSBT
+
+        from seedsigner.models.psbt_parser import PSBTParser
+        from seedsigner.views.psbt_views import PSBTOverviewView
+
+        try:
+            psbt = PSBT.from_base64(self.psbt_base64)
+        except Exception as exc:
+            logger.warning("TP-only PSBT decode failed before review: %s", exc)
+            self._warning("PSBT 解析失败", str(exc) or "当前二维码里的 PSBT 无法读取。")
+            return _tp_home_destination()
+
+        self.controller.psbt = psbt
+        self.controller.psbt_parser = None
+        self.controller.psbt_seed = None
+        self.controller.psbt_input_qr_type = self.psbt_input_qr_type
+        self.controller.psbt_response_mode = self.response_mode
+        self.controller.psbt_sign_with_satochip = True
+        self.controller.psbt_external_signer_flow = True
+
+        is_multisig_psbt = False
+        try:
+            if psbt and psbt.inputs:
+                first_input = psbt.inputs[0]
+                if first_input.witness_utxo:
+                    script_pubkey = first_input.witness_utxo.script_pubkey
+                elif first_input.non_witness_utxo:
+                    script_pubkey = first_input.script_pubkey
+                else:
+                    script_pubkey = None
+
+                if script_pubkey is not None:
+                    policy = PSBTParser._get_policy(first_input, script_pubkey, psbt.xpubs)
+                    is_multisig_psbt = isinstance(policy, dict) and "m" in policy
+        except Exception as exc:
+            logger.debug("Unable to determine PSBT policy in TP-only review flow", exc_info=exc)
+
+        if is_multisig_psbt:
+            try:
+                parser = PSBTParser(psbt)
+                parser.parse()
+            except Exception as exc:
+                logger.exception("Failed to parse multisig PSBT for review", exc_info=exc)
+                self._warning("无法核对交易", str(exc) or "当前多签 PSBT 不能生成核对页面。")
+                return _tp_home_destination()
+
+            self.controller.psbt_parser = parser
+            return Destination(PSBTOverviewView, clear_history=True)
+
+        network = self.settings.get_value(SettingsConstants.SETTING__NETWORK)
+
+        try:
+            first_derivation = next(iter(psbt.inputs[0].bip32_derivations.values()))
+            first_der = first_derivation.derivation
+        except Exception:
+            self._warning("无法核对交易", "PSBT 缺少派生路径，当前不能生成完整核对页面。")
+            return _tp_home_destination()
+
+        account_path = []
+        hardened_index = 0x80000000
+        for idx in first_der:
+            if idx & hardened_index:
+                account_path.append(idx)
+            else:
+                break
+
+        account_path_str = "m"
+        for idx in account_path:
+            hardened = bool(idx & hardened_index)
+            index = idx & 0x7FFFFFFF
+            suffix = "'" if hardened else ""
+            account_path_str += f"/{index}{suffix}"
+
+        purpose = account_path[0] & 0x7FFFFFFF if account_path else 0
+        xtype = {
+            44: "standard",
+            49: "p2wpkh-p2sh",
+            84: "p2wpkh",
+            48: "p2wsh-p2sh" if len(account_path) > 3 and (account_path[3] & 0x7FFFFFFF) == 1 else "p2wsh",
+        }.get(purpose, "standard")
+
+        loading = LoadingScreenThread(text=_("Parsing PSBT..."))
+        loading.start()
+        loading_stopped = False
+        try:
+            try:
+                parser = PSBTParser(
+                    psbt,
+                    seed=None,
+                    root=None,
+                    root_path=account_path,
+                    master_fingerprint=getattr(first_derivation, "fingerprint", None),
+                    network=network,
+                    allow_unverified_single_sig_change=True,
+                )
+                parser.parse()
+            except Exception as exc:
+                logger.exception("Failed to build PSBT parser in TP-only review flow", exc_info=exc)
+                loading.stop()
+                loading_stopped = True
+                self._warning("无法核对交易", str(exc) or "当前 PSBT 不能生成完整核对页面。")
+                return _tp_home_destination()
+        finally:
+            if not loading_stopped:
+                loading.stop()
+
+        self.controller.psbt_parser = parser
+        return Destination(PSBTOverviewView, clear_history=True)
+
+
 class ToolsTpSignerPinEntryView(View):
     def __init__(
         self,
         payload: str | None = None,
         psbt_base64: str | None = None,
         psbt_input_qr_type: str | None = None,
+        response_mode: str | None = None,
     ):
         super().__init__()
         self.payload = payload
         self.psbt_base64 = psbt_base64
         self.psbt_input_qr_type = psbt_input_qr_type
+        self.response_mode = (response_mode or "").strip().lower() or None
 
     def run(self):
         try:
@@ -3146,6 +3566,7 @@ class ToolsTpSignerPinEntryView(View):
                     pin=pin,
                     psbt_base64=self.psbt_base64,
                     psbt_input_qr_type=self.psbt_input_qr_type,
+                    response_mode=self.response_mode,
                 ),
                 skip_current_view=True,
             )
@@ -3171,16 +3592,19 @@ class ToolsTpSignerPsbtRunView(View):
         pin: str = "",
         psbt_base64: str | None = None,
         psbt_input_qr_type: str | None = None,
+        response_mode: str | None = None,
     ):
         super().__init__()
         self.payload = payload
         self.pin = pin
         self.psbt_input_qr_type = psbt_input_qr_type
+        self.response_mode = (response_mode or "").strip().lower() or None
         self.request_id = ""
         self.legacy_tp_request = False
 
         if payload and payload.lower().startswith("tp:signpsbt-"):
             self.legacy_tp_request = True
+            self.response_mode = self.response_mode or "btctx"
             self.request_id, self.psbt_base64 = _extract_psbt_request(payload)
         else:
             self.psbt_base64 = (psbt_base64 or "").strip()
@@ -3241,9 +3665,9 @@ class ToolsTpSignerPsbtRunView(View):
                 if tx_path.exists():
                     tx_hex = tx_path.read_text(encoding="utf-8").strip()
 
-                if self.legacy_tp_request and not tx_hex:
+                if (self.response_mode == "btctx" or self.legacy_tp_request) and not tx_hex:
                     return _masked_error_destination("33")
-                if not self.legacy_tp_request and not signed_psbt_base64:
+                if self.response_mode != "btctx" and not self.legacy_tp_request and not signed_psbt_base64:
                     return _masked_error_destination("33")
         except subprocess.TimeoutExpired:
             return _masked_error_destination("34")
@@ -3252,6 +3676,13 @@ class ToolsTpSignerPsbtRunView(View):
             return _masked_error_destination("35")
         finally:
             loading.stop()
+
+        if self.response_mode == "btctx" or self.legacy_tp_request:
+            return Destination(
+                ToolsTpSignerQrView,
+                view_args=dict(response_text=f"btctx:{tx_hex}"),
+                skip_current_view=True,
+            )
 
         if not self.legacy_tp_request:
             return Destination(

@@ -29,6 +29,10 @@ object TpResponseParser {
             }
         }
 
+        if (isLikelyBitcoinTxHex(raw)) {
+            return ParsedResponse(rawTransaction = null, bitcoinTxHex = raw.lowercase(), signature = null, address = null)
+        }
+
         val dash = raw.indexOf('-')
         if (dash <= 0) return ParsedResponse(null, null, null, null, isError = true)
 
@@ -63,5 +67,11 @@ object TpResponseParser {
             if (eq > 0) result[piece.substring(0, eq)] = URLDecoder.decode(piece.substring(eq + 1), "UTF-8")
         }
         return result
+    }
+
+    private fun isLikelyBitcoinTxHex(value: String): Boolean {
+        val normalized = value.trim()
+        if (normalized.length < 120 || normalized.length % 2 != 0) return false
+        return normalized.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
     }
 }

@@ -52,6 +52,7 @@ private object AppLockState : DefaultLifecycleObserver {
 }
 
 private object RuntimeSecurityGuard {
+    private const val SIDE_BY_SIDE_TEST_PACKAGE = "io.arbitrum.wallet.test"
     private val obviousRootPaths = listOf(
         "/system/bin/su",
         "/system/xbin/su",
@@ -88,7 +89,8 @@ private object RuntimeSecurityGuard {
 
     fun blockingIssue(activity: FragmentActivity): String? {
         val appFlags = activity.applicationInfo.flags
-        if ((appFlags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+        val allowDebuggableTestPackage = activity.packageName == SIDE_BY_SIDE_TEST_PACKAGE
+        if (!allowDebuggableTestPackage && (appFlags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             return "检测到可调试构建，已阻止启动高安全钱包界面"
         }
         if (Debug.isDebuggerConnected() || Debug.waitingForDebugger()) {

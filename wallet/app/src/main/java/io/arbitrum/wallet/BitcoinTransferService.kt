@@ -9,6 +9,7 @@ import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.math.ceil
 import okhttp3.MediaType.Companion.toMediaType
@@ -21,12 +22,15 @@ import org.bitcoinj.core.Utils
 import org.bitcoinj.script.ScriptBuilder
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 private const val BITCOIN_DEFAULT_GAP_LIMIT = 5
 private const val BITCOIN_MAX_DISCOVERY_INDEX = 24
 private const val BITCOIN_DUST_THRESHOLD_SATS = 546L
+private const val BITCOIN_HTTP_CACHE_TTL_MS = 30_000L
 
 data class BitcoinAccountSnapshot(
     val balanceSats: Long,
@@ -36,6 +40,7 @@ data class BitcoinAccountSnapshot(
     val nextReceiveAddress: String,
     val nextChangeIndex: Int,
     val nextChangeAddress: String,
+    val ownedAddresses: List<String>,
     val spendableUtxos: List<BitcoinSpendableUtxo>,
     val status: String,
     val recentActivity: List<WalletActivityItem>,
@@ -100,40 +105,69 @@ private data class BitcoinCoinSelection(
 )
 
 object BitcoinTransferService {
-    private val allowedHosts = setOf("blockstream.info")
+    private data class CachedHttpText(
+        val body: String,
+        val cachedAt: Long,
+    )
+
+    private val allowedHosts = setOf("blockstream.info", "mempool.space", "mempool.emzy.de", "btcscan.org")
     private val client = TrustedNetwork.newPinnedClient(
         OkHttpClient.Builder()
             .callTimeout(20, TimeUnit.SECONDS)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
     ).build()
+    private val httpTextCache = ConcurrentHashMap<String, CachedHttpText>()
 
-    suspend fun syncAccount(account: BitcoinWatchAccount): BitcoinAccountSnapshot = withContext(Dispatchers.IO) {
-        val receive = discoverBranch(account, branch = 0)
-        val change = discoverBranch(account, branch = 1)
-        val utxos = receive.utxos + change.utxos
-        val balanceSats = utxos.sumOf { it.valueSats }
-        val priceUsd = EvmRpc.fetchCoingeckoPriceForSymbol("BTC")
-        val recentActivity = fetchAccountActivity(
-            prefix = account.prefix,
-            ownedAddresses = (receive.usedAddresses + change.usedAddresses).toSet(),
-        )
-        BitcoinAccountSnapshot(
-            balanceSats = balanceSats,
-            priceUsd = priceUsd,
-            utxoCount = utxos.size,
-            nextReceiveIndex = receive.nextIndex,
-            nextReceiveAddress = receive.nextAddress,
-            nextChangeIndex = change.nextIndex,
-            nextChangeAddress = change.nextAddress,
-            spendableUtxos = utxos.sortedByDescending { it.valueSats },
-            status = if (utxos.isEmpty()) {
+    suspend fun syncAccount(
+        account: BitcoinWatchAccount,
+        includeActivity: Boolean = false,
+    ): BitcoinAccountSnapshot = withContext(Dispatchers.IO) {
+        coroutineScope {
+            val receiveDeferred = async { discoverBranch(account, branch = 0) }
+            val changeDeferred = async { discoverBranch(account, branch = 1) }
+            val priceDeferred = async { runCatching { EvmRpc.fetchCoingeckoPriceForSymbol("BTC") }.getOrNull() }
+
+            val receive = receiveDeferred.await()
+            val change = changeDeferred.await()
+            val utxos = (receive.utxos + change.utxos).sortedByDescending { it.valueSats }
+            val balanceSats = utxos.sumOf { it.valueSats }
+            val ownedAddresses = (receive.usedAddresses + change.usedAddresses).distinct()
+            val priceUsd = priceDeferred.await()
+            val activityWarning = StringBuilder()
+            val recentActivity = if (includeActivity && ownedAddresses.isNotEmpty()) {
+                runCatching {
+                    fetchAccountActivity(
+                        prefix = account.prefix,
+                        ownedAddresses = ownedAddresses.toSet(),
+                    )
+                }.getOrElse {
+                    activityWarning.append(" 最近交易暂未拉取。")
+                    emptyList()
+                }
+            } else {
+                activityWarning.append(" 最近交易后台更新。")
+                emptyList()
+            }
+            val baseStatus = if (utxos.isEmpty()) {
                 "已同步链上状态，当前没有可用 UTXO。"
             } else {
                 "已发现 ${utxos.size} 个 UTXO，可用余额 ${formatBitcoinSats(balanceSats)}"
-            },
-            recentActivity = recentActivity,
-        )
+            }
+            BitcoinAccountSnapshot(
+                balanceSats = balanceSats,
+                priceUsd = priceUsd,
+                utxoCount = utxos.size,
+                nextReceiveIndex = receive.nextIndex,
+                nextReceiveAddress = receive.nextAddress,
+                nextChangeIndex = change.nextIndex,
+                nextChangeAddress = change.nextAddress,
+                ownedAddresses = ownedAddresses,
+                spendableUtxos = utxos,
+                status = baseStatus + activityWarning.toString(),
+                recentActivity = recentActivity,
+            )
+        }
     }
 
     suspend fun prepareTransfer(
@@ -141,18 +175,19 @@ object BitcoinTransferService {
         destinationAddress: String,
         amountText: String,
         feeRateText: String?,
+        snapshot: BitcoinAccountSnapshot? = null,
     ): BitcoinPreparedTransfer = withContext(Dispatchers.IO) {
         val amountSats = parseBitcoinAmountToSats(amountText)
         require(amountSats > 0L) { "请输入大于 0 的 BTC 数量" }
 
-        val snapshot = syncAccount(account)
-        require(snapshot.spendableUtxos.isNotEmpty()) { "当前 BTC 账户没有可用 UTXO" }
+        val effectiveSnapshot = snapshot ?: syncAccount(account, includeActivity = false)
+        require(effectiveSnapshot.spendableUtxos.isNotEmpty()) { "当前 BTC 账户没有可用 UTXO" }
 
         val destinationScript = outputScriptForAddress(account.prefix, destinationAddress)
-        val changeKey = deriveBitcoinKeyMaterial(account, branch = 1, index = snapshot.nextChangeIndex)
+        val changeKey = deriveBitcoinKeyMaterial(account, branch = 1, index = effectiveSnapshot.nextChangeIndex)
         val feeRate = parseFeeRateOrDefault(account.prefix, feeRateText)
         val selection = selectCoins(
-            utxos = snapshot.spendableUtxos,
+            utxos = effectiveSnapshot.spendableUtxos,
             amountSats = amountSats,
             feeRate = feeRate,
             destinationScriptSize = destinationScript.size,
@@ -197,20 +232,50 @@ object BitcoinTransferService {
             destinationAddress = destinationAddress,
             changeAddress = selection.changeAddress,
             inputCount = selection.selected.size,
-            snapshot = snapshot,
+            snapshot = effectiveSnapshot,
         )
     }
 
     suspend fun broadcastTransaction(prefix: String, txHex: String): String = withContext(Dispatchers.IO) {
-        val request = TrustedNetwork.requestBuilder("${bitcoinEsploraBaseUrl(prefix)}/tx", allowedHosts)
-            .post(txHex.trim().toRequestBody("text/plain; charset=utf-8".toMediaType()))
-            .build()
-        client.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty().trim()
-            require(response.isSuccessful) { body.ifBlank { "BTC 广播失败 (${response.code})" } }
-            require(body.isNotBlank()) { "BTC 广播成功但未返回 txid" }
-            body
+        val broadcastTargets = buildList {
+            add("${bitcoinEsploraBaseUrl(prefix)}/tx")
+            when (prefix.lowercase(Locale.US)) {
+                "xpub", "ypub", "zpub" -> {
+                    add("https://mempool.emzy.de/api/tx")
+                    add("https://btcscan.org/api/tx")
+                    add("https://mempool.space/api/tx")
+                }
+                "tpub", "upub", "vpub" -> add("https://mempool.space/testnet/api/tx")
+            }
         }
+        var lastError = "BTC 广播失败"
+        for ((index, url) in broadcastTargets.withIndex()) {
+            var shouldStop = false
+            val request = TrustedNetwork.requestBuilder(url, allowedHosts)
+                .post(txHex.trim().toRequestBody("text/plain; charset=utf-8".toMediaType()))
+                .build()
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty().trim()
+                if (response.isSuccessful) {
+                    require(body.isNotBlank()) { "BTC 广播成功但未返回 txid" }
+                    return@withContext body
+                }
+                lastError = body.ifBlank { "BTC 广播失败 (${response.code})" }
+                val isRateLimited = response.code == 429 || body.contains("Too Many Requests", ignoreCase = true)
+                if (!isRateLimited || index == broadcastTargets.lastIndex) {
+                    shouldStop = true
+                }
+            }
+            if (shouldStop) break
+        }
+        error(lastError)
+    }
+
+    suspend fun fetchRecentActivitySnapshot(
+        prefix: String,
+        ownedAddresses: Set<String>,
+    ): List<WalletActivityItem> = withContext(Dispatchers.IO) {
+        fetchAccountActivity(prefix, ownedAddresses)
     }
 
     suspend fun fetchTransactionDetail(
@@ -478,13 +543,63 @@ object BitcoinTransferService {
         return JSONArray(text)
     }
 
+    private fun bitcoinApiCandidateUrls(url: String): List<String> {
+        return when {
+            url.startsWith("https://blockstream.info/testnet/api/") -> {
+                val suffix = url.removePrefix("https://blockstream.info/testnet/api/")
+                listOf(
+                    url,
+                    "https://mempool.space/testnet/api/$suffix",
+                )
+            }
+            url.startsWith("https://blockstream.info/api/") -> {
+                val suffix = url.removePrefix("https://blockstream.info/api/")
+                listOf(
+                    url,
+                    "https://mempool.emzy.de/api/$suffix",
+                    "https://btcscan.org/api/$suffix",
+                    "https://mempool.space/api/$suffix",
+                )
+            }
+            else -> listOf(url)
+        }.distinct()
+    }
+
     private suspend fun fetchText(url: String): String {
-        val request = TrustedNetwork.requestBuilder(url, allowedHosts).build()
-        return client.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            require(response.isSuccessful) { body.ifBlank { "请求失败 (${response.code})" } }
-            body
+        val now = System.currentTimeMillis()
+        httpTextCache[url]?.takeIf { now - it.cachedAt <= BITCOIN_HTTP_CACHE_TTL_MS }?.let { cached ->
+            return cached.body
         }
+        val candidates = bitcoinApiCandidateUrls(url)
+        var lastError = "BTC 公共接口请求失败"
+        for ((index, candidateUrl) in candidates.withIndex()) {
+            var shouldContinue = false
+            val request = TrustedNetwork.requestBuilder(candidateUrl, allowedHosts).build()
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (response.isSuccessful) {
+                    val cached = CachedHttpText(body = body, cachedAt = now)
+                    httpTextCache[url] = cached
+                    httpTextCache[candidateUrl] = cached
+                    return body
+                }
+                val isRateLimited = response.code == 429 || body.contains("Too Many Requests", ignoreCase = true)
+                if (isRateLimited) {
+                    lastError = "BTC 公共接口限流，请稍后重试"
+                    if (index != candidates.lastIndex) {
+                        shouldContinue = true
+                        return@use
+                    }
+                } else {
+                    lastError = body.ifBlank { "请求失败 (${response.code})" }
+                    return@use
+                }
+            }
+            if (!shouldContinue) {
+                break
+            }
+        }
+        error(lastError)
     }
 
     private suspend fun buildPsbt(

@@ -324,6 +324,9 @@ private fun WalletScreen(
     val latestError by rememberUpdatedState(state.error)
     val latestInfo by rememberUpdatedState(state.info)
     var homeSelectedAssetId by rememberSaveable { mutableStateOf<String?>(null) }
+    val pageScrollState = rememberScrollState()
+    val hasPreparedRequest = state.signQrPages.isNotEmpty() && state.signQrBitmap != null
+    val hasPendingBroadcast = state.pendingBroadcastBitcoinTxHex.isNotBlank() || state.pendingBroadcastRawTransaction.isNotBlank()
 
     BackHandler(enabled = state.activeTab != WalletTab.HOME || homeSelectedAssetId != null) {
         when {
@@ -346,13 +349,21 @@ private fun WalletScreen(
         }
     }
 
+    LaunchedEffect(state.preparingRequest, hasPreparedRequest, hasPendingBroadcast) {
+        if (state.preparingRequest || hasPreparedRequest || hasPendingBroadcast) {
+            homeSelectedAssetId = null
+            onSelectTab(WalletTab.HOME)
+            pageScrollState.scrollTo(0)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFFF6F7FB))
             .statusBarsPadding()
             .navigationBarsPadding()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(pageScrollState)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -1150,10 +1161,20 @@ private fun AssetsHubSection(
             onSelectedAssetChange(null)
         }
     }
-    LaunchedEffect(selectedAssetId, selected?.btcAccount?.id, selected?.btcAccount?.recentActivity?.size, selected?.btcAccount?.syncing) {
+    LaunchedEffect(
+        selectedAssetId,
+        selected?.btcAccount?.id,
+        selected?.btcAccount?.lastSyncAt,
+        selected?.btcAccount?.lastSyncStatus,
+        selected?.btcAccount?.syncing,
+    ) {
         val btcAccount = selected?.btcAccount
-        if (btcAccount != null && !btcAccount.syncing && btcAccount.recentActivity.isEmpty()) {
-            onSyncBitcoinWatchAccount(btcAccount.id)
+        val shouldAutoSync = btcAccount != null &&
+            !btcAccount.syncing &&
+            btcAccount.lastSyncAt == 0L &&
+            btcAccount.lastSyncStatus.isBlank()
+        if (shouldAutoSync) {
+            btcAccount?.id?.let(onSyncBitcoinWatchAccount)
         }
     }
     val recentItems = remember(state.activityItems, selectedAssetId, state.bitcoinWatchAccounts) {
@@ -1236,12 +1257,14 @@ private fun AssetsHubSection(
             val receivePreviewText = when {
                 receiveAmount.isBlank() -> null
                 receiveInputMode == TransferInputMode.ASSET -> formatUsdAmount(calculateAssetUsd(receiveAmount, priceUsd))
-                else -> resolvedReceiveAssetAmount?.let { "$it ${entry.symbol}" }
+                    ?: "美元换算需先同步价格"
+                else -> resolvedReceiveAssetAmount?.let { "$it ${entry.symbol}" } ?: "${entry.symbol} 换算需先同步价格"
             }
             val sendPreviewText = when {
                 sendAmount.isBlank() -> null
                 transferInputMode == TransferInputMode.ASSET -> formatUsdAmount(calculateAssetUsd(sendAmount, priceUsd))
-                else -> resolvedSendAssetAmount?.let { "$it ${entry.symbol}" }
+                    ?: "美元换算需先同步价格"
+                else -> resolvedSendAssetAmount?.let { "$it ${entry.symbol}" } ?: "${entry.symbol} 换算需先同步价格"
             }
             val receiveQrPayload = buildReceiveQrPayload(
                 entry = entry,
@@ -1524,9 +1547,9 @@ private fun AssetsHubSection(
                                     sendAmount.isNotBlank()
                                 } else {
                                     resolvedSendAssetAmount != null
-                                },
+                                } && !state.preparingRequest,
                             ) {
-                                Text("发送 ${entry.symbol}", fontSize = 11.sp)
+                                Text(if (state.preparingRequest) "正在生成二维码..." else "发送 ${entry.symbol}", fontSize = 11.sp)
                             }
                         }
                     }

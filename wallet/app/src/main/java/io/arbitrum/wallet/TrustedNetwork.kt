@@ -49,6 +49,27 @@ object TrustedNetwork {
                 "sha256/kZwN96eHtZftBWrOZUsd6cA4es80n3NzSk/XtYz2EqQ=",
             ),
         ),
+        TrustedHostPins(
+            host = "mempool.space",
+            pins = listOf(
+                "sha256/wV7micOM/PJtIxPpaZBTdQF0JnfIHXSGzrvsu7fzDdQ=",
+                "sha256/KqkYYX5LYAYP7XGemqzbtPPIA8x7BS/BbOIcAXf3j2k=",
+            ),
+        ),
+        TrustedHostPins(
+            host = "mempool.emzy.de",
+            pins = listOf(
+                "sha256/lTPZ2uIRFziRjFobuhSqcgbmuWYaYTUf8c+0Sg2spS8=",
+                "sha256/iFvwVyJSxnQdyaUvUERIf+8qk7gRze3612JMwoO3zdU=",
+            ),
+        ),
+        TrustedHostPins(
+            host = "btcscan.org",
+            pins = listOf(
+                "sha256/cD6KxsIe7o/87jpiUs0eGgF2rHqfxqVzJNV0ayn0Uok=",
+                "sha256/kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=",
+            ),
+        ),
     )
 
     private val allPinnedHosts = pinnedHosts.associate { it.host to it.pins.toSet() }

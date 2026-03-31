@@ -138,6 +138,7 @@ data class WalletUiState(
     val trustedDappEntries: List<TrustedDappEntry> = emptyList(),
     val walletConnectProposal: WalletConnectProposalUi? = null,
     val walletConnectPendingRequest: WalletConnectPendingRequest? = null,
+    val preparingRequest: Boolean = false,
     val signQrPages: List<String> = emptyList(),
     val signQrPageIndex: Int = 0,
     val signQrBitmap: Bitmap? = null,

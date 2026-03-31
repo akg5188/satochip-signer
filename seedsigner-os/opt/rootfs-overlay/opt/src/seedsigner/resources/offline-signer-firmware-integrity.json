@@ -1,6 +1,6 @@
 {
   "build_commit_time": "2026-03-10 16:30",
-  "build_time_utc": "2026-03-30T07:19:39Z",
+  "build_time_utc": "2026-03-31T11:20:47Z",
   "files": [
     {
       "path": "/.gitignore",
@@ -924,8 +924,8 @@
     },
     {
       "path": "/opt/src/seedsigner/controller.py",
-      "sha256": "c28324acf643a98070586a8ae9caa7d82b172bdd60e24fd6a79cc3eacf34bdc9",
-      "size": 30062
+      "sha256": "5eff71bc5bb850c602234d04603ff142517ccc18af45580400d29246cbbeaace",
+      "size": 30389
     },
     {
       "path": "/opt/src/seedsigner/gui/__init__.py",
@@ -1324,8 +1324,8 @@
     },
     {
       "path": "/opt/src/seedsigner/models/psbt_parser.py",
-      "sha256": "90e0c33fbd65e21b00abb14d6dc0e656bdba8c6b936959b0b97ea5ecdb90c81e",
-      "size": 16395
+      "sha256": "9392391b9917ab2e65b575589dc5bfb5e8a54ea5dec6c415d60c7fe8631ef326",
+      "size": 17165
     },
     {
       "path": "/opt/src/seedsigner/models/qr_type.py",
@@ -1499,8 +1499,8 @@
     },
     {
       "path": "/opt/src/seedsigner/views/psbt_views.py",
-      "sha256": "218655592004d3dc2c1ea5a41cb99765e3c8f6cc53384e8c1cacefb3e5e2809c",
-      "size": 44898
+      "sha256": "9346b1c62b0cf9e1579f8d4f854b9e6477f7467df26582e4bcdb978473c432ed",
+      "size": 47629
     },
     {
       "path": "/opt/src/seedsigner/views/satochip_bias.py",
@@ -1529,13 +1529,13 @@
     },
     {
       "path": "/opt/src/seedsigner/views/tools_views.py",
-      "sha256": "85b24bf6c84ba07f908818396c7e5da202b19473bf061c7f0e7337bcd3a7c201",
-      "size": 588050
+      "sha256": "bc66d43645472fb310ee28e09eb28d4805ba92c74b54e4fc586939f5d100e069",
+      "size": 588055
     },
     {
       "path": "/opt/src/seedsigner/views/tp_views.py",
-      "sha256": "ca73008207bb6fb91ca16c4f6111f26156e5cb7903af5e08ef5c7cb5653d3a5b",
-      "size": 129631
+      "sha256": "e6c775d66a2a53330628cbcbcfe4392141e4013405ab65117be2ccd84851e989",
+      "size": 146318
     },
     {
       "path": "/opt/src/seedsigner/views/view.py",
@@ -1571,12 +1571,12 @@
   "firmware_name": "离线签名器",
   "generated_by": "scripts/write_runtime_firmware_manifest.py",
   "manifest_format_version": 1,
-  "overlay_file_tree_sha256": "df54a7182a9edad617e68c40057747aa8f3d92917072955994f04666bc0e5cbe",
-  "repo_head": "77cfa9a7ef7e2bbd7d82bb7a586dfe511b414c9c",
+  "overlay_file_tree_sha256": "9e57a819fa5c30d3bceea3fac4e68ea85b2a9790e4afaec63686d624e0dbcfcd",
+  "repo_head": "912d7444daeb6cb462e4ea5c0f361d7c6df8d0ea",
   "scan_roots": [
     "/opt/src",
     "/opt/pi-signer-py"
   ],
-  "source_snapshot_tree_sha256": "237124ccae0882e8aefc52e4f8d9e2af94173d27a499526d9ece658a479fb116",
+  "source_snapshot_tree_sha256": "de336f014826dd219974428fdfd9865b7f640e95abc19c32ce212ff74e7e4183",
   "verified_file_count": 313
 }

@@ -1,3 +1,4 @@
+import base64
 from gettext import gettext as _
 
 from binascii import hexlify
@@ -18,7 +19,7 @@ from seedsigner.gui.screens.screen import (
     QRDisplayScreen,
     LargeIconStatusScreen,
 )
-from seedsigner.views.view import BackStackView, MainMenuView, NotYetImplementedView, View, Destination
+from seedsigner.views.view import BackStackView, MainMenuView, View, Destination
 from seedsigner.hardware.microsd import MicroSD
 
 logger = logging.getLogger(__name__)
@@ -659,23 +660,52 @@ class PSBTChangeDetailsView(View):
         fingerprints = change_data.get("fingerprint") or []
         derivation_paths = change_data.get("derivation_path") or []
 
+        candidate_fingerprints = []
         if self.controller.psbt_seed:
             seed_fingerprint = self.controller.psbt_seed.get_fingerprint(
                 self.settings.get_value(SettingsConstants.SETTING__NETWORK)
             )
+            if seed_fingerprint:
+                candidate_fingerprints.append(seed_fingerprint)
         else:
             master_fp = getattr(psbt_parser, "master_fingerprint", None)
-            seed_fingerprint = hexlify(master_fp).decode() if master_fp else None
+            if master_fp:
+                candidate_fingerprints.append(hexlify(master_fp).decode())
 
-        if seed_fingerprint:
-            if seed_fingerprint not in fingerprints:
-                # TODO: Something is wrong with this psbt(?). Reroute to warning?
-                return Destination(NotYetImplementedView)
-            index = fingerprints.index(seed_fingerprint)
-        else:
-            index = 0 if fingerprints else None
-            if index is not None:
+            # External signer flows can surface either the card's master fingerprint
+            # or the account/root fingerprint in output derivation metadata.
+            root = getattr(psbt_parser, "root", None)
+            if root:
+                try:
+                    candidate_fingerprints.append(hexlify(root.child(0).fingerprint).decode())
+                except Exception:
+                    pass
+                try:
+                    candidate_fingerprints.append(hexlify(root.fingerprint).decode())
+                except Exception:
+                    pass
+
+        candidate_fingerprints = [fp for i, fp in enumerate(candidate_fingerprints) if fp and fp not in candidate_fingerprints[:i]]
+
+        seed_fingerprint = None
+        index = None
+        for candidate in candidate_fingerprints:
+            if candidate in fingerprints:
+                seed_fingerprint = candidate
+                index = fingerprints.index(candidate)
+                break
+
+        if index is None:
+            if fingerprints:
+                index = 0
                 seed_fingerprint = fingerprints[index]
+                logger.warning(
+                    "PSBT change fingerprint mismatch; falling back to first output derivation fingerprint. candidates=%s psbt=%s",
+                    candidate_fingerprints,
+                    fingerprints,
+                )
+            else:
+                seed_fingerprint = candidate_fingerprints[0] if candidate_fingerprints else None
 
         derivation_path = ""
         if index is not None and index < len(derivation_paths):
@@ -699,6 +729,12 @@ class PSBTChangeDetailsView(View):
         #     title += f" (#{self.change_address_num + 1})"
 
         is_change_addr_verified = False
+        allow_unverified_change_display = bool(
+            getattr(psbt_parser, "allow_unverified_single_sig_change", False)
+            and not psbt_parser.is_multisig
+            and self.controller.psbt_seed is None
+            and getattr(psbt_parser, "root", None) is None
+        )
         if psbt_parser.is_multisig:
             print("isMultisig")
             # if the known-good multisig descriptor is already onboard:
@@ -736,68 +772,75 @@ class PSBTChangeDetailsView(View):
         else:
             # Single sig
             print("isSinglesig")
-            try:
-                from embit import script
-                from embit.networks import NETWORKS
+            if allow_unverified_change_display:
+                button_data = [self.NEXT]
+            else:
+                try:
+                    from embit import script
+                    from embit.networks import NETWORKS
 
-                if is_change_derivation_path:
-                    loading_screen_text = _("Verifying Change...")
-                else:
-                    loading_screen_text = _("Verifying Self-Transfer...")
-                from seedsigner.gui.screens.screen import LoadingScreenThread
-                loading_screen = LoadingScreenThread(text=loading_screen_text)
-                loading_screen.start()
+                    if is_change_derivation_path:
+                        loading_screen_text = _("Verifying Change...")
+                    else:
+                        loading_screen_text = _("Verifying Self-Transfer...")
+                    from seedsigner.gui.screens.screen import LoadingScreenThread
+                    loading_screen = LoadingScreenThread(text=loading_screen_text)
+                    loading_screen.start()
 
-                # convert change address to script pubkey to get script type
-                pubkey = script.address_to_scriptpubkey(change_data["address"])
-                script_type = pubkey.script_type()
-                
-                # extract derivation path to get wallet and change derivation
-                change_path = bip32.path_to_str(path_ints[-2:])[2:] if len(path_ints) >= 2 else ""
-                wallet_path_list = path_ints[:-2]
-                wallet_path = bip32.path_to_str(wallet_path_list)
-                
-                if self.controller.psbt_seed:
-                    xpub = self.controller.psbt_seed.get_xpub(
-                        wallet_path=wallet_path,
-                        network=self.settings.get_value(SettingsConstants.SETTING__NETWORK)
-                    )
-                    xpub_key = xpub.derive(change_path).key
-                else:
-                    rel_wallet_path_list = wallet_path_list[len(psbt_parser.root_path):]
-                    rel_wallet_path = (
-                        bip32.path_to_str(rel_wallet_path_list)[2:]
-                        if rel_wallet_path_list
-                        else ""
-                    )
-                    xpub = (
-                        psbt_parser.root.derive(rel_wallet_path)
-                        if rel_wallet_path
-                        else psbt_parser.root
-                    )
-                    xpub_key = xpub.derive(change_path).key
+                    # convert change address to script pubkey to get script type
+                    pubkey = script.address_to_scriptpubkey(change_data["address"])
+                    script_type = pubkey.script_type()
 
-                network = self.settings.get_value(SettingsConstants.SETTING__NETWORK)
-                scriptcall = getattr(script, script_type)
-                if script_type == "p2sh":
-                    # single sig only so p2sh is always p2sh-p2wpkh
-                    calc_address = script.p2sh(script.p2wpkh(xpub_key)).address(
-                        network=NETWORKS[SettingsConstants.map_network_to_embit(network)]
-                    )
-                else:
-                    # single sig so this handles p2wpkh and p2wpkh (and p2tr in the future)
-                    calc_address = scriptcall(xpub_key).address(
-                        network=NETWORKS[SettingsConstants.map_network_to_embit(network)]
-                    )
+                    # extract derivation path to get wallet and change derivation
+                    change_path = bip32.path_to_str(path_ints[-2:])[2:] if len(path_ints) >= 2 else ""
+                    wallet_path_list = path_ints[:-2]
+                    wallet_path = bip32.path_to_str(wallet_path_list)
 
-                if change_data["address"] == calc_address:
-                    is_change_addr_verified = True
-                    button_data = [self.NEXT]
+                    if self.controller.psbt_seed:
+                        xpub = self.controller.psbt_seed.get_xpub(
+                            wallet_path=wallet_path,
+                            network=self.settings.get_value(SettingsConstants.SETTING__NETWORK)
+                        )
+                        xpub_key = xpub.derive(change_path).key
+                    else:
+                        rel_wallet_path_list = wallet_path_list[len(psbt_parser.root_path):]
+                        rel_wallet_path = (
+                            bip32.path_to_str(rel_wallet_path_list)[2:]
+                            if rel_wallet_path_list
+                            else ""
+                        )
+                        xpub = (
+                            psbt_parser.root.derive(rel_wallet_path)
+                            if rel_wallet_path
+                            else psbt_parser.root
+                        )
+                        xpub_key = xpub.derive(change_path).key
 
-            finally:
-                loading_screen.stop()
+                    network = self.settings.get_value(SettingsConstants.SETTING__NETWORK)
+                    scriptcall = getattr(script, script_type)
+                    if script_type == "p2sh":
+                        # single sig only so p2sh is always p2sh-p2wpkh
+                        calc_address = script.p2sh(script.p2wpkh(xpub_key)).address(
+                            network=NETWORKS[SettingsConstants.map_network_to_embit(network)]
+                        )
+                    else:
+                        # single sig so this handles p2wpkh and p2wpkh (and p2tr in the future)
+                        calc_address = scriptcall(xpub_key).address(
+                            network=NETWORKS[SettingsConstants.map_network_to_embit(network)]
+                        )
 
-        if is_change_addr_verified == False and (not psbt_parser.is_multisig or self.controller.multisig_wallet_descriptor is not None):
+                    if change_data["address"] == calc_address:
+                        is_change_addr_verified = True
+                        button_data = [self.NEXT]
+
+                finally:
+                    loading_screen.stop()
+
+        if (
+            is_change_addr_verified == False
+            and not allow_unverified_change_display
+            and (not psbt_parser.is_multisig or self.controller.multisig_wallet_descriptor is not None)
+        ):
             return Destination(PSBTAddressVerificationFailedView, view_args=dict(is_change=is_change_derivation_path, is_multisig=psbt_parser.is_multisig), clear_history=True)
 
         selected_menu_num = self.run_screen(
@@ -923,6 +966,25 @@ class PSBTFinalizeView(View):
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(BackStackView)
+
+        if getattr(self.controller, "psbt_external_signer_flow", False):
+            from seedsigner.views.tp_views import ToolsTpSignerPinEntryView
+
+            try:
+                unsigned_psbt_base64 = base64.b64encode(psbt.serialize()).decode("ascii")
+            except Exception as exc:
+                logger.exception("Failed to serialize PSBT for external signer flow", exc_info=exc)
+                return Destination(PSBTFinalizeView)
+
+            return Destination(
+                ToolsTpSignerPinEntryView,
+                view_args=dict(
+                    psbt_base64=unsigned_psbt_base64,
+                    psbt_input_qr_type=getattr(self.controller, "psbt_input_qr_type", None),
+                    response_mode=getattr(self.controller, "psbt_response_mode", None),
+                ),
+                skip_current_view=True,
+            )
 
         sig_cnt = PSBTParser.sig_count(psbt)
 

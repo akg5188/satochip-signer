@@ -31,6 +31,7 @@ class PSBTParser():
         root_path: list[int] | None = None,
         master_fingerprint: bytes | None = None,
         network: str = SettingsConstants.MAINNET,
+        allow_unverified_single_sig_change: bool = False,
     ):
         self.psbt: PSBT = p
         self.seed = seed
@@ -39,6 +40,7 @@ class PSBTParser():
         self.root_path = root_path or []
         self.root_path_str = bip32.path_to_str(self.root_path) if self.root_path else "m"
         self.master_fingerprint = master_fingerprint
+        self.allow_unverified_single_sig_change = allow_unverified_single_sig_change
 
         self.policy = None
         self.spend_amount = 0
@@ -101,7 +103,12 @@ class PSBTParser():
         if rt == False:
             return False
 
-        if self.root is None and self.seed is None and not self.is_multisig:
+        if (
+            self.root is None
+            and self.seed is None
+            and not self.is_multisig
+            and not self.allow_unverified_single_sig_change
+        ):
             raise RuntimeError("No seed or root key available")
 
         rt = self._parse_outputs()
@@ -136,6 +143,7 @@ class PSBTParser():
         self.fee_amount = 0
         self.destination_addresses = []
         self.destination_amounts = []
+        input_fingerprints = set(self.get_input_fingerprints(self.psbt))
         for i, out in enumerate(self.psbt.outputs):
             out_policy = PSBTParser._get_policy(out, self.psbt.tx.vout[i].script_pubkey, self.psbt.xpubs)
             is_change = False
@@ -189,6 +197,13 @@ class PSBTParser():
 
                     if sc.data == self.psbt.tx.vout[i].script_pubkey.data:
                         is_change = True
+                    elif self.allow_unverified_single_sig_change:
+                        output_fingerprints = {
+                            hexlify(derivation_path.fingerprint).decode()
+                            for derivation_path in out.bip32_derivations.values()
+                        }
+                        if output_fingerprints and input_fingerprints.intersection(output_fingerprints):
+                            is_change = True
 
                 elif "p2tr" in self.policy["type"]:
                     my_pubkey = None

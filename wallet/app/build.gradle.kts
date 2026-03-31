@@ -29,6 +29,7 @@ val keystoreProperties = Properties().apply {
 
 val hasReleaseKeystore = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
     .all { !keystoreProperties.getProperty(it).isNullOrBlank() }
+val lightweightReleaseRequested = providers.gradleProperty("wallet.lightRelease").orNull == "1"
 val releaseTaskRequested = gradle.startParameter.taskNames.any { taskName ->
     taskName.contains("Release", ignoreCase = true)
 }
@@ -90,8 +91,8 @@ android {
         applicationId = "io.arbitrum.wallet"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
         resValue("string", "expected_signer_sha256", "")
 
         ndk {
@@ -102,12 +103,14 @@ android {
     buildTypes {
         debug {
             // Keep debug fast for local iteration.
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
             isMinifyEnabled = false
             isShrinkResources = false
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = !lightweightReleaseRequested
+            isShrinkResources = !lightweightReleaseRequested
             resValue("string", "expected_signer_sha256", releaseSignerSha256)
             if (hasReleaseKeystore) {
                 signingConfig = signingConfigs.getByName("release")
@@ -134,6 +137,7 @@ android {
     }
     lint {
         disable += setOf("ObsoleteSdkInt")
+        checkReleaseBuilds = !lightweightReleaseRequested
     }
 
     packaging {
