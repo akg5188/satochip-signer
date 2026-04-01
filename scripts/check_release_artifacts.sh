@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+MANIFEST_PATH="$ROOT_DIR/release-manifest.json"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -110,13 +111,36 @@ warn_if_optional_artifact_stale() {
   local label="$1"
   local info_file="$2"
   local expected_build_script="${3:-}"
+  local manifest_profile="${4:-}"
   local repo_head
   local current_head
   local build_script
+  local manifest_source_tag=""
+  local manifest_source_commit=""
 
   repo_head="$(awk -F= '/^repo_head=/{print $2}' "$info_file")"
   current_head="$(git -C "$ROOT_DIR" rev-parse HEAD)"
-  if [[ -n "$repo_head" && "$repo_head" != "$current_head" ]]; then
+  if [[ -n "$manifest_profile" && -f "$MANIFEST_PATH" ]]; then
+    manifest_source_tag="$(
+      python3 - "$MANIFEST_PATH" "$manifest_profile" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+entry = data["profiles"].get(sys.argv[2], {})
+print(entry.get("source_tag", ""))
+PY
+    )"
+    if [[ -n "$manifest_source_tag" ]]; then
+      manifest_source_commit="$(git -C "$ROOT_DIR" rev-parse "${manifest_source_tag}^{commit}")"
+    fi
+  fi
+
+  if [[ -n "$manifest_source_commit" && "$repo_head" == "$manifest_source_commit" ]]; then
+    :
+  elif [[ -n "$repo_head" && "$repo_head" != "$current_head" ]]; then
     warn "$label is not rebuilt from current HEAD: repo_head=$repo_head current_head=$current_head"
   fi
 
@@ -134,6 +158,7 @@ check_optional_artifact() {
   local sha_file="$3"
   local info_file="$4"
   local expected_build_script="${5:-}"
+  local manifest_profile="${6:-}"
   local present_count=0
 
   [[ -f "$artifact" ]] && present_count=$((present_count + 1))
@@ -149,19 +174,14 @@ check_optional_artifact() {
   fi
 
   check_artifact "$artifact" "$sha_file" "$info_file"
-  warn_if_optional_artifact_stale "$label" "$info_file" "$expected_build_script"
+  warn_if_optional_artifact_stale "$label" "$info_file" "$expected_build_script" "$manifest_profile"
 }
 
 require_file "$ROOT_DIR/card-applet/prebuilt/SatoChip-3.0.4.cap"
 require_file "$ROOT_DIR/card-applet/prebuilt/SHA256SUMS.txt"
 ( cd "$ROOT_DIR/card-applet/prebuilt" && sha256sum -c SHA256SUMS.txt >/dev/null )
 
-check_pi_firmware_artifact \
-  "$ROOT_DIR/dist/system-update-latest.img.xz" \
-  "$ROOT_DIR/dist/system-update-latest.img.xz.sha256" \
-  "$ROOT_DIR/dist/system-update-latest.build-info.txt" \
-  1 \
-  1
+bash "$ROOT_DIR/scripts/check_named_release.sh" firmware-clean >/dev/null
 
 if [[ -f "$ROOT_DIR/dist/system-update-offline-signer-review-pinless.img.xz" || \
       -f "$ROOT_DIR/dist/system-update-offline-signer-review-pinless.img.xz.sha256" || \
@@ -184,6 +204,13 @@ check_optional_artifact \
   "$ROOT_DIR/dist/satochip-wallet-release.apk" \
   "$ROOT_DIR/dist/satochip-wallet-release.apk.sha256" \
   "$ROOT_DIR/dist/satochip-wallet-release.build-info.txt" \
-  "scripts/build_wallet_release.sh"
+  "scripts/build_wallet_release.sh" \
+  "wallet-release"
+
+if [[ -f "$ROOT_DIR/dist/satochip-wallet-release.apk" && \
+      -f "$ROOT_DIR/dist/satochip-wallet-release.apk.sha256" && \
+      -f "$ROOT_DIR/dist/satochip-wallet-release.build-info.txt" ]]; then
+  bash "$ROOT_DIR/scripts/check_named_release.sh" wallet-release >/dev/null
+fi
 
 echo "Release artifact checks passed."

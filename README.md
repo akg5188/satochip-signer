@@ -23,6 +23,7 @@
 
 - [一页式总导航](docs/一页式总导航.zh-CN.md)
 - [快速开始](docs/快速开始.zh-CN.md)
+- [固定正式发布重建入口](docs/固定正式发布重建入口.zh-CN.md)
 - [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
 - [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md)
 - [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md)
@@ -113,6 +114,14 @@
 
 ## 最常用构建命令
 
+以后如果是“重建正式发布版”，不要自己猜 tag，直接用统一入口：
+
+```bash
+bash scripts/rebuild_official_release.sh --list
+bash scripts/rebuild_official_release.sh firmware-clean
+bash scripts/rebuild_official_release.sh wallet-release
+```
+
 ### 树莓派固件
 
 ```bash
@@ -147,6 +156,7 @@ bash scripts/build_wallet_release.sh
 - [两个安卓 APK 说明](docs/两个安卓APK说明.zh-CN.md)
 - [仓库结构说明](docs/仓库结构说明.zh-CN.md)
 - [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
+- [固定正式发布重建入口](docs/固定正式发布重建入口.zh-CN.md)
 - [固件下载与写入指南](docs/固件下载与写入指南.zh-CN.md)
 - [安卓构建环境准备](docs/安卓构建环境准备.zh-CN.md)
 - [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md)

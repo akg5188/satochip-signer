@@ -171,7 +171,12 @@ printf '%s  %s\n' "$apk_sha" "$(basename "$OUT_APK")" > "$OUT_SUM"
 
 repo_head="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 version_name="$(awk -F'"' '/versionName = / {print $2; exit}' "$ROOT_DIR/app/build.gradle.kts")"
-build_time_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+build_epoch="$(git -C "$ROOT_DIR" show -s --format=%ct "$repo_head" 2>/dev/null || echo "")"
+if [[ -n "$build_epoch" ]]; then
+  build_time_utc="$(date -u -d "@$build_epoch" '+%Y-%m-%dT%H:%M:%SZ')"
+else
+  build_time_utc=""
+fi
 
 cat > "$OUT_INFO" <<EOF
 module=app

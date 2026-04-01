@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "firmware-clean": {
+      "title": "当前 clean 正式树莓派固件",
+      "release_tag": "offline-signer-firmware-20260401-clean",
+      "source_tag": "offline-signer-clean-source-20260401",
+      "artifact_type": "firmware_xz",
+      "artifact_path": "dist/system-update-latest.img.xz",
+      "sha_path": "dist/system-update-latest.img.xz.sha256",
+      "build_info_path": "dist/system-update-latest.build-info.txt",
+      "build_command": "bash scripts/build_pi_firmware_from_snapshot.sh",
+      "verify_command": "bash scripts/check_named_release.sh firmware-clean",
+      "defaults": {
+        "TP_BUILD_CLEAN_MODE": "clean",
+        "BR2_JLEVEL": "1",
+        "TP_BUILD_CPUSET": "0",
+        "TP_BUILD_NICE": "19",
+        "TP_BUILD_IONICE_CLASS": "3",
+        "XZ_THREADS": "1"
+      },
+      "expected": {
+        "repo_head": "fb5a376b34918b269abaa97933931b3e10017a2e",
+        "compressed_image_sha256": "4939345a9134e0aba6a27b6e7b80daed5c16dec207a438eacd346fe2505ac8e1",
+        "repo_dirty": "0",
+        "build_clean_mode": "clean"
+      }
+    },
+    "wallet-release": {
+      "title": "当前正式安卓观察钱包",
+      "release_tag": "wallet-android-20260401-0.1.2",
+      "source_tag": "wallet-android-20260401-0.1.2-source",
+      "artifact_type": "apk",
+      "artifact_path": "dist/satochip-wallet-release.apk",
+      "sha_path": "dist/satochip-wallet-release.apk.sha256",
+      "build_info_path": "dist/satochip-wallet-release.build-info.txt",
+      "build_command": "bash scripts/build_wallet_release.sh",
+      "verify_command": "bash scripts/check_named_release.sh wallet-release",
+      "defaults": {
+        "WALLET_GRADLE_JVMARGS": "-Xmx2g -XX:MaxMetaspaceSize=512m",
+        "WALLET_GRADLE_WORKERS_MAX": "1"
+      },
+      "expected": {
+        "repo_head": "f1aa634a223a6b8f4ab0a302628cc02a9552511a",
+        "artifact_sha256": "b8975eef618ccce2c720a7432aab5c83ff765119b5806db58ff67f037df1a524",
+        "version_name": "0.1.2"
+      }
+    }
+  }
+}

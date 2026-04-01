@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_IMG="$ROOT_DIR/dist/system-update-latest.img.xz"
 DIST_SUM="$ROOT_DIR/dist/system-update-latest.img.xz.sha256"
 DIST_INFO="$ROOT_DIR/dist/system-update-latest.build-info.txt"
+MANIFEST_PATH="$ROOT_DIR/release-manifest.json"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -19,6 +20,24 @@ require_file() {
 require_file "$DIST_IMG"
 require_file "$DIST_SUM"
 require_file "$DIST_INFO"
+require_file "$MANIFEST_PATH"
+
+python3 -m json.tool "$MANIFEST_PATH" >/dev/null
+while IFS= read -r tag; do
+  [[ -n "$tag" ]] || continue
+  git -C "$ROOT_DIR" rev-parse "${tag}^{commit}" >/dev/null 2>&1 || fail "Missing manifest source tag: $tag"
+done < <(
+  python3 - "$MANIFEST_PATH" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+for entry in data["profiles"].values():
+    print(entry["source_tag"])
+PY
+)
 
 while IFS= read -r script_path; do
   bash -n "$ROOT_DIR/$script_path"
@@ -70,5 +89,9 @@ fi
 
 grep -q 'build_pi_firmware_from_snapshot.sh' "$ROOT_DIR/docs/一页式总导航.zh-CN.md" || \
   fail "Missing canonical Pi firmware build command in one-page guide"
+grep -q 'rebuild_official_release.sh' "$ROOT_DIR/README.md" || \
+  fail "Missing canonical rebuild_official_release.sh entry in README"
+grep -q 'rebuild_official_release.sh' "$ROOT_DIR/docs/长期维护总入口.zh-CN.md" || \
+  fail "Missing canonical rebuild_official_release.sh entry in maintenance guide"
 
 echo "Repository consistency checks passed."
