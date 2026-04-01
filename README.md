@@ -37,7 +37,7 @@
 | 给 `TokenPocket` 做手机端扫码与智能卡签名 | `app/` | `bash scripts/build_tp_relay_apk.sh` |
 | 用自己的安卓观察钱包发起 EVM / BTC 冷签 | `wallet/` | `bash scripts/build_wallet_release.sh` |
 | 给 `BlueWallet` 做 `BTC PSBT` 冷签 | 树莓派离线签名器 | [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md) |
-| 刷树莓派固件 | `dist/` | `system-update-offline-signer-review-pinless.img.xz` 或 `system-update-latest.img.xz` |
+| 刷树莓派固件 | `dist/` | `system-update-latest.img.xz` |
 | 写 `J3R180` 卡固件 | `card-applet/prebuilt/` | `SatoChip-3.0.4.cap` |
 | 在 `Tails` 里初始化卡、设 PIN、导助记词 | `backups/satochip-utils/` | 对应中文教程 |
 
@@ -45,17 +45,18 @@
 
 仓库里现在要分清两张镜像：
 
-- `dist/system-update-offline-signer-review-pinless.img.xz`
-  这是当前“实机验证通过、功能最新”的备份版。
+- `dist/system-update-latest.img.xz`
+  这是当前 clean 正式版，也是现在优先推荐刷的包。
   已确认支持：
   - 自有安卓钱包扫码签名
   - `BlueWallet` 的 `BTC PSBT`
   - `TokenPocket` 中转场景
   - 助记词/BIP39 序号查看、钢板数字流程、智能卡工具、固件完整性自检
+  - 交易详情核对页 + 单次 PIN 流程
 
-- `dist/system-update-latest.img.xz`
-  这是“历史 clean 稳定备份”。
-  它更适合拿来做构建与校验基线，不要和当前推荐功能包当成同一张包。
+- `dist/system-update-offline-signer-review-pinless.img.xz`
+  这是之前保留下来的历史功能备份版。
+  还可以留作回滚排障，但不再作为当前首选下载入口。
 
 怎么对应源码，看这里：
 
@@ -142,7 +143,7 @@ bash scripts/build_wallet_release.sh
 - `app/` 不是独立钱包，它是 `TokenPocket` 配套的智能卡签名/中转 App。
 - 树莓派首页已经不是 `TP only mode`，也没有“官方模式”入口了。
 - `system-update-latest.img.xz` 和 `system-update-offline-signer-review-pinless.img.xz` 不是同一版本。
-- 当前推荐功能版的精确源码不要拿 `main` 猜，必须看 [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)。
+- 当前推荐 clean 包的精确源码不要拿 `main` 猜，必须看 [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)。
 
 ## 文档入口
 
