@@ -1,5 +1,30 @@
 # satochip-signer 仓库说明
 
+## 当前正式入口
+
+当前该下载的 release：
+
+- 树莓派 clean 正式固件：
+  [offline-signer-firmware-20260401-clean](https://github.com/akg5188/satochip-signer/releases/tag/offline-signer-firmware-20260401-clean)
+- 安卓正式钱包：
+  [wallet-android-20260401-0.1.2](https://github.com/akg5188/satochip-signer/releases/tag/wallet-android-20260401-0.1.2)
+- 安卓智能卡 App：
+  [smartcard-app-android-20260330](https://github.com/akg5188/satochip-signer/releases/tag/smartcard-app-android-20260330)
+
+以后如果让 AI 重建正式发布版，先跑这几条，不要自己猜 tag：
+
+```bash
+bash scripts/rebuild_official_release.sh --list
+bash scripts/rebuild_official_release.sh firmware-clean
+bash scripts/rebuild_official_release.sh wallet-release
+```
+
+对应说明：
+
+- [固定正式发布重建入口](docs/固定正式发布重建入口.zh-CN.md)
+- [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)
+- [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
+
 这个项目现在更适合叫 `satochip-signer`。
 
 仓库旧名是：
@@ -29,7 +54,6 @@
 - [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md)
 - [长期维护总入口](docs/长期维护总入口.zh-CN.md)
 - [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)
-- [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
 
 ## 现在该用什么
 
