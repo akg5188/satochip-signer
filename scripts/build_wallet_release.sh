@@ -18,7 +18,12 @@ mkdir -p "$OUT_DIR"
 repo_head="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 apk_sha="$(awk 'NR==1 {print $1}' "$OUT_SUM")"
 version_name="$(awk -F'"' '/versionName = / {print $2; exit}' "$ROOT_DIR/wallet/app/build.gradle.kts")"
-build_time_utc="$(git -C "$ROOT_DIR" show -s --format=%cI "$repo_head" 2>/dev/null || echo "")"
+build_epoch="$(git -C "$ROOT_DIR" show -s --format=%ct "$repo_head" 2>/dev/null || echo "")"
+if [[ -n "$build_epoch" ]]; then
+  build_time_utc="$(date -u -d "@$build_epoch" '+%Y-%m-%dT%H:%M:%SZ')"
+else
+  build_time_utc=""
+fi
 
 cat > "$OUT_INFO" <<EOF
 module=wallet

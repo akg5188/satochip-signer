@@ -64,7 +64,12 @@ fi
 raw_sha="$(sha256sum "$RAW_IMG" | awk '{print $1}')"
 snapshot_time="$(cat "$SNAPSHOT_TIME_FILE")"
 repo_head="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-build_time_utc="$(git -C "$ROOT_DIR" show -s --format=%cI "$repo_head" 2>/dev/null || echo "")"
+build_epoch="$(git -C "$ROOT_DIR" show -s --format=%ct "$repo_head" 2>/dev/null || echo "")"
+if [[ -n "$build_epoch" ]]; then
+  build_time_utc="$(date -u -d "@$build_epoch" '+%Y-%m-%dT%H:%M:%SZ')"
+else
+  build_time_utc=""
+fi
 repo_status="$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || true)"
 repo_dirty=0
 if [[ -n "$repo_status" ]]; then

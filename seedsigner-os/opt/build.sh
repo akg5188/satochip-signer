@@ -140,7 +140,7 @@ prepare_app_overlay() {
 }
 
 write_runtime_integrity_manifest() {
-  local repo_root script_path manifest_target build_commit_time repo_head build_time_utc
+  local repo_root script_path manifest_target build_commit_time repo_head build_time_utc repo_commit_epoch
 
   repo_root="$(cd "${cur_dir}/../.." && pwd -L)"
   script_path="${repo_root}/scripts/write_runtime_firmware_manifest.py"
@@ -157,7 +157,12 @@ write_runtime_integrity_manifest() {
     build_commit_time="$(cat "${rootfs_overlay}/opt/src/.build_commit_time")"
   fi
   repo_head="$(git -C "${repo_root}" rev-parse HEAD 2>/dev/null || echo unknown)"
-  build_time_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  repo_commit_epoch="$(git -C "${repo_root}" show -s --format=%ct "${repo_head}" 2>/dev/null || true)"
+  if [ -n "${repo_commit_epoch}" ]; then
+    build_time_utc="$(date -u -d "@${repo_commit_epoch}" '+%Y-%m-%dT%H:%M:%SZ')"
+  else
+    build_time_utc=""
+  fi
 
   python3 "${script_path}" \
     --repo-root "${repo_root}" \

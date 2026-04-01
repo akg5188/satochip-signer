@@ -163,13 +163,13 @@ check_pi_firmware_artifact \
   1 \
   1
 
-if [[ -f "$ROOT_DIR/dist/system-update-offline-signer-repair7.img.xz" || \
-      -f "$ROOT_DIR/dist/system-update-offline-signer-repair7.img.xz.sha256" || \
-      -f "$ROOT_DIR/dist/system-update-offline-signer-repair7.build-info.txt" ]]; then
+if [[ -f "$ROOT_DIR/dist/system-update-offline-signer-review-pinless.img.xz" || \
+      -f "$ROOT_DIR/dist/system-update-offline-signer-review-pinless.img.xz.sha256" || \
+      -f "$ROOT_DIR/dist/system-update-offline-signer-review-pinless.build-info.txt" ]]; then
   check_pi_firmware_backup_artifact \
-    "$ROOT_DIR/dist/system-update-offline-signer-repair7.img.xz" \
-    "$ROOT_DIR/dist/system-update-offline-signer-repair7.img.xz.sha256" \
-    "$ROOT_DIR/dist/system-update-offline-signer-repair7.build-info.txt"
+    "$ROOT_DIR/dist/system-update-offline-signer-review-pinless.img.xz" \
+    "$ROOT_DIR/dist/system-update-offline-signer-review-pinless.img.xz.sha256" \
+    "$ROOT_DIR/dist/system-update-offline-signer-review-pinless.build-info.txt"
 fi
 
 check_optional_artifact \
