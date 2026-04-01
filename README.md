@@ -43,7 +43,7 @@
 
 ## 两张最重要的树莓派镜像
 
-仓库里现在要分清两张镜像：
+仓库和 GitHub 现在只保留一张当前正式固件：
 
 - `dist/system-update-latest.img.xz`
   这是当前 clean 正式版，也是现在优先推荐刷的包。
@@ -53,10 +53,6 @@
   - `TokenPocket` 中转场景
   - 助记词/BIP39 序号查看、钢板数字流程、智能卡工具、固件完整性自检
   - 交易详情核对页 + 单次 PIN 流程
-
-- `dist/system-update-offline-signer-review-pinless.img.xz`
-  这是之前保留下来的历史功能备份版。
-  还可以留作回滚排障，但不再作为当前首选下载入口。
 
 怎么对应源码，看这里：
 
@@ -142,7 +138,7 @@ bash scripts/build_wallet_release.sh
 - `wallet/` 现在是高安全观察钱包 + `WalletConnect` 协调器。
 - `app/` 不是独立钱包，它是 `TokenPocket` 配套的智能卡签名/中转 App。
 - 树莓派首页已经不是 `TP only mode`，也没有“官方模式”入口了。
-- `system-update-latest.img.xz` 和 `system-update-offline-signer-review-pinless.img.xz` 不是同一版本。
+- 仓库和 GitHub Releases 里已经不再保留旧 firmware 包，避免拿错。
 - 当前推荐 clean 包的精确源码不要拿 `main` 猜，必须看 [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)。
 
 ## 文档入口
