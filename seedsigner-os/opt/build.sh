@@ -229,7 +229,7 @@ build_image() {
   if [ "${3}" = "skip-repo" ]; then
     rm -rf "${generated_rootfs_overlay}"
     mkdir -p "${generated_rootfs_overlay}"
-    cp -a "${source_rootfs_overlay}/." "${generated_rootfs_overlay}/"
+    rsync -a --delete "${source_rootfs_overlay}/" "${generated_rootfs_overlay}/"
     rootfs_overlay="${generated_rootfs_overlay}"
   fi
   
@@ -273,7 +273,7 @@ EOF
   # Query Buildroot for the actual host/sysroot directories because recent
   # Buildroot layouts do not always expose the legacy output/staging path.
   meson_vars_output=$(
-    timeout 20s env PATH="/usr/lib/ccache:${PATH}" make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ \
+    env PATH="/usr/lib/ccache:${PATH}" make -s BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ \
       printvars VARS='HOST_DIR STAGING_DIR' QUOTED_VARS=YES 2>/dev/null || true
   )
   meson_host_dir=$(printf '%s\n' "${meson_vars_output}" | sed -n "s/^HOST_DIR='\(.*\)'$/\1/p" | head -n1)
@@ -281,7 +281,7 @@ EOF
   if [ -z "${meson_host_dir}" ]; then
     meson_host_dir="${build_dir}/host"
   fi
-  if [ -z "${meson_staging_dir}" ] || [ ! -d "${meson_staging_dir}" ]; then
+  if [ -z "${meson_staging_dir}" ]; then
     meson_staging_dir=$(
       find "${build_dir}/host" -type d -path '*/sysroot/usr/lib/pkgconfig' 2>/dev/null \
         | sed 's#/usr/lib/pkgconfig$##' \
