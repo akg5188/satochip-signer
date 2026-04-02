@@ -72,6 +72,7 @@ class ToolsNetworkInfoScreen(ButtonListScreen):
 class ToolsFormattedTextScreen(ButtonListScreen):
     text: str = ""
     text_font_name: str = GUIConstants.FIXED_WIDTH_FONT_NAME
+    text_font_size: int = None
     text_is_centered: bool = False
     allow_text_overflow: bool = True
 
@@ -88,6 +89,7 @@ class ToolsFormattedTextScreen(ButtonListScreen):
             is_text_centered=self.text_is_centered,
             allow_text_overflow=self.allow_text_overflow,
             font_name=self.text_font_name,
+            font_size=self.text_font_size,
             screen_y=start_y,
             height=end_y - start_y,
         ))

@@ -39,6 +39,11 @@ gzip -dc "$WORK_DIR/syscfg.dat" | (cd "$ROOTFS_DIR" && cpio -idmu --quiet)
 mkdir -p "$ROOTFS_DIR/opt/pi-signer-py"
 rsync -a --delete "$OVERLAY_DIR/opt/pi-signer-py/" "$ROOTFS_DIR/opt/pi-signer-py/"
 rsync -a --exclude '/opt/pi-signer-py/' "$OVERLAY_DIR"/ "$ROOTFS_DIR"/
+# Ensure host-side stale bytecode never shadows the source we are explicitly shipping.
+find "$ROOTFS_DIR/opt/src" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "$ROOTFS_DIR/opt/src" -type f -name '*.pyc' -delete
+find "$ROOTFS_DIR/opt/pi-signer-py" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "$ROOTFS_DIR/opt/pi-signer-py" -type f -name '*.pyc' -delete
 
 ( cd "$ROOTFS_DIR" && find . -print0 | LC_ALL=C sort -z | cpio --null -o -H newc --quiet | gzip -9 ) > "$WORK_DIR/syscfg.new"
 

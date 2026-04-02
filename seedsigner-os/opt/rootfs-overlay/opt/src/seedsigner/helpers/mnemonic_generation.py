@@ -95,23 +95,38 @@ def generate_mnemonic_from_bytes(entropy_bytes, wordlist_language_code: str = Se
 
 
 
+def normalize_dice_rolls_for_iancoleman(roll_data: str) -> str:
+    """
+        Normalize dice input to iancoleman.io/bip39 "Dice" mode semantics:
+        * keep only digits 0-6
+        * convert 6 -> 0 so the cleaned string becomes base-6 text
+    """
+    normalized = []
+    for ch in str(roll_data):
+        if ch in "012345":
+            normalized.append(ch)
+        elif ch == "6":
+            normalized.append("0")
+    return "".join(normalized)
+
+
 def _hash_dice_rolls(roll_data: str) -> bytes:
-    return hashlib.sha256(roll_data.encode()).digest()
+    normalized_rolls = normalize_dice_rolls_for_iancoleman(roll_data)
+    return hashlib.sha256(normalized_rolls.encode()).digest()
 
 
 def generate_mnemonic_from_dice(roll_data: str, wordlist_language_code: str = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH) -> list[str]:
     """
         Takes a string of dice rolls and returns a mnemonic of the appropriate length.
 
-        Uses the iancoleman.io/bip39 and bitcoiner.guide/seed "Base 10" or "Hex" mode approach:
-        * dice rolls are treated as string data.
+        Uses the iancoleman.io/bip39 "Dice" mode preprocessing:
+        * dice rolls are normalized to base-6 text by converting 6 -> 0.
         * hashed via SHA256.
-
-        Important note: This method is NOT compatible with iancoleman's "Dice" mode.
     """
-    entropy_bytes = _hash_dice_rolls(roll_data)
+    normalized_rolls = normalize_dice_rolls_for_iancoleman(roll_data)
+    entropy_bytes = _hash_dice_rolls(normalized_rolls)
 
-    word_length = ROLL_COUNT_TO_LENGTH.get(len(roll_data), 24)
+    word_length = ROLL_COUNT_TO_LENGTH.get(len(normalized_rolls), 24)
 
     entropy_bytes = entropy_bytes[:ENTROPY_BYTES_REQUIRED[word_length]]
 
@@ -121,9 +136,10 @@ def generate_mnemonic_from_dice(roll_data: str, wordlist_language_code: str = Se
 
 def generate_bytes_from_dice(roll_data: str, length_bytes: int | None = None) -> bytes:
     """Return entropy bytes from dice rolls without converting to mnemonic."""
-    entropy_bytes = _hash_dice_rolls(roll_data)
+    normalized_rolls = normalize_dice_rolls_for_iancoleman(roll_data)
+    entropy_bytes = _hash_dice_rolls(normalized_rolls)
     if length_bytes is None:
-        word_length = ROLL_COUNT_TO_LENGTH.get(len(roll_data), 24)
+        word_length = ROLL_COUNT_TO_LENGTH.get(len(normalized_rolls), 24)
         length_bytes = ENTROPY_BYTES_REQUIRED[word_length]
     return entropy_bytes[:length_bytes]
 

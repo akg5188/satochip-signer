@@ -1782,7 +1782,6 @@ class ToolsTpDeriveAddressPathView(View):
 
 class ToolsTpDerivedAddressResultView(View):
     SHOW_QR = ButtonOption("显示二维码")
-    RETRY = ButtonOption("重新输入")
     DONE = ButtonOption("完成")
 
     def __init__(
@@ -1811,19 +1810,6 @@ class ToolsTpDerivedAddressResultView(View):
             return _smartcard_tools_destination()
         return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
 
-    def _retry_destination(self) -> Destination:
-        if self.return_to == "smartcard":
-            return Destination(
-                ToolsTpSmartcardAddressPathView,
-                view_args=dict(derivation_path=self.derivation_path),
-                clear_history=True,
-            )
-        return Destination(
-            ToolsTpDeriveAddressPathView,
-            view_args=dict(seed_num=self.seed_num, derivation_path=self.derivation_path),
-            clear_history=True,
-        )
-
     def _text(self) -> str:
         text = (
             f"网络: {_network_label(self.network)}\n"
@@ -1835,80 +1821,78 @@ class ToolsTpDerivedAddressResultView(View):
             text += f"\n\n说明:\n{self.notes}"
         return text
 
-    def _pages(self) -> list[str]:
-        address_text = f"地址:\n{_chunk_text(self.address)}"
-        if self.notes:
-            address_text += f"\n\n说明:\n{self.notes}"
-        return [
-            (
-                f"网络: {_network_label(self.network)}\n"
-                f"类型: {_script_type_label(self.script_type)}\n\n"
-                f"路径:\n{_wrap_path_text(self.derivation_path)}"
+    def _page_specs(self) -> list[dict]:
+        pages = [
+            dict(
+                text=(
+                    f"网络: {_network_label(self.network)}\n"
+                    f"类型: {_script_type_label(self.script_type)}\n\n"
+                    f"路径:\n{_wrap_path_text(self.derivation_path)}"
+                ),
+                text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+                text_font_size=GUIConstants.get_body_font_size(),
             ),
-            address_text,
+            dict(
+                text=_chunk_text(self.address, width=20),
+                text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+                text_font_size=GUIConstants.get_body_font_size(),
+            ),
         ]
+        if self.notes:
+            pages.append(
+                dict(
+                    text=f"说明:\n{self.notes}",
+                    text_font_name=GUIConstants.get_body_font_name(),
+                    text_font_size=GUIConstants.BODY_FONT_MIN_SIZE,
+                )
+            )
+        return pages
 
     def _show_qr(self) -> None:
         encoder = GenericStaticQrEncoder(data=self.address)
         self.run_screen(QRDisplayScreen, qr_encoder=encoder)
 
-    def _address_page_menu(self) -> ButtonOption:
-        page_buttons = [self.SHOW_QR, self.RETRY, self.DONE]
+    def _page_title(self, page_index: int, total_pages: int) -> str:
+        if total_pages <= 1:
+            return "派生地址"
+        return f"派生地址 {page_index + 1}/{total_pages}"
+
+    def run(self):
+        pages = self._page_specs()
+        page_index = 0
+
         while True:
+            is_last_page = page_index == len(pages) - 1
+            next_button = ButtonOption("下一页")
+            button_data = [self.SHOW_QR, self.DONE] if is_last_page else [next_button, self.DONE]
             selected_menu_num = self.run_screen(
                 ToolsFormattedTextScreen,
-                title="派生地址",
-                text=self._pages()[1],
-                button_data=page_buttons,
+                title=self._page_title(page_index, len(pages)),
+                text=pages[page_index]["text"],
+                text_font_name=pages[page_index]["text_font_name"],
+                text_font_size=pages[page_index]["text_font_size"],
+                button_data=button_data,
             )
+
             if selected_menu_num == RET_CODE__BACK_BUTTON:
-                return self.DONE
-            selected = page_buttons[selected_menu_num]
+                if page_index > 0:
+                    page_index -= 1
+                    continue
+                return self._done_destination()
+
+            selected = button_data[selected_menu_num]
+            if not is_last_page and selected == next_button:
+                page_index += 1
+                continue
+
+            if not is_last_page:
+                return self._done_destination()
+
             if selected == self.SHOW_QR:
                 self._show_qr()
                 continue
-            return selected
 
-    def run(self):
-        pages = self._pages()
-        button_data = [ButtonOption("下一页"), self.DONE] if len(pages) > 1 else [self.SHOW_QR, self.RETRY, self.DONE]
-        selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
-            title="派生地址",
-            text=pages[0],
-            button_data=button_data,
-        )
-
-        if selected_menu_num == RET_CODE__BACK_BUTTON:
             return self._done_destination()
-
-        if len(pages) > 1 and button_data[selected_menu_num].button_label == "下一页":
-            selected = self._address_page_menu()
-            if selected == self.RETRY:
-                return self._retry_destination()
-            return self._done_destination()
-
-        if button_data[selected_menu_num] == self.SHOW_QR:
-            self._show_qr()
-            return Destination(
-                ToolsTpDerivedAddressResultView,
-                view_args=dict(
-                    seed_num=self.seed_num,
-                    derivation_path=self.derivation_path,
-                    address=self.address,
-                    network=self.network,
-                    script_type=self.script_type,
-                    address_family=self.address_family,
-                    notes=self.notes,
-                    return_to=self.return_to,
-                ),
-                clear_history=True,
-            )
-
-        if button_data[selected_menu_num] == self.DONE:
-            return self._done_destination()
-
-        return self._retry_destination()
 
 
 class ToolsTpSeedBtcXpubQrView(View):
