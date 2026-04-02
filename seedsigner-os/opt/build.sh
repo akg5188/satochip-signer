@@ -281,6 +281,16 @@ EOF
   if [ -z "${meson_host_dir}" ]; then
     meson_host_dir="${build_dir}/host"
   fi
+  if [ -z "${meson_staging_dir}" ] || [ ! -d "${meson_staging_dir}" ]; then
+    meson_staging_dir=$(
+      find "${build_dir}/host" -type d -path '*/sysroot/usr/lib/pkgconfig' 2>/dev/null \
+        | sed 's#/usr/lib/pkgconfig$##' \
+        | head -n1
+    )
+  fi
+  if [ -z "${meson_staging_dir}" ] && [ -L "${build_dir}/staging" ]; then
+    meson_staging_dir="$(readlink -f "${build_dir}/staging" 2>/dev/null || true)"
+  fi
   if [ -z "${meson_staging_dir}" ]; then
     meson_staging_dir="${build_dir}/staging"
   fi
@@ -313,8 +323,17 @@ real_host = os.environ["TP_REAL_HOST_DIR"]
 alias_host = os.environ["TP_ALIAS_HOST_DIR"]
 real_staging = os.environ["TP_REAL_STAGING_DIR"]
 alias_staging = os.environ["TP_ALIAS_STAGING_DIR"]
-
-proc = subprocess.run([real_pkgconf, *sys.argv[1:]], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+env = os.environ.copy()
+env["PKG_CONFIG_SYSROOT_DIR"] = real_staging
+env["PKG_CONFIG_LIBDIR"] = (
+    f"{real_staging}/usr/lib/pkgconfig:{real_staging}/usr/share/pkgconfig"
+)
+proc = subprocess.run(
+    [real_pkgconf, *sys.argv[1:]],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    env=env,
+)
 stdout = proc.stdout
 for real_path, alias_path in (
     (real_host, alias_host),
