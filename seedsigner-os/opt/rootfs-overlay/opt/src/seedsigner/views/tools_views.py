@@ -3655,11 +3655,14 @@ class ToolsSatochipImportSeedView(View):
             )
             return self._completion_destination()
 
+        from seedsigner.gui.screens.screen import LoadingScreenThread
+
+        loading_screen = None
         try:
-            self.loading_screen = LoadingScreenThread(text="正在写入助记词\n\n\n\n\n\n")
-            self.loading_screen.start()
+            loading_screen = LoadingScreenThread(text="正在写入助记词\n\n\n\n\n\n")
+            loading_screen.start()
             connector.card_bip32_import_seed(seed.seed_bytes)
-            self.loading_screen.stop()
+            loading_screen.stop()
 
             logger.info("Seed Successfully Imported")
             self.run_screen(
@@ -3670,7 +3673,8 @@ class ToolsSatochipImportSeedView(View):
                 show_back_button=False,
             )
         except Exception as e:
-            self.loading_screen.stop()
+            if loading_screen is not None:
+                loading_screen.stop()
             logger.exception("Satochip Import Failed: %s", e)
             self.run_screen(
                 WarningScreen,
