@@ -2,6 +2,19 @@
 
 ## 当前正式入口
 
+以后如果只是想直接用，不要先翻源码，按这个顺序做就行：
+
+1. 先去 GitHub Releases 下载当前推荐正式包
+2. 先看 [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md) 或 [快速开始](docs/快速开始.zh-CN.md)
+3. 真要重建正式版时，再看 [固定正式发布重建入口](docs/固定正式发布重建入口.zh-CN.md)
+
+以后如果让新的 AI 继续维护，也不要让它自己猜 tag、猜分支、猜命令。
+先让它看：
+
+- [release-manifest.json](release-manifest.json)
+- [固定正式发布重建入口](docs/固定正式发布重建入口.zh-CN.md)
+- [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)
+
 当前该下载的 release：
 
 - 树莓派 clean 正式固件：
@@ -77,7 +90,7 @@ bash scripts/rebuild_official_release.sh wallet-release
   - 自有安卓钱包扫码签名
   - `BlueWallet` 的 `BTC PSBT`
   - `TokenPocket` 中转场景
-  - 助记词/BIP39 序号查看、钢板数字流程、智能卡工具、固件完整性自检
+  - 助记词/BIP39 序号查看、`BIP85` 子助记词、钢板数字流程、智能卡工具、固件完整性自检
   - 交易详情核对页 + 单次 PIN 流程
 
 怎么对应源码，看这里：
@@ -146,6 +159,21 @@ bash scripts/rebuild_official_release.sh --list
 bash scripts/rebuild_official_release.sh firmware-clean
 bash scripts/rebuild_official_release.sh wallet-release
 ```
+
+这 3 条命令的意义是：
+
+- `--list`
+  先列出当前官方正式发布件和对应源码冻结 tag
+- `firmware-clean`
+  用官方固定源码重建当前正式固件，并自动验包
+- `wallet-release`
+  用官方固定源码重建当前正式钱包 APK，并自动验包
+
+以后只要先跑这套脚本，就不会再靠记忆去猜：
+
+- 该 checkout 哪个 tag
+- 该用哪条构建命令
+- 这次重建到底是不是官方那一版
 
 ### 树莓派固件
 
