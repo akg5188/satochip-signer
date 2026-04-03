@@ -23,14 +23,21 @@ import org.bitcoinj.script.ScriptBuilder
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-private const val BITCOIN_DEFAULT_GAP_LIMIT = 5
-private const val BITCOIN_MAX_DISCOVERY_INDEX = 24
+private const val BITCOIN_DEFAULT_GAP_LIMIT = 20
+private const val BITCOIN_MAX_DISCOVERY_INDEX = 1000
+private const val BITCOIN_INITIAL_RECEIVE_PROBE_LIMIT = 200
+private const val BITCOIN_INITIAL_CHANGE_PROBE_LIMIT = 40
+private const val BITCOIN_DISCOVERY_BATCH_SIZE = 10
+private const val BITCOIN_ACTIVITY_FETCH_BATCH_SIZE = 8
+private const val BITCOIN_HTTP_RETRY_PER_CANDIDATE = 2
 private const val BITCOIN_DUST_THRESHOLD_SATS = 546L
 private const val BITCOIN_HTTP_CACHE_TTL_MS = 30_000L
+private const val BITCOIN_HOST_RATE_LIMIT_BACKOFF_MS = 180_000L
 
 data class BitcoinAccountSnapshot(
     val balanceSats: Long,
@@ -40,9 +47,14 @@ data class BitcoinAccountSnapshot(
     val nextReceiveAddress: String,
     val nextChangeIndex: Int,
     val nextChangeAddress: String,
+    val lastReceiveUsedIndex: Int,
+    val lastChangeUsedIndex: Int,
+    val receiveUsedIndices: List<Int>,
+    val changeUsedIndices: List<Int>,
     val ownedAddresses: List<String>,
     val spendableUtxos: List<BitcoinSpendableUtxo>,
     val status: String,
+    val activityComplete: Boolean,
     val recentActivity: List<WalletActivityItem>,
 )
 
@@ -83,6 +95,8 @@ private data class BitcoinBranchDiscovery(
     val utxos: List<BitcoinSpendableUtxo>,
     val nextIndex: Int,
     val nextAddress: String,
+    val lastUsedIndex: Int,
+    val usedIndices: List<Int>,
     val usedAddresses: List<String>,
 )
 
@@ -118,14 +132,18 @@ object BitcoinTransferService {
             .readTimeout(20, TimeUnit.SECONDS)
     ).build()
     private val httpTextCache = ConcurrentHashMap<String, CachedHttpText>()
+    private val hostCooldownUntilMs = ConcurrentHashMap<String, Long>()
 
     suspend fun syncAccount(
         account: BitcoinWatchAccount,
         includeActivity: Boolean = false,
+        progress: ((String) -> Unit)? = null,
     ): BitcoinAccountSnapshot = withContext(Dispatchers.IO) {
         coroutineScope {
-            val receiveDeferred = async { discoverBranch(account, branch = 0) }
-            val changeDeferred = async { discoverBranch(account, branch = 1) }
+            progress?.invoke("正在扫描 BTC 收款地址...")
+            val receiveDeferred = async { discoverBranch(account, branch = 0, progress = progress) }
+            progress?.invoke("正在扫描 BTC 找零地址...")
+            val changeDeferred = async { discoverBranch(account, branch = 1, progress = progress) }
             val priceDeferred = async { runCatching { EvmRpc.fetchCoingeckoPriceForSymbol("BTC") }.getOrNull() }
 
             val receive = receiveDeferred.await()
@@ -135,18 +153,22 @@ object BitcoinTransferService {
             val ownedAddresses = (receive.usedAddresses + change.usedAddresses).distinct()
             val priceUsd = priceDeferred.await()
             val activityWarning = StringBuilder()
+            var activityComplete = !includeActivity || ownedAddresses.isEmpty()
             val recentActivity = if (includeActivity && ownedAddresses.isNotEmpty()) {
+                progress?.invoke("正在拉取 BTC 最近交易...")
                 runCatching {
                     fetchAccountActivity(
                         prefix = account.prefix,
                         ownedAddresses = ownedAddresses.toSet(),
                     )
+                }.onSuccess {
+                    activityComplete = true
                 }.getOrElse {
-                    activityWarning.append(" 最近交易暂未拉取。")
+                    activityComplete = false
+                    activityWarning.append(" 最近交易暂未刷新。")
                     emptyList()
                 }
             } else {
-                activityWarning.append(" 最近交易后台更新。")
                 emptyList()
             }
             val baseStatus = if (utxos.isEmpty()) {
@@ -162,9 +184,14 @@ object BitcoinTransferService {
                 nextReceiveAddress = receive.nextAddress,
                 nextChangeIndex = change.nextIndex,
                 nextChangeAddress = change.nextAddress,
+                lastReceiveUsedIndex = receive.lastUsedIndex,
+                lastChangeUsedIndex = change.lastUsedIndex,
+                receiveUsedIndices = receive.usedIndices,
+                changeUsedIndices = change.usedIndices,
                 ownedAddresses = ownedAddresses,
                 spendableUtxos = utxos,
                 status = baseStatus + activityWarning.toString(),
+                activityComplete = activityComplete,
                 recentActivity = recentActivity,
             )
         }
@@ -335,34 +362,122 @@ object BitcoinTransferService {
     private suspend fun discoverBranch(
         account: BitcoinWatchAccount,
         branch: Int,
+        progress: ((String) -> Unit)? = null,
     ): BitcoinBranchDiscovery {
         val utxos = mutableListOf<BitcoinSpendableUtxo>()
+        val branchLabel = if (branch == 0) "收款" else "找零"
+        val knownUsedIndices = if (branch == 0) {
+            account.receiveUsedIndices.toMutableSet()
+        } else {
+            account.changeUsedIndices.toMutableSet()
+        }
         val usedAddresses = mutableListOf<String>()
-        var index = 0
+        val lastUsedHint = if (branch == 0) account.lastReceiveUsedIndex else account.lastChangeUsedIndex
+        val initialLastUsedIndex = maxOf(lastUsedHint, knownUsedIndices.maxOrNull() ?: -1)
+        val initialProbeLimit = if (initialLastUsedIndex >= 0 || knownUsedIndices.isNotEmpty()) {
+            0
+        } else if (branch == 0) {
+            BITCOIN_INITIAL_RECEIVE_PROBE_LIMIT
+        } else {
+            BITCOIN_INITIAL_CHANGE_PROBE_LIMIT
+        }
+        var index = if (initialLastUsedIndex >= 0) {
+            (initialLastUsedIndex - BITCOIN_DEFAULT_GAP_LIMIT + 1).coerceAtLeast(0)
+        } else {
+            0
+        }
         var consecutiveUnused = 0
-        var lastUsedIndex = -1
+        var lastUsedIndex = initialLastUsedIndex
 
-        while (index < BITCOIN_MAX_DISCOVERY_INDEX && consecutiveUnused < BITCOIN_DEFAULT_GAP_LIMIT) {
-            val material = deriveBitcoinKeyMaterial(account, branch = branch, index = index)
-            val addressInfo = fetchAddressInfo(account.prefix, material.address)
-            if (addressInfo.isUsed) {
-                lastUsedIndex = index
-                consecutiveUnused = 0
-                usedAddresses += material.address
-                val utxoArray = fetchAddressUtxos(account.prefix, material.address)
-                for (position in 0 until utxoArray.length()) {
-                    val utxo = utxoArray.optJSONObject(position) ?: continue
-                    utxos += BitcoinSpendableUtxo(
-                        txid = utxo.getString("txid"),
-                        vout = utxo.getInt("vout"),
-                        valueSats = utxo.getLong("value"),
-                        keyMaterial = material,
-                    )
+        coroutineScope {
+            knownUsedIndices.sorted().chunked(BITCOIN_DISCOVERY_BATCH_SIZE).forEach { batch ->
+                progress?.invoke(
+                    "正在刷新 BTC ${branchLabel}地址 ${batch.first()}-${batch.last()}..."
+                )
+                val materials = batch.map { usedIndex ->
+                    usedIndex to deriveBitcoinKeyMaterial(account, branch = branch, index = usedIndex)
                 }
-            } else {
-                consecutiveUnused += 1
+                val addressInfoFetches = materials.associate { (usedIndex, material) ->
+                    usedIndex to async { fetchAddressInfo(account.prefix, material.address) }
+                }
+                materials.forEach { (usedIndex, material) ->
+                    usedAddresses += material.address
+                    val addressInfo = addressInfoFetches[usedIndex]?.await() ?: BitcoinAddressInfo(isUsed = true, hasUnspent = false)
+                    val utxoArray = if (addressInfo.hasUnspent) {
+                        fetchAddressUtxos(account.prefix, material.address)
+                    } else {
+                        JSONArray()
+                    }
+                    for (position in 0 until utxoArray.length()) {
+                        val utxo = utxoArray.optJSONObject(position) ?: continue
+                        utxos += BitcoinSpendableUtxo(
+                            txid = utxo.getString("txid"),
+                            vout = utxo.getInt("vout"),
+                            valueSats = utxo.getLong("value"),
+                            keyMaterial = material,
+                        )
+                    }
+                }
             }
-            index += 1
+        }
+
+        while (
+            index < BITCOIN_MAX_DISCOVERY_INDEX &&
+            (index < initialProbeLimit || consecutiveUnused < BITCOIN_DEFAULT_GAP_LIMIT)
+        ) {
+            val batchEndExclusive = minOf(index + BITCOIN_DISCOVERY_BATCH_SIZE, BITCOIN_MAX_DISCOVERY_INDEX)
+            progress?.invoke(
+                "正在扫描 BTC ${branchLabel}地址 ${index}-${batchEndExclusive - 1}..."
+            )
+            val unknownIndices = (index until batchEndExclusive).filterNot { it in knownUsedIndices }
+            val materials = unknownIndices.map { currentIndex ->
+                currentIndex to deriveBitcoinKeyMaterial(account, branch = branch, index = currentIndex)
+            }
+            val addressInfos = coroutineScope {
+                materials.map { (currentIndex, material) ->
+                    async {
+                        Triple(currentIndex, material, fetchAddressInfo(account.prefix, material.address))
+                    }
+                }.awaitAll()
+            }
+            val utxoFetches = coroutineScope {
+                addressInfos.filter { (_, _, info) -> info.hasUnspent }.associate { (_, material, _) ->
+                    material.address to async { fetchAddressUtxos(account.prefix, material.address) }
+                }
+            }
+
+            val addressInfoMap = addressInfos.associateBy { it.first }
+
+            for (currentIndex in index until batchEndExclusive) {
+                if (currentIndex in knownUsedIndices) {
+                    consecutiveUnused = 0
+                    lastUsedIndex = maxOf(lastUsedIndex, currentIndex)
+                    continue
+                }
+                val (_, material, addressInfo) = addressInfoMap[currentIndex] ?: continue
+                if (addressInfo.isUsed) {
+                    knownUsedIndices += currentIndex
+                    lastUsedIndex = currentIndex
+                    consecutiveUnused = 0
+                    usedAddresses += material.address
+                    val utxoArray = utxoFetches[material.address]?.await() ?: JSONArray()
+                    for (position in 0 until utxoArray.length()) {
+                        val utxo = utxoArray.optJSONObject(position) ?: continue
+                        utxos += BitcoinSpendableUtxo(
+                            txid = utxo.getString("txid"),
+                            vout = utxo.getInt("vout"),
+                            valueSats = utxo.getLong("value"),
+                            keyMaterial = material,
+                        )
+                    }
+                } else {
+                    consecutiveUnused += 1
+                    if (consecutiveUnused >= BITCOIN_DEFAULT_GAP_LIMIT && batchEndExclusive >= initialProbeLimit) {
+                        break
+                    }
+                }
+            }
+            index = batchEndExclusive
         }
 
         val nextIndex = (lastUsedIndex + 1).coerceAtLeast(0)
@@ -371,6 +486,8 @@ object BitcoinTransferService {
             utxos = utxos,
             nextIndex = nextIndex,
             nextAddress = nextAddress,
+            lastUsedIndex = lastUsedIndex,
+            usedIndices = knownUsedIndices.toList().sorted(),
             usedAddresses = usedAddresses.distinct(),
         )
     }
@@ -379,13 +496,15 @@ object BitcoinTransferService {
         val json = fetchJsonObject("${bitcoinEsploraBaseUrl(prefix)}/address/$address")
         val chainStats = json.optJSONObject("chain_stats") ?: JSONObject()
         val mempoolStats = json.optJSONObject("mempool_stats") ?: JSONObject()
+        val fundedCount = chainStats.optLong("funded_txo_count", 0) + mempoolStats.optLong("funded_txo_count", 0)
+        val spentCount = chainStats.optLong("spent_txo_count", 0) + mempoolStats.optLong("spent_txo_count", 0)
         val used = (
-            chainStats.optLong("funded_txo_count", 0) > 0 ||
-                chainStats.optLong("spent_txo_count", 0) > 0 ||
-                mempoolStats.optLong("funded_txo_count", 0) > 0 ||
-                mempoolStats.optLong("spent_txo_count", 0) > 0
+            fundedCount > 0 || spentCount > 0
             )
-        return BitcoinAddressInfo(isUsed = used)
+        return BitcoinAddressInfo(
+            isUsed = used,
+            hasUnspent = fundedCount > spentCount,
+        )
     }
 
     private suspend fun fetchAddressUtxos(prefix: String, address: String): JSONArray {
@@ -415,11 +534,17 @@ object BitcoinTransferService {
     ): List<WalletActivityItem> {
         if (ownedAddresses.isEmpty()) return emptyList()
         val txMap = linkedMapOf<String, JSONObject>()
-        ownedAddresses.forEach { address ->
-            fetchAddressTransactions(prefix, address).forEach { tx ->
-                val txid = tx.optString("txid").trim()
-                if (txid.isNotBlank()) {
-                    txMap.putIfAbsent(txid, tx)
+        coroutineScope {
+            ownedAddresses.toList().chunked(BITCOIN_ACTIVITY_FETCH_BATCH_SIZE).forEach { batch ->
+                batch.map { address ->
+                    async { fetchAddressTransactions(prefix, address) }
+                }.awaitAll().forEach { transactions ->
+                    transactions.forEach { tx ->
+                        val txid = tx.optString("txid").trim()
+                        if (txid.isNotBlank()) {
+                            txMap.putIfAbsent(txid, tx)
+                        }
+                    }
                 }
             }
         }
@@ -544,25 +669,32 @@ object BitcoinTransferService {
     }
 
     private fun bitcoinApiCandidateUrls(url: String): List<String> {
-        return when {
+        val candidates = when {
             url.startsWith("https://blockstream.info/testnet/api/") -> {
                 val suffix = url.removePrefix("https://blockstream.info/testnet/api/")
                 listOf(
-                    url,
                     "https://mempool.space/testnet/api/$suffix",
+                    url,
                 )
             }
             url.startsWith("https://blockstream.info/api/") -> {
                 val suffix = url.removePrefix("https://blockstream.info/api/")
                 listOf(
-                    url,
                     "https://mempool.emzy.de/api/$suffix",
                     "https://btcscan.org/api/$suffix",
                     "https://mempool.space/api/$suffix",
+                    url,
                 )
             }
             else -> listOf(url)
         }.distinct()
+        val now = System.currentTimeMillis()
+        val (available, coolingDown) = candidates.partition { candidate ->
+            val host = runCatching { java.net.URI(candidate).host.orEmpty().lowercase(Locale.US) }.getOrDefault("")
+            val cooldownUntil = hostCooldownUntilMs[host] ?: 0L
+            cooldownUntil <= now
+        }
+        return if (available.isNotEmpty()) available + coolingDown else candidates
     }
 
     private suspend fun fetchText(url: String): String {
@@ -572,34 +704,62 @@ object BitcoinTransferService {
         }
         val candidates = bitcoinApiCandidateUrls(url)
         var lastError = "BTC 公共接口请求失败"
-        for ((index, candidateUrl) in candidates.withIndex()) {
-            var shouldContinue = false
-            val request = TrustedNetwork.requestBuilder(candidateUrl, allowedHosts).build()
-            client.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (response.isSuccessful) {
-                    val cached = CachedHttpText(body = body, cachedAt = now)
-                    httpTextCache[url] = cached
-                    httpTextCache[candidateUrl] = cached
-                    return body
-                }
-                val isRateLimited = response.code == 429 || body.contains("Too Many Requests", ignoreCase = true)
-                if (isRateLimited) {
-                    lastError = "BTC 公共接口限流，请稍后重试"
-                    if (index != candidates.lastIndex) {
-                        shouldContinue = true
-                        return@use
+        candidateLoop@ for ((index, candidateUrl) in candidates.withIndex()) {
+            for (attempt in 0 until BITCOIN_HTTP_RETRY_PER_CANDIDATE) {
+                val request = TrustedNetwork.requestBuilder(candidateUrl, allowedHosts).build()
+                try {
+                    var advanceCandidate = false
+                    client.newCall(request).execute().use { response ->
+                        val body = response.body?.string().orEmpty()
+                        if (response.isSuccessful) {
+                            val cached = CachedHttpText(body = body, cachedAt = now)
+                            httpTextCache[url] = cached
+                            httpTextCache[candidateUrl] = cached
+                            return body
+                        }
+                        val isRateLimited = response.code == 429 || body.contains("Too Many Requests", ignoreCase = true)
+                        if (isRateLimited) {
+                            markHostRateLimited(candidateUrl)
+                            lastError = "BTC 公共接口限流，请稍后重试"
+                            if (attempt < BITCOIN_HTTP_RETRY_PER_CANDIDATE - 1) {
+                                return@use
+                            }
+                            if (index != candidates.lastIndex) {
+                                advanceCandidate = true
+                                return@use
+                            }
+                            error(lastError)
+                        } else {
+                            lastError = body.ifBlank { "请求失败 (${response.code})" }
+                            if (index != candidates.lastIndex) {
+                                advanceCandidate = true
+                                return@use
+                            }
+                            error(lastError)
+                        }
                     }
-                } else {
-                    lastError = body.ifBlank { "请求失败 (${response.code})" }
-                    return@use
+                    if (advanceCandidate) {
+                        continue@candidateLoop
+                    }
+                } catch (error: Exception) {
+                    lastError = error.message?.takeIf { it.isNotBlank() } ?: "BTC 公共接口请求失败"
+                    if (attempt < BITCOIN_HTTP_RETRY_PER_CANDIDATE - 1) {
+                        continue
+                    }
+                    if (index != candidates.lastIndex) {
+                        continue@candidateLoop
+                    }
+                    error(lastError)
                 }
-            }
-            if (!shouldContinue) {
-                break
             }
         }
         error(lastError)
+    }
+
+    private fun markHostRateLimited(url: String) {
+        val host = runCatching { java.net.URI(url).host.orEmpty().lowercase(Locale.US) }.getOrDefault("")
+        if (host.isBlank()) return
+        hostCooldownUntilMs[host] = System.currentTimeMillis() + BITCOIN_HOST_RATE_LIMIT_BACKOFF_MS
     }
 
     private suspend fun buildPsbt(
@@ -883,6 +1043,7 @@ object BitcoinTransferService {
 
 private data class BitcoinAddressInfo(
     val isUsed: Boolean,
+    val hasUnspent: Boolean,
 )
 
 private data class BitcoinTxOutput(

@@ -54,13 +54,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private data class CachedBitcoinSnapshot(
+        val snapshot: BitcoinAccountSnapshot,
+        val syncedAt: Long,
+    )
+
     private val prefs = WalletStorage.openSecurePreferences(application)
     private val _uiState = MutableStateFlow(WalletUiState())
     val uiState: StateFlow<WalletUiState> = _uiState.asStateFlow()
 
     private val localActivityItems = mutableListOf<WalletActivityItem>()
     private val syncedActivityByChain = linkedMapOf<Long, List<WalletActivityItem>>()
-    private val bitcoinSnapshotCache = linkedMapOf<String, BitcoinAccountSnapshot>()
+    private val bitcoinSnapshotCache = linkedMapOf<String, CachedBitcoinSnapshot>()
     private val sessionSecurityObserver = object : DefaultLifecycleObserver {
         override fun onStop(owner: LifecycleOwner) {
             clearSensitiveSessionState()
@@ -271,55 +276,65 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         viewModelScope.launch {
-            runCatching { BitcoinTransferService.syncAccount(current, includeActivity = false) }
+            runCatching {
+                BitcoinTransferService.syncAccount(
+                    current,
+                    includeActivity = true,
+                    progress = { status ->
+                        updateBitcoinWatchAccount(
+                            accountId = accountId,
+                            transform = { account ->
+                                account.copy(syncing = true, lastSyncStatus = status)
+                            },
+                            persist = false,
+                        )
+                    },
+                )
+            }
                 .onSuccess { snapshot ->
-                    cacheBitcoinSnapshot(accountId, snapshot)
                     val syncedAt = System.currentTimeMillis()
-                    updateBitcoinWatchAccount(accountId) { account ->
-                        account.copy(
+                    cacheBitcoinSnapshot(accountId, snapshot, syncedAt)
+                    updateBitcoinWatchAccount(
+                        accountId = accountId,
+                        transform = { account ->
+                            account.copy(
                             balanceSats = snapshot.balanceSats,
                             priceUsd = snapshot.priceUsd ?: account.priceUsd,
                             utxoCount = snapshot.utxoCount,
                             nextReceiveAddress = snapshot.nextReceiveAddress,
                             nextChangeAddress = snapshot.nextChangeAddress,
+                            lastReceiveUsedIndex = snapshot.lastReceiveUsedIndex,
+                            lastChangeUsedIndex = snapshot.lastChangeUsedIndex,
+                            receiveUsedIndices = snapshot.receiveUsedIndices,
+                            changeUsedIndices = snapshot.changeUsedIndices,
                             lastSyncStatus = snapshot.status,
                             lastSyncAt = syncedAt,
                             syncing = false,
-                            recentActivity = if (snapshot.recentActivity.isNotEmpty()) snapshot.recentActivity else account.recentActivity,
+                            recentActivity = when {
+                                snapshot.activityComplete -> snapshot.recentActivity
+                                snapshot.recentActivity.isNotEmpty() -> snapshot.recentActivity
+                                else -> account.recentActivity
+                            },
                         )
-                    }
+                        },
+                    )
                     _uiState.update {
                         it.copy(
                             info = "BTC 账户已同步：${current.label}",
                             error = "",
                         )
                     }
-                    if (snapshot.ownedAddresses.isNotEmpty()) {
-                        launch {
-                            runCatching {
-                                BitcoinTransferService.fetchRecentActivitySnapshot(
-                                    prefix = current.prefix,
-                                    ownedAddresses = snapshot.ownedAddresses.toSet(),
-                                )
-                            }.onSuccess { recentActivity ->
-                                updateBitcoinWatchAccount(accountId) { account ->
-                                    account.copy(
-                                        recentActivity = recentActivity,
-                                        lastSyncStatus = account.lastSyncStatus.replace(" 最近交易后台更新。", ""),
-                                    )
-                                }
-                            }
-                        }
-                    }
                 }
                 .onFailure { error ->
-                    updateBitcoinWatchAccount(accountId) { account ->
-                        account.copy(
+                    updateBitcoinWatchAccount(
+                        accountId = accountId,
+                        transform = { account ->
+                            account.copy(
                             syncing = false,
-                            lastSyncAt = System.currentTimeMillis(),
                             lastSyncStatus = "同步失败：${error.message ?: "未知错误"}",
                         )
-                    }
+                        },
+                    )
                     setError("BTC 账户同步失败: ${error.message}")
                 }
         }
@@ -367,22 +382,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     snapshot = cachedSnapshot,
                 )
             }.onSuccess { prepared ->
-                cacheBitcoinSnapshot(accountId, prepared.snapshot)
                 val syncedAt = System.currentTimeMillis()
+                cacheBitcoinSnapshot(accountId, prepared.snapshot, syncedAt)
                 val bundle = RelayQrCodec.buildRelayPayloads(prepared.requestPayload)
                 val qr = generateQrBitmap(bundle.payloads.first())
-                updateBitcoinWatchAccount(accountId) {
-                    it.copy(
+                updateBitcoinWatchAccount(
+                    accountId = accountId,
+                    transform = { account ->
+                        account.copy(
                         balanceSats = prepared.snapshot.balanceSats,
-                        priceUsd = prepared.snapshot.priceUsd ?: it.priceUsd,
+                        priceUsd = prepared.snapshot.priceUsd ?: account.priceUsd,
                         utxoCount = prepared.snapshot.utxoCount,
                         nextReceiveAddress = prepared.snapshot.nextReceiveAddress,
                         nextChangeAddress = prepared.snapshot.nextChangeAddress,
+                        lastReceiveUsedIndex = prepared.snapshot.lastReceiveUsedIndex,
+                        lastChangeUsedIndex = prepared.snapshot.lastChangeUsedIndex,
+                        receiveUsedIndices = prepared.snapshot.receiveUsedIndices,
+                        changeUsedIndices = prepared.snapshot.changeUsedIndices,
                         lastSyncStatus = prepared.snapshot.status,
                         lastSyncAt = syncedAt,
                         syncing = false,
                     )
-                }
+                    },
+                )
                 _uiState.update {
                     it.copy(
                         preparingRequest = false,
@@ -1381,19 +1403,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         WalletStorage.writeBitcoinWatchAccounts(prefs, _uiState.value.bitcoinWatchAccounts)
     }
 
-    private fun cacheBitcoinSnapshot(accountId: String, snapshot: BitcoinAccountSnapshot) {
-        bitcoinSnapshotCache[accountId] = snapshot
+    private fun cacheBitcoinSnapshot(accountId: String, snapshot: BitcoinAccountSnapshot, syncedAt: Long) {
+        bitcoinSnapshotCache[accountId] = CachedBitcoinSnapshot(
+            snapshot = snapshot,
+            syncedAt = syncedAt,
+        )
     }
 
     private fun currentBitcoinSnapshot(account: BitcoinWatchAccount): BitcoinAccountSnapshot? {
-        val snapshot = bitcoinSnapshotCache[account.id] ?: return null
-        val snapshotAgeMs = System.currentTimeMillis() - account.lastSyncAt
-        return snapshot.takeIf { account.lastSyncAt > 0L && snapshotAgeMs in 0..BITCOIN_SNAPSHOT_CACHE_TTL_MS }
+        val cached = bitcoinSnapshotCache[account.id] ?: return null
+        val snapshotAgeMs = System.currentTimeMillis() - cached.syncedAt
+        return cached.snapshot.takeIf { cached.syncedAt > 0L && snapshotAgeMs in 0..BITCOIN_SNAPSHOT_CACHE_TTL_MS }
     }
 
     private fun updateBitcoinWatchAccount(
         accountId: String,
         transform: (BitcoinWatchAccount) -> BitcoinWatchAccount,
+        persist: Boolean = true,
     ) {
         _uiState.update { state ->
             state.copy(
@@ -1402,7 +1428,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             )
         }
-        persistBitcoinWatchAccounts()
+        if (persist) {
+            persistBitcoinWatchAccounts()
+        }
     }
 
     private fun persistActivity() {
@@ -2042,9 +2070,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun normalizeAddress(raw: String?): String? {
-        val value = raw.orEmpty().trim().removePrefix("ethereum:")
+        val value = raw.orEmpty().trim()
         if (value.isBlank()) return null
-        val address = if (value.startsWith("0x")) value else "0x$value"
+        val embedded = Regex("0x[a-fA-F0-9]{40}").find(value)?.value
+        val candidate = embedded ?: value
+            .removePrefix("ethereum:")
+            .removePrefix("Ethereum:")
+            .removePrefix("ETHEREUM:")
+            .substringBefore('?')
+            .substringBefore('#')
+            .substringBefore('@')
+            .trim()
+        if (candidate.isBlank()) return null
+        val address = if (candidate.startsWith("0x")) candidate else "0x$candidate"
         if (address.length != 42) return null
         if (!address.removePrefix("0x").all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) return null
         return address

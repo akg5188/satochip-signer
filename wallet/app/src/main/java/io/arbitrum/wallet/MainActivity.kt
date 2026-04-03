@@ -129,6 +129,12 @@ class MainActivity : BiometricGateActivity() {
         viewModel.importBitcoinWatchAccountFromPayload(text)
     }
 
+    private val addressQrLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+        val text = result.data?.getStringExtra(QrScanActivity.EXTRA_QR_RESULT) ?: return@registerForActivityResult
+        viewModel.addAddress(text)
+    }
+
     private val responseQrLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
         val text = result.data?.getStringExtra(QrScanActivity.EXTRA_QR_RESULT) ?: return@registerForActivityResult
@@ -163,6 +169,7 @@ class MainActivity : BiometricGateActivity() {
                     onNewAddressChange = viewModel::setNewAddressInput,
                     onEvmDerivationPathChange = viewModel::setEvmDerivationPath,
                     onAddAddress = viewModel::addAddressFromInput,
+                    onScanAddress = ::startAddressScan,
                     onPrepareDerivedAddressImport = viewModel::prepareDerivedAddressImport,
                     onSelectAddress = viewModel::selectAddress,
                     onRemoveAddress = viewModel::removeAddress,
@@ -212,6 +219,12 @@ class MainActivity : BiometricGateActivity() {
         val intent = Intent(this, QrScanActivity::class.java)
             .putExtra(QrScanActivity.EXTRA_STATUS_TEXT, "请扫描树莓派导出的 xpub / zpub 二维码")
         bitcoinImportQrLauncher.launch(intent)
+    }
+
+    private fun startAddressScan() {
+        val intent = Intent(this, QrScanActivity::class.java)
+            .putExtra(QrScanActivity.EXTRA_STATUS_TEXT, "请扫描 ARB / ETH 观察地址二维码")
+        addressQrLauncher.launch(intent)
     }
 
     private fun startResponseScan() {
@@ -276,6 +289,7 @@ private fun WalletScreen(
     onNewAddressChange: (String) -> Unit,
     onEvmDerivationPathChange: (String) -> Unit,
     onAddAddress: () -> Unit,
+    onScanAddress: () -> Unit,
     onPrepareDerivedAddressImport: () -> Unit,
     onSelectAddress: (String) -> Unit,
     onRemoveAddress: (String) -> Unit,
@@ -467,6 +481,7 @@ private fun WalletScreen(
                         onNewAddressChange = onNewAddressChange,
                         onEvmDerivationPathChange = onEvmDerivationPathChange,
                         onAddAddress = onAddAddress,
+                        onScanAddress = onScanAddress,
                         onPrepareDerivedAddressImport = onPrepareDerivedAddressImport,
                         onSelectAddress = onSelectAddress,
                         onRemoveAddress = onRemoveAddress,
@@ -803,6 +818,7 @@ private fun WatchWalletHubSection(
     onNewAddressChange: (String) -> Unit,
     onEvmDerivationPathChange: (String) -> Unit,
     onAddAddress: () -> Unit,
+    onScanAddress: () -> Unit,
     onPrepareDerivedAddressImport: () -> Unit,
     onSelectAddress: (String) -> Unit,
     onRemoveAddress: (String) -> Unit,
@@ -884,6 +900,9 @@ private fun WatchWalletHubSection(
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                     )
+                    OutlinedButton(onClick = onScanAddress) {
+                        Text("扫码", fontSize = 11.sp)
+                    }
                     OutlinedButton(onClick = onAddAddress) {
                         Text("添加", fontSize = 11.sp)
                     }

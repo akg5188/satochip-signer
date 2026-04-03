@@ -308,6 +308,20 @@ object WalletStorage {
                             utxoCount = obj.optInt("utxoCount", 0),
                             nextReceiveAddress = obj.optString("nextReceiveAddress"),
                             nextChangeAddress = obj.optString("nextChangeAddress"),
+                            lastReceiveUsedIndex = obj.optInt("lastReceiveUsedIndex", -1),
+                            lastChangeUsedIndex = obj.optInt("lastChangeUsedIndex", -1),
+                            receiveUsedIndices = buildList {
+                                val usedArray = obj.optJSONArray("receiveUsedIndices") ?: JSONArray()
+                                for (usedIndex in 0 until usedArray.length()) {
+                                    add(usedArray.optInt(usedIndex))
+                                }
+                            }.filter { it >= 0 }.distinct().sorted(),
+                            changeUsedIndices = buildList {
+                                val usedArray = obj.optJSONArray("changeUsedIndices") ?: JSONArray()
+                                for (usedIndex in 0 until usedArray.length()) {
+                                    add(usedArray.optInt(usedIndex))
+                                }
+                            }.filter { it >= 0 }.distinct().sorted(),
                             lastSyncStatus = obj.optString("lastSyncStatus"),
                             lastSyncAt = obj.optLong("lastSyncAt", 0L),
                             recentActivity = buildList {
@@ -359,6 +373,14 @@ object WalletStorage {
                         put("utxoCount", account.utxoCount)
                         put("nextReceiveAddress", account.nextReceiveAddress)
                         put("nextChangeAddress", account.nextChangeAddress)
+                        put("lastReceiveUsedIndex", account.lastReceiveUsedIndex)
+                        put("lastChangeUsedIndex", account.lastChangeUsedIndex)
+                        put("receiveUsedIndices", JSONArray().apply {
+                            account.receiveUsedIndices.sorted().forEach(::put)
+                        })
+                        put("changeUsedIndices", JSONArray().apply {
+                            account.changeUsedIndices.sorted().forEach(::put)
+                        })
                         put("lastSyncStatus", account.lastSyncStatus)
                         put("lastSyncAt", account.lastSyncAt)
                         put(
