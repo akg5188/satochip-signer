@@ -1654,6 +1654,7 @@ class ToolsTpLoadedSeedOptionsView(View):
     DERIVE_ADDRESS = ButtonOption("派生路径算地址")
     EXPORT_BTC_ZPUB = ButtonOption("导出当前助记词 BTC zpub")
     EXPORT_BTC_XPUB = ButtonOption("导出当前助记词 BTC xpub")
+    BIP85_CHILD_SEED = ButtonOption("BIP-85 子助记词")
     SECONDARY_ENCRYPT = ButtonOption("二次加密助记词")
     SECONDARY_DECRYPT = ButtonOption("二次还原助记词")
     PLATE_NUMBERS = ButtonOption("转成钢板打孔数字")
@@ -1680,6 +1681,11 @@ class ToolsTpLoadedSeedOptionsView(View):
             button_data.insert(1, self.DERIVE_ADDRESS)
             button_data.insert(2, self.EXPORT_BTC_ZPUB)
             button_data.insert(3, self.EXPORT_BTC_XPUB)
+        if (
+            self.seed.bip85_supported
+            and self.settings.get_value(SettingsConstants.SETTING__BIP85_CHILD_SEEDS) == SettingsConstants.OPTION__ENABLED
+        ):
+            button_data.insert(-1, self.BIP85_CHILD_SEED)
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
@@ -1716,6 +1722,9 @@ class ToolsTpLoadedSeedOptionsView(View):
             return Destination(ToolsTpSeedBtcXpubQrView, view_args=dict(seed_num=self.seed_num, xtype="zpub"))
         if selected == self.EXPORT_BTC_XPUB:
             return Destination(ToolsTpSeedBtcXpubQrView, view_args=dict(seed_num=self.seed_num, xtype="xpub"))
+        if selected == self.BIP85_CHILD_SEED:
+            from seedsigner.views.seed_views import SeedBIP85ApplicationModeView
+            return Destination(SeedBIP85ApplicationModeView, view_args=dict(seed_num=self.seed_num))
         if selected == self.SECONDARY_ENCRYPT:
             return Destination(ToolsTpSteelShiftInputView, view_args=dict(mode="encrypt_seed", seed_num=self.seed_num, word_index=0))
         if selected == self.SECONDARY_DECRYPT:
