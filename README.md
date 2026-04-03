@@ -5,9 +5,9 @@
 当前该下载的 release：
 
 - 树莓派 clean 正式固件：
-  [offline-signer-firmware-20260401-clean](https://github.com/akg5188/satochip-signer/releases/tag/offline-signer-firmware-20260401-clean)
+  看 [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md) 里的当前推荐 release
 - 安卓正式钱包：
-  [wallet-android-20260401-0.1.2](https://github.com/akg5188/satochip-signer/releases/tag/wallet-android-20260401-0.1.2)
+  [wallet-android-20260403-0.1.3](https://github.com/akg5188/satochip-signer/releases/tag/wallet-android-20260403-0.1.3)
 - 安卓智能卡 App：
   [smartcard-app-android-20260330](https://github.com/akg5188/satochip-signer/releases/tag/smartcard-app-android-20260330)
 
