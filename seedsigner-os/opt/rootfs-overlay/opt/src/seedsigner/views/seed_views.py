@@ -3177,6 +3177,7 @@ class SeedWordsBackupTestPromptView(View):
     REVIEW = ButtonOption("重新查看")
     SKIP = ButtonOption("跳过")
     FINALIZE = ButtonOption("完成子助记词")
+    IMPORT_TO_SMARTCARD = ButtonOption("子助记词写入智能卡")
 
     def __init__(self, seed_num: int, bip85_data: dict = None, share_index: int | None = None):
         super().__init__()
@@ -3189,6 +3190,8 @@ class SeedWordsBackupTestPromptView(View):
         button_data = [self.VERIFY, self.REVIEW, self.SKIP]
         if self.seed_num is not None and self.bip85_data:
             button_data.append(self.FINALIZE)
+            if os.environ.get("TP_ONLY_MODE") == "1":
+                button_data.append(self.IMPORT_TO_SMARTCARD)
 
         selected_menu_num = seed_screens.SeedWordsBackupTestPromptScreen(
             button_data=button_data,
@@ -3225,6 +3228,28 @@ class SeedWordsBackupTestPromptView(View):
                 ).split())
             self.controller.storage.set_pending_seed(child)
             return Destination(SeedFinalizeView)
+
+        elif button_data[selected_menu_num] == self.IMPORT_TO_SMARTCARD:
+            parent = self.controller.storage.seeds[self.seed_num]
+            child = Seed(parent.get_bip85_child_mnemonic(
+                self.bip85_data["child_index"], self.bip85_data["num_words"]
+            ).split())
+            self.controller.storage.set_pending_seed(child)
+            child_seed_num = self.controller.storage.finalize_pending_seed()
+            from seedsigner.views.tools_views import ToolsSatochipImportSeedView
+            from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+            return Destination(
+                ToolsSatochipImportSeedView,
+                view_args=dict(
+                    preferred_seed_num=child_seed_num,
+                    return_destination=Destination(
+                        ToolsTpLoadedSeedOptionsView,
+                        view_args=dict(seed_num=child_seed_num),
+                        clear_history=True,
+                    ),
+                ),
+                clear_history=True,
+            )
 
 
 
