@@ -39,7 +39,7 @@ from seedsigner.models.mnemonic_steel import (
     solve_weights,
     words_to_plate_groups,
 )
-from seedsigner.models.seed import InvalidSeedException, Seed, TransientWordSeed
+from seedsigner.models.seed import InvalidSeedException, Seed, TransientWordSeed, XprvSeed
 from seedsigner.models.steel_plate_scan import recognize_plate_groups_from_image
 from seedsigner.models.settings import SettingsConstants
 from seedsigner.hardware.buttons import HardwareButtonsConstants
@@ -1655,6 +1655,7 @@ class ToolsTpLoadedSeedOptionsView(View):
     EXPORT_BTC_ZPUB = ButtonOption("导出当前助记词 BTC zpub")
     EXPORT_BTC_XPUB = ButtonOption("导出当前助记词 BTC xpub")
     BIP85_CHILD_SEED = ButtonOption("BIP-85 子助记词")
+    IMPORT_TO_SMARTCARD = ButtonOption("写入当前助记词到智能卡")
     SECONDARY_ENCRYPT = ButtonOption("二次加密助记词")
     SECONDARY_DECRYPT = ButtonOption("二次还原助记词")
     PLATE_NUMBERS = ButtonOption("转成钢板打孔数字")
@@ -1686,6 +1687,8 @@ class ToolsTpLoadedSeedOptionsView(View):
             and self.settings.get_value(SettingsConstants.SETTING__BIP85_CHILD_SEEDS) == SettingsConstants.OPTION__ENABLED
         ):
             button_data.insert(-1, self.BIP85_CHILD_SEED)
+        if not isinstance(self.seed, XprvSeed):
+            button_data.insert(-1, self.IMPORT_TO_SMARTCARD)
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
@@ -1725,6 +1728,19 @@ class ToolsTpLoadedSeedOptionsView(View):
         if selected == self.BIP85_CHILD_SEED:
             from seedsigner.views.seed_views import SeedBIP85ApplicationModeView
             return Destination(SeedBIP85ApplicationModeView, view_args=dict(seed_num=self.seed_num))
+        if selected == self.IMPORT_TO_SMARTCARD:
+            from seedsigner.views.tools_views import ToolsSatochipImportSeedView
+            return Destination(
+                ToolsSatochipImportSeedView,
+                view_args=dict(
+                    preferred_seed_num=self.seed_num,
+                    return_destination=Destination(
+                        ToolsTpLoadedSeedOptionsView,
+                        view_args=dict(seed_num=self.seed_num),
+                        clear_history=True,
+                    ),
+                ),
+            )
         if selected == self.SECONDARY_ENCRYPT:
             return Destination(ToolsTpSteelShiftInputView, view_args=dict(mode="encrypt_seed", seed_num=self.seed_num, word_index=0))
         if selected == self.SECONDARY_DECRYPT:

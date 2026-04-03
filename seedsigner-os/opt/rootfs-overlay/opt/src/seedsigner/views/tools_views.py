@@ -3636,6 +3636,52 @@ class ToolsSatochipImportSeedView(View):
     IMPORT_SEEDKEEPER = ButtonOption("从 SeedKeeper 导入", FontAwesomeIconConstants.LOCK)
     CREATE = ButtonOption("创建助记词", SeedSignerIconConstants.PLUS)
 
+    def __init__(self, preferred_seed_num: int | None = None, return_destination: Destination | None = None):
+        super().__init__()
+        self.preferred_seed_num = preferred_seed_num
+        self.return_destination = return_destination
+
+    def _completion_destination(self) -> Destination:
+        return self.return_destination or _tp_post_main_destination()
+
+    def _import_loaded_seed(self, connector, seed) -> Destination:
+        if isinstance(seed, XprvSeed):
+            self.run_screen(
+                WarningScreen,
+                title="不支持",
+                status_headline=None,
+                text="xprv 不能直接初始化 Satochip。\n请使用 BIP39、SLIP39 或 Electrum 助记词。",
+                show_back_button=False,
+            )
+            return self._completion_destination()
+
+        try:
+            self.loading_screen = LoadingScreenThread(text="正在写入助记词\n\n\n\n\n\n")
+            self.loading_screen.start()
+            connector.card_bip32_import_seed(seed.seed_bytes)
+            self.loading_screen.stop()
+
+            logger.info("Seed Successfully Imported")
+            self.run_screen(
+                LargeIconStatusScreen,
+                title="成功",
+                status_headline=None,
+                text="助记词写入成功",
+                show_back_button=False,
+            )
+        except Exception as e:
+            self.loading_screen.stop()
+            logger.exception("Satochip Import Failed: %s", e)
+            self.run_screen(
+                WarningScreen,
+                title="失败",
+                status_headline=None,
+                text="助记词写入失败",
+                show_back_button=False,
+            )
+
+        return self._completion_destination()
+
     def run(self):
         from seedsigner.gui.screens.screen import LoadingScreenThread
         Satochip_Connector = seedkeeper_utils.init_satochip(self, init_card_filter=["satochip"])
@@ -3656,9 +3702,21 @@ class ToolsSatochipImportSeedView(View):
                 text="Satochip 卡中已经存在助记词。",
                 show_back_button=False,
             )
-            return _tp_post_main_destination()
+            return self._completion_destination()
 
         seeds = self.controller.storage.seeds
+        if self.preferred_seed_num is not None:
+            if self.preferred_seed_num < 0 or self.preferred_seed_num >= len(seeds):
+                self.run_screen(
+                    WarningScreen,
+                    title="提示",
+                    status_headline=None,
+                    text="当前助记词不存在，请先重新加载后再试。",
+                    show_back_button=False,
+                )
+                return self._completion_destination()
+            return self._import_loaded_seed(Satochip_Connector, seeds[self.preferred_seed_num])
+
         button_data = []
         for seed in seeds:
             button_str = seed.get_fingerprint(self.settings.get_value(SettingsConstants.SETTING__NETWORK))
@@ -3699,42 +3757,7 @@ class ToolsSatochipImportSeedView(View):
 
         if len(seeds) > 0 and selected_menu_num < len(seeds):
             # User selected one of the n seeds
-            if isinstance(seeds[selected_menu_num], XprvSeed):
-                self.run_screen(
-                    WarningScreen,
-                    title="不支持",
-                    status_headline=None,
-                    text="xprv 不能直接初始化 Satochip。\n请使用 BIP39、SLIP39 或 Electrum 助记词。",
-                    show_back_button=False,
-                )
-                return Destination(BackStackView)
-
-            try:
-                self.loading_screen = LoadingScreenThread(text="正在写入助记词\n\n\n\n\n\n")
-                self.loading_screen.start()
-
-                Satochip_Connector.card_bip32_import_seed(seeds[selected_menu_num].seed_bytes)
-
-                self.loading_screen.stop()
-
-                logger.info("Seed Successfully Imported")
-                self.run_screen(
-                    LargeIconStatusScreen,
-                    title="成功",
-                    status_headline=None,
-                    text="助记词写入成功",
-                    show_back_button=False,
-                )
-            except Exception as e:
-                self.loading_screen.stop()
-                logger.exception("Satochip Import Failed: %s", e)
-                self.run_screen(
-                    WarningScreen,
-                    title="失败",
-                    status_headline=None,
-                    text="助记词写入失败",
-                    show_back_button=False,
-                )
+            return self._import_loaded_seed(Satochip_Connector, seeds[selected_menu_num])
 
         elif button_data[selected_menu_num] == self.SCAN_SEED:
             from seedsigner.views.scan_views import ScanSeedQRView
