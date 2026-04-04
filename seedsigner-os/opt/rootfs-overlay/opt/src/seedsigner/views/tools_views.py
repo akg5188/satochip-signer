@@ -81,6 +81,7 @@ MIN_RSA_KEY_BITS = 2048
 
 from pysatochip.JCconstants import SEEDKEEPER_DIC_TYPE, SEEDKEEPER_DIC_ORIGIN, SEEDKEEPER_DIC_EXPORT_RIGHTS, BIP39_WORDLIST_DIC
 from pysatochip.CardConnector import CardConnector, UnexpectedSW12Error
+from pysatochip.util import dict_swap_keys_values
 from binascii import unhexlify, hexlify
 
 PASSWORD_TYPE_RANDOM = "random"
@@ -118,6 +119,38 @@ def _tp_post_main_destination() -> Destination:
 
 def _clear_password_entropy_cache(controller) -> None:
     controller.password_generator_entropy_cache = None
+
+
+def _decode_seedkeeper_random_secret_bytes(secret_hex: str, expected_size: int) -> bytes:
+    raw = bytes.fromhex(secret_hex)
+
+    if len(raw) == expected_size:
+        return raw
+
+    if len(raw) >= 2 and int.from_bytes(raw[:2], "big") == expected_size and len(raw[2:]) >= expected_size:
+        return raw[2:2 + expected_size]
+
+    if len(raw) >= 1 and raw[0] == expected_size and len(raw[1:]) >= expected_size:
+        return raw[1:1 + expected_size]
+
+    raise ValueError(
+        f"无法解析 SeedKeeper 随机数格式（期望 {expected_size} 字节，实际 {len(raw)} 字节）。"
+    )
+
+
+def _load_pending_bip39_seed(controller, mnemonic_words: list[str], wordlist_language_code: str) -> None:
+    from seedsigner.models.seed import InvalidSeedException
+
+    controller.storage.init_pending_mnemonic(num_words=len(mnemonic_words))
+    for index, word in enumerate(mnemonic_words):
+        controller.storage.update_pending_mnemonic(word, index)
+
+    try:
+        controller.storage.convert_pending_mnemonic_to_pending_seed(
+            wordlist_language_code=wordlist_language_code,
+        )
+    except InvalidSeedException as exc:
+        raise ValueError("智能卡生成的助记词未通过本地 BIP39 校验。") from exc
 
 
 def _cache_password_entropy(
@@ -1438,10 +1471,8 @@ class ToolsCommonView(View):
     FILTER = ButtonOption("设备筛选")
     INFO = ButtonOption("卡片信息")
     GENUINE = ButtonOption("真伪检查")
-    CHANGE_PIN = ButtonOption("更改 PIN")
     CHANGE_LABEL = ButtonOption("修改标签")
     CHANGE_NFC = ButtonOption("修改 NFC 策略")
-    FACTORY_RESET = ButtonOption("恢复出厂")
 
     def run(self):
 
@@ -1449,10 +1480,8 @@ class ToolsCommonView(View):
             self.FILTER,
             self.INFO,
             self.GENUINE,
-            self.CHANGE_PIN,
             self.CHANGE_LABEL,
             self.CHANGE_NFC,
-            self.FACTORY_RESET,
         ]
 
         selected_menu_num = self.run_screen(
@@ -1474,17 +1503,127 @@ class ToolsCommonView(View):
         elif button_data[selected_menu_num] == self.GENUINE:
             return Destination(ToolsSmartcardGenuineCheckView)
 
-        elif button_data[selected_menu_num] == self.CHANGE_PIN:
-            return Destination(ToolsSatochipChangePinView)
-        
         elif button_data[selected_menu_num] == self.CHANGE_LABEL:
             return Destination(ToolsSatochipChangeLabelView)
 
         elif button_data[selected_menu_num] == self.CHANGE_NFC:
             return Destination(ToolsSatochipChangeNFCView)
 
-        elif button_data[selected_menu_num] == self.FACTORY_RESET:
-            return Destination(ToolsSatochipFactoryResetView)
+
+class ToolsSeedkeeperGenerateMnemonicView(View):
+    TYPE_12 = ButtonOption("12 个单词", return_data=12)
+    TYPE_15 = ButtonOption("15 个单词", return_data=15)
+    TYPE_18 = ButtonOption("18 个单词", return_data=18)
+    TYPE_21 = ButtonOption("21 个单词", return_data=21)
+    TYPE_24 = ButtonOption("24 个单词", return_data=24)
+
+    def __init__(self, return_destination: Destination | None = None):
+        super().__init__()
+        self.return_destination = return_destination
+
+    def _return_destination(self) -> Destination:
+        if self.return_destination is not None:
+            return self.return_destination
+        return Destination(BackStackView)
+
+    def run(self):
+        from seedsigner.gui.screens.screen import LoadingScreenThread
+
+        seed_lengths = self.settings.get_value(SettingsConstants.SETTING__SEED_WORD_LENGTHS)
+        options = {
+            12: self.TYPE_12,
+            15: self.TYPE_15,
+            18: self.TYPE_18,
+            21: self.TYPE_21,
+            24: self.TYPE_24,
+        }
+        button_data = [options[length] for length in seed_lengths if length in options]
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="SeedKeeper 真随机创建",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return self._return_destination()
+
+        word_count = button_data[selected_menu_num].return_data
+        entropy_size = {
+            12: 16,
+            15: 20,
+            18: 24,
+            21: 28,
+            24: 32,
+        }[word_count]
+
+        connector = None
+        loading = None
+        try:
+            connector = seedkeeper_utils.init_satochip(self, init_card_filter=["seedkeeper"])
+            if not connector:
+                return self._return_destination()
+
+            label = time.strftime(f"BIP39-RNG-{word_count}w-%Y%m%d-%H%M%S")
+            export_rights = dict_swap_keys_values(SEEDKEEPER_DIC_EXPORT_RIGHTS)["Plaintext export allowed"]
+            secret_type = dict_swap_keys_values(SEEDKEEPER_DIC_TYPE)["Secret Key"]
+
+            loading = LoadingScreenThread(text="SeedKeeper 生成随机数\n\n\n\n\n\n")
+            loading.start()
+            response, sw1, sw2, generation = connector.seedkeeper_generate_random_secret(
+                secret_type,
+                0x00,
+                entropy_size,
+                export_rights,
+                label,
+                0,
+                b"",
+            )
+            if sw1 != 0x90 or sw2 != 0x00 or generation.get("id") is None:
+                raise ValueError(f"SeedKeeper 生成失败：{format_sw_error(sw1, sw2)}")
+
+            secret_dict = connector.seedkeeper_export_secret(generation["id"], None)
+            entropy_bytes = _decode_seedkeeper_random_secret_bytes(secret_dict["secret"], entropy_size)
+            mnemonic_words = mnemonic_generation.generate_mnemonic_from_bytes(
+                entropy_bytes,
+                wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
+            )
+            _load_pending_bip39_seed(
+                self.controller,
+                mnemonic_words,
+                self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
+            )
+        except Exception as exc:
+            if loading is not None:
+                loading.stop()
+            self.run_screen(
+                WarningScreen,
+                title="生成失败",
+                status_headline=None,
+                text=str(exc),
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return self._return_destination()
+        finally:
+            if loading is not None:
+                loading.stop()
+
+        self.run_screen(
+            LargeIconStatusScreen,
+            title="生成完成",
+            status_headline=None,
+            text=(
+                f"已用 SeedKeeper 真随机生成 {word_count} 词助记词。\n"
+                f"卡内标签：{label}\n"
+                f"卡内指纹：{generation.get('fingerprint', '未知')}\n\n"
+                "继续后会直接加载到助记词菜单，可查看助记词、BIP39 序号和原始熵二维码。"
+            ),
+            show_back_button=False,
+            button_data=[ButtonOption("继续")],
+        )
+        return Destination(SeedFinalizeView)
 
 
 class ToolsCommonFilterView(View):
@@ -1659,10 +1798,26 @@ class ToolsSmartcardGenuineCheckView(View):
         return Destination(BackStackView)
 
 class ToolsSatochipChangePinView(View):
+    def __init__(
+        self,
+        card_filter: list[str] | None = None,
+        card_label: str = "智能卡",
+        return_destination: Destination | None = None,
+    ):
+        super().__init__()
+        self.card_filter = card_filter
+        self.card_label = card_label
+        self.return_destination = return_destination
+
+    def _return_destination(self) -> Destination:
+        if self.return_destination is not None:
+            return self.return_destination
+        return _tp_post_main_destination()
+
     def run(self):
 
         allowed = ["satochip", "seedkeeper"]
-        card_filter = self.controller.tools_common_card_filter or ["satochip", "seedkeeper", "satodime"]
+        card_filter = self.card_filter or self.controller.tools_common_card_filter or ["satochip", "seedkeeper", "satodime"]
         card_filter = [c for c in card_filter if c in allowed]
 
         Satochip_Connector = seedkeeper_utils.init_satochip(self, init_card_filter=card_filter)
@@ -1683,7 +1838,7 @@ class ToolsSatochipChangePinView(View):
                 LargeIconStatusScreen,
                 title="Success",
                 status_headline=None,
-                text=f"PIN Updated",
+                text=f"{self.card_label} PIN 已更新",
                 show_back_button=False,
             )
             # Update cached pin
@@ -1695,11 +1850,11 @@ class ToolsSatochipChangePinView(View):
                 WarningScreen,
                 title="Invalid PIN",
                 status_headline=None,
-                text=f"Invalid PIN entered, select another and try again.",
+                text=f"{self.card_label} PIN 更新失败，请确认当前 PIN 后重试。",
                 show_back_button=True,
             )
         
-        return _tp_post_main_destination()
+        return self._return_destination()
     
 class ToolsSatochipChangeNFCView(View):
     def run(self):
@@ -1776,6 +1931,22 @@ class ToolsSatochipChangeNFCView(View):
         return Destination(MainMenuView)
 
 class ToolsSatochipFactoryResetView(View):
+    def __init__(
+        self,
+        card_filter: list[str] | None = None,
+        card_label: str = "智能卡",
+        return_destination: Destination | None = None,
+    ):
+        super().__init__()
+        self.card_filter = card_filter
+        self.card_label = card_label
+        self.return_destination = return_destination
+
+    def _return_destination(self) -> Destination:
+        if self.return_destination is not None:
+            return self.return_destination
+        return Destination(BackStackView)
+
     def run(self):
         resetStatus = False
 
@@ -1783,12 +1954,12 @@ class ToolsSatochipFactoryResetView(View):
                 DireWarningScreen,
                 title="警告",
                 status_headline=None,
-                text="如果没有可用备份就执行恢复出厂，资金将无法找回。",
+                text=f"如果没有可用备份就重置 {self.card_label}，其中的资金或秘密可能无法找回。",
                 show_back_button=True,
                 button_data=[ButtonOption("我明白")],
             )
         if ret == RET_CODE__BACK_BUTTON:
-            return Destination(BackStackView)
+            return self._return_destination()
 
         """Initiate the card Factory Reset Process using the legacy or new approach based on card type and version
 
@@ -1800,13 +1971,13 @@ class ToolsSatochipFactoryResetView(View):
         new version currently only implemented on SeedKeeper v0.2 and higher
         """
         allowed = ["satochip", "seedkeeper"]
-        card_filter = self.controller.tools_common_card_filter or ["satochip", "seedkeeper", "satodime"]
+        card_filter = self.card_filter or self.controller.tools_common_card_filter or ["satochip", "seedkeeper", "satodime"]
         card_filter = [c for c in card_filter if c in allowed]
 
         Satochip_Connector = seedkeeper_utils.init_satochip(self, init_card_filter=card_filter, require_pin = False)
 
         if not Satochip_Connector:
-            return Destination(BackStackView)
+            return self._return_destination()
 
         if Satochip_Connector.card_type == "SeedKeeper":
             # get version
@@ -1858,7 +2029,7 @@ class ToolsSatochipFactoryResetView(View):
                 LargeIconStatusScreen,
                 title="成功",
                 status_headline=None,
-                text="卡片已恢复出厂设置。",
+                text=f"{self.card_label} 已恢复出厂设置。",
                 show_back_button=False,
             )
         else:
@@ -1870,7 +2041,7 @@ class ToolsSatochipFactoryResetView(View):
                 show_back_button=True,
             )
 
-        return Destination(BackStackView)
+        return self._return_destination()
         
     def common_reset_factory_legacy(self, Satochip_Connector):
         from seedsigner.gui.screens.screen import LoadingScreenThread
@@ -2228,6 +2399,7 @@ class ToolsSatochipChangeLabelView(View):
         return Destination(MainMenuView)
 
 class ToolsSeedkeeperView(View):
+    GENERATE_MNEMONIC = ButtonOption("卡上真随机创建助记词")
     VIEW_FREE_SPACE = ButtonOption("查看剩余空间")
     VIEW_SECRETS = ButtonOption("查看卡内秘密")
     IMPORT_PASSWORD = ButtonOption("保存密码到卡片")
@@ -2235,15 +2407,20 @@ class ToolsSeedkeeperView(View):
     LOAD_DESCRIPTOR = ButtonOption("加载多签描述符")
     SAVE_DESCRIPTOR = ButtonOption("保存多签描述符")
     CLONE_SECRETS = ButtonOption("克隆卡内秘密")
+    CHANGE_PIN = ButtonOption("更改 SeedKeeper PIN")
+    FACTORY_RESET = ButtonOption("重置 SeedKeeper")
 
     def run(self):
         button_data = [
+            self.GENERATE_MNEMONIC,
             self.VIEW_SECRETS,
             self.IMPORT_PASSWORD,
             self.DELETE_SECRET,
             self.LOAD_DESCRIPTOR,
             self.SAVE_DESCRIPTOR,
             self.CLONE_SECRETS,
+            self.CHANGE_PIN,
+            self.FACTORY_RESET,
             self.VIEW_FREE_SPACE,
         ]
 
@@ -2256,6 +2433,17 @@ class ToolsSeedkeeperView(View):
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(BackStackView)
+
+        elif button_data[selected_menu_num] == self.GENERATE_MNEMONIC:
+            return Destination(
+                ToolsSeedkeeperGenerateMnemonicView,
+                view_args=dict(
+                    return_destination=Destination(
+                        ToolsSeedkeeperView,
+                        clear_history=True,
+                    ),
+                ),
+            )
 
         elif button_data[selected_menu_num] == self.VIEW_SECRETS:
             return Destination(ToolsSeedkeeperViewSecretsView)
@@ -2277,6 +2465,26 @@ class ToolsSeedkeeperView(View):
 
         elif button_data[selected_menu_num] == self.CLONE_SECRETS:
             return Destination(ToolsSeedkeeperCloneSecretsView)
+
+        elif button_data[selected_menu_num] == self.CHANGE_PIN:
+            return Destination(
+                ToolsSatochipChangePinView,
+                view_args=dict(
+                    card_filter=["seedkeeper"],
+                    card_label="SeedKeeper",
+                    return_destination=Destination(ToolsSeedkeeperView, clear_history=True),
+                ),
+            )
+
+        elif button_data[selected_menu_num] == self.FACTORY_RESET:
+            return Destination(
+                ToolsSatochipFactoryResetView,
+                view_args=dict(
+                    card_filter=["seedkeeper"],
+                    card_label="SeedKeeper",
+                    return_destination=Destination(ToolsSeedkeeperView, clear_history=True),
+                ),
+            )
 
 
 class ToolsSeedkeeperFreeSpaceView(View):
@@ -3332,6 +3540,8 @@ class ToolsSatochipView(View):
     EXPORT_XPUB = ButtonOption("导出 Xpub")
     LOAD_DESCRIPTOR = ButtonOption("加载为描述符")
     LOAD_PSBT = ButtonOption("加载 PSBT")
+    CHANGE_PIN = ButtonOption("更改 Satochip PIN")
+    FACTORY_RESET = ButtonOption("重置 Satochip")
     ADVANCED = ButtonOption("高级功能")
 
     def run(self):
@@ -3340,6 +3550,8 @@ class ToolsSatochipView(View):
             self.EXPORT_XPUB,
             self.LOAD_DESCRIPTOR,
             self.LOAD_PSBT,
+            self.CHANGE_PIN,
+            self.FACTORY_RESET,
             self.ADVANCED,
         ]
         selected_menu_num = self.run_screen(
@@ -3362,6 +3574,24 @@ class ToolsSatochipView(View):
             return Destination(SatochipLoadDescriptorScriptTypeView)
         elif button_data[selected_menu_num] == self.LOAD_PSBT:
             return Destination(ToolsSatochipLoadPsbtView)
+        elif button_data[selected_menu_num] == self.CHANGE_PIN:
+            return Destination(
+                ToolsSatochipChangePinView,
+                view_args=dict(
+                    card_filter=["satochip"],
+                    card_label="Satochip",
+                    return_destination=Destination(ToolsSatochipView, clear_history=True),
+                ),
+            )
+        elif button_data[selected_menu_num] == self.FACTORY_RESET:
+            return Destination(
+                ToolsSatochipFactoryResetView,
+                view_args=dict(
+                    card_filter=["satochip"],
+                    card_label="Satochip",
+                    return_destination=Destination(ToolsSatochipView, clear_history=True),
+                ),
+            )
         elif button_data[selected_menu_num] == self.ADVANCED:
             return Destination(ToolsSatochipAdvancedView)
 

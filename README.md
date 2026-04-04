@@ -95,7 +95,11 @@ bash scripts/rebuild_official_release.sh wallet-release
   - `TokenPocket` 中转场景
   - 助记词/BIP39 序号查看、原始熵二维码复核、`BIP85` 子助记词、钢板数字流程、智能卡工具、固件完整性自检
   - 当前助记词与 `BIP85` 子助记词写入 `SatochipApplet / SeedKeeper`
-  - 智能卡工具里的 `SeedKeeper` 功能入口与完整智能卡菜单
+  - `助记词工具` 里的 `智能卡真随机创建助记词`
+  - 智能卡工具里的 `SeedKeeper` 功能入口和 `Satochip` 功能入口
+  - `SeedKeeper` 里保存二次加密后的假助记词，并可重新加载回树莓派继续二次还原
+  - 分开的 `更改 Satochip PIN / 更改 SeedKeeper PIN`
+  - 分开的 `重置 Satochip / 重置 SeedKeeper`
   - 交易详情核对页 + 单次 PIN 流程
   注意：
   - 这张现在就是当前推荐下载入口

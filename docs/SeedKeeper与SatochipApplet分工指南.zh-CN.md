@@ -14,10 +14,9 @@
 - 同一张卡也可以同时装两种 applet；如果 `gp.jar --list` 已经能看到两条 `APP`，就不要再为了切换功能去重刷
 - 当前官方 `SeedSigner` 固件不能直接给卡刷 applet
 - 当前本仓库的树莓派固件也不能直接给卡切换 `SeedKeeper / SatochipApplet`
-- 最稳的长期方案仍然是：
-  - 一张 `SeedKeeper` 卡负责秘密管理/备份导入导出
-  - 一张 `Satochip` 卡负责签名
-- 但如果你手里的同一张卡已经同时安装好了两个 applet，就直接用现状，不要再重刷
+- 最稳的长期方案有两种：
+  - 如果你当前一张卡已经同时装好了两个 applet，就直接用这一张
+  - 如果你以后想把职责彻底分开，再考虑两张卡分工
 
 ## 2. 它们分别是干什么的
 
@@ -86,6 +85,7 @@
 当前这套“离线签名器”固件可以做的是：
 
 - 使用已加载助记词
+- 用 `SeedKeeper` 真随机创建标准 `BIP39` 助记词
 - 从 `SeedKeeper` 导入助记词
 - 查看 `BIP39` 序号
 - 查看标准 `BIP39` 原始熵 `HEX`
@@ -95,9 +95,13 @@
 - 钢板数字流程
 - 把当前助记词或 `BIP85` 子助记词写入已安装 `SatochipApplet` 的卡
 - 把当前助记词或 `BIP85` 子助记词写入 `SeedKeeper`
+- 把二次加密后的假助记词保存到 `SeedKeeper`
+- 从 `SeedKeeper` 把二次加密后的假助记词加载回树莓派继续二次还原
 - 进入 `SeedKeeper` 功能菜单
-- 进入完整智能卡菜单
-- 用智能卡派生地址、导出 `xpub/zpub`、参与签名
+- 分别更改 `Satochip PIN / SeedKeeper PIN`
+- 分别重置 `Satochip / SeedKeeper`
+- 进入 `Satochip` 功能菜单
+- 用 `Satochip` 派生地址、导出 `xpub/zpub`、参与签名
 
 它不能直接做的是：
 
@@ -196,6 +200,7 @@ java -jar gp.jar --list
 1. 保持当前卡不动
 2. 用本仓库当前树莓派固件
 3. 需要时在“助记词工具”里导入或创建助记词
+   - 如果想优先用卡内真随机，就先点 `智能卡真随机创建助记词`
 4. 在“已加载助记词”里查看：
    - `查看 BIP39 序号`
    - `查看原始熵(HEX)`
@@ -205,7 +210,11 @@ java -jar gp.jar --list
    - 存到 `SeedKeeper` 就点 `写入当前助记词到 SeedKeeper`
 6. 需要进一步管卡时，再去“智能卡工具”里：
    - `SeedKeeper 功能`
-   - `完整智能卡菜单`
+   - `Satochip 功能`
+   - `保存二次加密助记词到 SeedKeeper`
+   - `从 SeedKeeper 加载二次加密助记词`
+   - `更改 Satochip PIN / 更改 SeedKeeper PIN`
+   - `重置 Satochip / 重置 SeedKeeper`
 
 ## 10. 如果以后忘了，先看哪里
 

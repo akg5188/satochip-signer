@@ -262,13 +262,26 @@ APP: 536565644B656570657200 (SELECTABLE)
 
 ### 8.5 接下来做什么
 
-刷完 `SeedKeeper` 后，后续通常不是去树莓派固件里初始化，而是要用支持 `SeedKeeper` 的桌面或手机工具继续做：
+刷完 `SeedKeeper` 后，后续不要再把“刷卡”和“树莓派里的日常使用”混在一起。
 
-- 设置 `PIN`
-- 导入/生成 secret
-- 导出给对应目标设备
+当前树莓派固件里已经能直接做的，是：
 
-本仓库当前没有把完整的 `SeedKeeper` 初始化工具链打包进来，所以这一步不要误以为还能继续走 `Satochip-Utils` 教程。
+- `助记词工具 -> 智能卡真随机创建助记词`
+- `智能卡工具 -> SeedKeeper 功能`
+- `更改 SeedKeeper PIN`
+- `重置 SeedKeeper`
+- 把当前助记词或 `BIP85` 子助记词写入 `SeedKeeper`
+
+当前树莓派固件里仍然不能做的，是：
+
+- 给白卡安装 `SeedKeeper` applet
+- 卸载/切换 applet
+- 把刷 applet 当成固件菜单里的一个步骤
+
+所以顺序应该是：
+
+1. 先在普通系统里用 `gp.jar` 把 applet 安装好
+2. 再回到树莓派固件里做日常的 `SeedKeeper / Satochip` 使用
 
 ## 9. 如果你一定要改动卡上的 applet 组合
 

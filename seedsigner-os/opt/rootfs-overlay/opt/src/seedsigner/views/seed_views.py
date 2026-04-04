@@ -5667,21 +5667,46 @@ class SaveToSeedkeeperView(View):
         return entropy  # bytearray
     def __init__(
         self,
-        seed_num: int,
+        seed_num: int | None = None,
         bip85_data: dict = None,
         share_index: int | None = None,
         return_destination: Destination | None = None,
+        words_override: list[str] | None = None,
+        label_prefix: str = "",
+        success_text: str | None = None,
     ):
         super().__init__()
         self.seed_num = seed_num
         self.bip85_data = bip85_data
         self.share_index = share_index
         self.return_destination = return_destination
+        self.words_override = list(words_override) if words_override else None
+        self.label_prefix = label_prefix or ""
+        self.success_text = success_text
 
     def _success_destination(self) -> Destination:
         if self.return_destination is not None:
             return self.return_destination
+        if self.seed_num is None:
+            return Destination(BackStackView)
         return Destination(SeedOptionsView, view_args={"seed_num": self.seed_num}, clear_history=True)
+
+    def _build_text_secret_dic(self, connector, text_value: str, label: str) -> dict:
+        status = connector.card_get_status()[3]
+        export_rights = "Plaintext export allowed"
+        payload_bytes = text_value.encode("utf-8")
+
+        if status['protocol_minor_version'] == 1:
+            if len(payload_bytes) > 255:
+                raise ValueError("SeedKeeper v1 不支持超过 255 字节的文本秘密。")
+            secret_type = "Password"
+            secret_list = [len(payload_bytes)] + list(payload_bytes)
+        else:
+            secret_type = "Data"
+            secret_list = list(len(payload_bytes).to_bytes(2, "big")) + list(payload_bytes)
+
+        header = connector.make_header(secret_type, export_rights, label)
+        return {'header': header, 'secret_list': secret_list}
 
     def run(self):
         from seedsigner.gui.screens.screen import LoadingScreenThread
@@ -5691,9 +5716,47 @@ class SaveToSeedkeeperView(View):
             if not Satochip_Connector:
                 return Destination(BackStackView)
 
-            seed = self.controller.get_seed(self.seed_num)
+            seed = self.controller.get_seed(self.seed_num) if self.seed_num is not None else None
 
-            if isinstance(seed, Slip39Seed):
+            if self.words_override is not None:
+                ret = seed_screens.SeedAddPassphraseScreen(
+                    title="Secret Label",
+                    passphrase="",
+                ).display()
+                if "is_back_button" in ret:
+                    return Destination(BackStackView)
+
+                entered_label = ret['passphrase'].strip()
+                if not entered_label:
+                    raise ValueError("标签不能为空。")
+
+                label = f"{self.label_prefix}{entered_label}"
+                secret_dic = self._build_text_secret_dic(
+                    Satochip_Connector,
+                    " ".join(self.words_override),
+                    label,
+                )
+
+            elif isinstance(seed, TransientWordSeed):
+                ret = seed_screens.SeedAddPassphraseScreen(
+                    title="Secret Label",
+                    passphrase=seed.get_fingerprint(network=self.settings.get_value(SettingsConstants.SETTING__NETWORK)),
+                ).display()
+                if "is_back_button" in ret:
+                    return Destination(BackStackView)
+
+                entered_label = ret['passphrase'].strip()
+                if not entered_label:
+                    raise ValueError("标签不能为空。")
+
+                label = f"{self.label_prefix}{entered_label}"
+                secret_dic = self._build_text_secret_dic(
+                    Satochip_Connector,
+                    seed.mnemonic_str,
+                    label,
+                )
+
+            elif isinstance(seed, Slip39Seed):
                 if self.share_index is None:
                     button_data = [ButtonOption(f"Share {i+1}") for i in range(len(seed.mnemonic_list))]
                     share_sel = self.run_screen(
@@ -5846,7 +5909,7 @@ class SaveToSeedkeeperView(View):
                 LargeIconStatusScreen,
                 title="Secret Saved",
                 status_headline=None,
-                text=f"Secret Successfully Saved to Seedkeeper",
+                text=self.success_text or "Secret Successfully Saved to Seedkeeper",
                 show_back_button=True,
             )
             return self._success_destination()

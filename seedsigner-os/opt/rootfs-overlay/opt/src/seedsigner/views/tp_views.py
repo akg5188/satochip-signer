@@ -60,6 +60,7 @@ CAMO_BUTTON_TEXT = " "
 CAMO_TEXT = " "
 STEEL_WRAP_WIDTH = 18
 SECP256K1_FIELD_PRIME = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+TP_STEEL_SECRET_PREFIX = "TP-STEEL:"
 
 logger = logging.getLogger(__name__)
 _SIGNER_PREVIEW_MODULE = None
@@ -1171,6 +1172,27 @@ def _normalize_numeric_entry(raw: str) -> str:
     return " ".join(str(raw or "").replace("，", " ").replace(",", " ").split())
 
 
+def _decode_seedkeeper_text_payload(secret_hex: str) -> str:
+    raw = bytes.fromhex(secret_hex)
+    if len(raw) >= 2 and int.from_bytes(raw[:2], "big") == len(raw[2:]):
+        return raw[2:].decode("utf-8")
+    if len(raw) >= 1 and raw[0] == len(raw[1:]):
+        return raw[1:].decode("utf-8")
+    return raw.decode("utf-8")
+
+
+def _parse_seedkeeper_steel_words(secret_text: str) -> list[str]:
+    words = [word.strip().lower() for word in str(secret_text or "").replace("\n", " ").split() if word.strip()]
+    if len(words) != 12:
+        raise ValueError("当前钢板二次加密助记词只支持 12 词。")
+
+    invalid_words = [word for word in words if word not in STEEL_WORDLIST]
+    if invalid_words:
+        raise ValueError(f"SeedKeeper 数据里包含无效 BIP39 单词：{invalid_words[0]}")
+
+    return words
+
+
 def _normalize_plate_group_entry(raw: str) -> str:
     normalized = _normalize_numeric_entry(raw)
     if not normalized:
@@ -1422,6 +1444,7 @@ class ToolsTpHomeView(View):
 
 
 class ToolsTpSeedToolsView(View):
+    SEEDKEEPER_CREATE = ButtonOption("智能卡真随机创建助记词")
     CAMERA_CREATE = ButtonOption("拍照创建助记词")
     DICE_CREATE = ButtonOption("摇骰子创建助记词")
     IMPORT_SEED = ButtonOption("导入助记词")
@@ -1432,6 +1455,7 @@ class ToolsTpSeedToolsView(View):
 
     def run(self):
         button_data = [
+            self.SEEDKEEPER_CREATE,
             self.CAMERA_CREATE,
             self.DICE_CREATE,
             self.IMPORT_SEED,
@@ -1452,6 +1476,19 @@ class ToolsTpSeedToolsView(View):
             return _tp_home_destination()
 
         selected = button_data[selected_menu_num]
+
+        if selected == self.SEEDKEEPER_CREATE:
+            from seedsigner.views.tools_views import ToolsSeedkeeperGenerateMnemonicView
+
+            return Destination(
+                ToolsSeedkeeperGenerateMnemonicView,
+                view_args=dict(
+                    return_destination=Destination(
+                        ToolsTpSeedToolsView,
+                        clear_history=True,
+                    ),
+                ),
+            )
 
         if selected == self.CAMERA_CREATE:
             from seedsigner.views.tools_views import ToolsImageEntropyLivePreviewView
@@ -2006,6 +2043,7 @@ class ToolsTpSteelCipherOptionsView(View):
     VIEW_WORDS = ButtonOption("查看二次加密助记词")
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     VIEW_PLATE = ButtonOption("查看钢板打孔数字")
+    SAVE_TO_SEEDKEEPER = ButtonOption("保存到 SeedKeeper")
     DECRYPT = ButtonOption("二次还原为真实助记词")
     CLEAR = ButtonOption("删除钢板缓存", button_label_color="red")
 
@@ -2025,6 +2063,7 @@ class ToolsTpSteelCipherOptionsView(View):
             self.VIEW_WORDS,
             self.VIEW_INDICES,
             self.VIEW_PLATE,
+            self.SAVE_TO_SEEDKEEPER,
             self.DECRYPT,
             self.CLEAR,
         ]
@@ -2056,6 +2095,17 @@ class ToolsTpSteelCipherOptionsView(View):
             groups = words_to_plate_groups(self.controller.storage.get_steel_encrypted_mnemonic())
             self.controller.storage.set_steel_plate_groups(groups)
             return Destination(ToolsTpSteelPlateWordsView, view_args=dict(page_index=0))
+        if selected == self.SAVE_TO_SEEDKEEPER:
+            from seedsigner.views.seed_views import SaveToSeedkeeperView
+            return Destination(
+                SaveToSeedkeeperView,
+                view_args=dict(
+                    words_override=self.controller.storage.get_steel_encrypted_mnemonic(),
+                    label_prefix=TP_STEEL_SECRET_PREFIX,
+                    success_text="二次加密助记词已保存到 SeedKeeper",
+                    return_destination=Destination(ToolsTpSteelCipherOptionsView, clear_history=True),
+                ),
+            )
         if selected == self.DECRYPT:
             return Destination(ToolsTpSteelShiftInputView, view_args=dict(mode="decrypt_cache", word_index=0))
         if selected == self.CLEAR:
@@ -2765,25 +2815,15 @@ class ToolsTpSteelPlateWordsView(View):
 
 
 class ToolsTpSmartcardToolsView(View):
-    FULL_SMARTCARD_MENU = ButtonOption("完整智能卡菜单")
+    SATOCHIP_TOOLS = ButtonOption("Satochip 功能")
     SEEDKEEPER_TOOLS = ButtonOption("SeedKeeper 功能")
-    VIEW_ADDRESS = ButtonOption("按路径查看智能卡地址")
-    EXPORT_BTC_ZPUB = ButtonOption("导出智能卡 BTC zpub")
-    EXPORT_BTC_XPUB = ButtonOption("导出智能卡 BTC xpub")
-    IMPORT_LOADED_SEED = ButtonOption("写入已加载助记词到智能卡")
-    CHANGE_PIN = ButtonOption("更改智能卡 PIN")
-    FACTORY_RESET = ButtonOption("重置智能卡")
+    FULL_SMARTCARD_MENU = ButtonOption("完整智能卡菜单")
 
     def run(self):
         button_data = [
-            self.FULL_SMARTCARD_MENU,
+            self.SATOCHIP_TOOLS,
             self.SEEDKEEPER_TOOLS,
-            self.VIEW_ADDRESS,
-            self.EXPORT_BTC_ZPUB,
-            self.EXPORT_BTC_XPUB,
-            self.IMPORT_LOADED_SEED,
-            self.CHANGE_PIN,
-            self.FACTORY_RESET,
+            self.FULL_SMARTCARD_MENU,
         ]
 
         selected_menu_num = self.run_screen(
@@ -2798,52 +2838,300 @@ class ToolsTpSmartcardToolsView(View):
 
         selected = button_data[selected_menu_num]
 
+        if selected == self.SATOCHIP_TOOLS:
+            return Destination(ToolsTpSatochipToolsView)
+
+        if selected == self.SEEDKEEPER_TOOLS:
+            return Destination(ToolsTpSeedkeeperToolsView)
+
         if selected == self.FULL_SMARTCARD_MENU:
             from seedsigner.views.tools_views import ToolsSmartcardMenuView
 
             return Destination(ToolsSmartcardMenuView)
 
-        if selected == self.SEEDKEEPER_TOOLS:
-            from seedsigner.views.tools_views import ToolsSeedkeeperView
+        return _tp_home_destination()
 
-            return Destination(ToolsSeedkeeperView)
 
+class ToolsTpSatochipToolsView(View):
+    VIEW_ADDRESS = ButtonOption("按路径查看 Satochip 地址")
+    EXPORT_BTC_ZPUB = ButtonOption("导出 Satochip BTC zpub")
+    EXPORT_BTC_XPUB = ButtonOption("导出 Satochip BTC xpub")
+    IMPORT_LOADED_SEED = ButtonOption("写入已加载助记词到 Satochip")
+    CHANGE_PIN = ButtonOption("更改 Satochip PIN")
+    FACTORY_RESET = ButtonOption("重置 Satochip")
+    MORE = ButtonOption("更多 Satochip 功能")
+
+    def run(self):
+        button_data = [
+            self.VIEW_ADDRESS,
+            self.EXPORT_BTC_ZPUB,
+            self.EXPORT_BTC_XPUB,
+            self.IMPORT_LOADED_SEED,
+            self.CHANGE_PIN,
+            self.FACTORY_RESET,
+            self.MORE,
+        ]
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="Satochip 功能",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return _smartcard_tools_destination()
+
+        selected = button_data[selected_menu_num]
         if selected == self.VIEW_ADDRESS:
             return Destination(ToolsTpSmartcardAddressPathView)
-
         if selected == self.EXPORT_BTC_ZPUB:
             return Destination(ToolsTpBtcXpubPinEntryView, view_args=dict(xtype="zpub"))
-
         if selected == self.EXPORT_BTC_XPUB:
             return Destination(ToolsTpBtcXpubPinEntryView, view_args=dict(xtype="xpub"))
-
         if selected == self.IMPORT_LOADED_SEED:
-            if not self.controller.storage.seeds:
+            from seedsigner.views.tools_views import ToolsSatochipImportSeedView
+            return Destination(
+                ToolsSatochipImportSeedView,
+                view_args=dict(
+                    return_destination=Destination(ToolsTpSatochipToolsView, clear_history=True),
+                ),
+            )
+        if selected == self.CHANGE_PIN:
+            from seedsigner.views.tools_views import ToolsSatochipChangePinView
+            return Destination(
+                ToolsSatochipChangePinView,
+                view_args=dict(
+                    card_filter=["satochip"],
+                    card_label="Satochip",
+                    return_destination=Destination(ToolsTpSatochipToolsView, clear_history=True),
+                ),
+            )
+        if selected == self.FACTORY_RESET:
+            from seedsigner.views.tools_views import ToolsSatochipFactoryResetView
+            return Destination(
+                ToolsSatochipFactoryResetView,
+                view_args=dict(
+                    card_filter=["satochip"],
+                    card_label="Satochip",
+                    return_destination=Destination(ToolsTpSatochipToolsView, clear_history=True),
+                ),
+            )
+        if selected == self.MORE:
+            from seedsigner.views.tools_views import ToolsSatochipView
+            return Destination(ToolsSatochipView)
+        return _smartcard_tools_destination()
+
+
+class ToolsTpSeedkeeperSelectLoadedSeedView(View):
+    def run(self):
+        from seedsigner.views.seed_views import SaveToSeedkeeperView
+
+        seeds = self.controller.storage.seeds
+        if not seeds:
+            self.run_screen(
+                WarningScreen,
+                title="提示",
+                status_headline=None,
+                text="请先在“助记词工具”里导入或创建助记词，再写入 SeedKeeper。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return Destination(ToolsTpSeedkeeperToolsView, clear_history=True)
+
+        button_data = []
+        for seed in seeds:
+            button_str = seed.get_fingerprint(self.settings.get_value(SettingsConstants.SETTING__NETWORK))
+            button_data.append(ButtonOption(button_str))
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="选择要写入的助记词",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(ToolsTpSeedkeeperToolsView, clear_history=True)
+
+        return Destination(
+            SaveToSeedkeeperView,
+            view_args=dict(
+                seed_num=selected_menu_num,
+                return_destination=Destination(ToolsTpSeedkeeperToolsView, clear_history=True),
+            ),
+        )
+
+
+class ToolsTpSeedkeeperLoadSteelCipherView(View):
+    def run(self):
+        connector = seedkeeper_utils.init_satochip(self, init_card_filter=["seedkeeper"])
+        if not connector:
+            return Destination(ToolsTpSeedkeeperToolsView, clear_history=True)
+
+        loading = LoadingScreenThread(text="读取 SeedKeeper 列表\n\n\n\n\n\n")
+        loading.start()
+        try:
+            headers = connector.seedkeeper_list_secret_headers()
+        finally:
+            loading.stop()
+
+        entries = []
+        button_data = []
+        for header in headers:
+            label = header.get("label", "")
+            if not label.startswith(TP_STEEL_SECRET_PREFIX):
+                continue
+            entries.append(header)
+            display_label = label[len(TP_STEEL_SECRET_PREFIX):] or "未命名钢板缓存"
+            button_data.append(ButtonOption(display_label))
+
+        if not button_data:
+            self.run_screen(
+                WarningScreen,
+                title="没有可加载内容",
+                status_headline=None,
+                text="SeedKeeper 里没有已保存的二次加密助记词。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return Destination(ToolsTpSeedkeeperToolsView, clear_history=True)
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="选择二次加密助记词",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(ToolsTpSeedkeeperToolsView, clear_history=True)
+
+        selected_entry = entries[selected_menu_num]
+        loading = LoadingScreenThread(text="读取 SeedKeeper 内容\n\n\n\n\n\n")
+        loading.start()
+        try:
+            secret_dict = connector.seedkeeper_export_secret(selected_entry["id"], None)
+            secret_text = _decode_seedkeeper_text_payload(secret_dict["secret"])
+            words = _parse_seedkeeper_steel_words(secret_text)
+        except Exception as exc:
+            loading.stop()
+            self.run_screen(
+                WarningScreen,
+                title="加载失败",
+                status_headline=None,
+                text=str(exc) or "无法从 SeedKeeper 读取二次加密助记词。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return Destination(ToolsTpSeedkeeperToolsView, clear_history=True)
+        finally:
+            loading.stop()
+
+        label = selected_entry.get("label", "")
+        source_label = label[len(TP_STEEL_SECRET_PREFIX):] if label.startswith(TP_STEEL_SECRET_PREFIX) else label
+        self.controller.storage.set_steel_encrypted_mnemonic(words, source_fingerprint=f"SeedKeeper:{source_label}")
+        self.controller.storage.set_steel_plate_groups(words_to_plate_groups(words))
+
+        self.run_screen(
+            LargeIconStatusScreen,
+            title="加载完成",
+            status_headline=None,
+            text="已从 SeedKeeper 加载二次加密助记词，可以继续查看、核对或二次还原。",
+            show_back_button=False,
+            button_data=[ButtonOption("继续")],
+        )
+        return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
+
+
+class ToolsTpSeedkeeperToolsView(View):
+    GENERATE_MNEMONIC = ButtonOption("卡上真随机创建助记词")
+    SAVE_CURRENT_SEED = ButtonOption("写入已加载助记词到 SeedKeeper")
+    SAVE_STEEL_CIPHER = ButtonOption("保存二次加密助记词到 SeedKeeper")
+    LOAD_STEEL_CIPHER = ButtonOption("从 SeedKeeper 加载二次加密助记词")
+    CHANGE_PIN = ButtonOption("更改 SeedKeeper PIN")
+    FACTORY_RESET = ButtonOption("重置 SeedKeeper")
+    MORE = ButtonOption("更多 SeedKeeper 功能")
+
+    def run(self):
+        button_data = [
+            self.GENERATE_MNEMONIC,
+            self.SAVE_CURRENT_SEED,
+            self.SAVE_STEEL_CIPHER,
+            self.LOAD_STEEL_CIPHER,
+            self.CHANGE_PIN,
+            self.FACTORY_RESET,
+            self.MORE,
+        ]
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="SeedKeeper 功能",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return _smartcard_tools_destination()
+
+        selected = button_data[selected_menu_num]
+        if selected == self.GENERATE_MNEMONIC:
+            from seedsigner.views.tools_views import ToolsSeedkeeperGenerateMnemonicView
+            return Destination(
+                ToolsSeedkeeperGenerateMnemonicView,
+                view_args=dict(
+                    return_destination=Destination(ToolsTpSeedkeeperToolsView, clear_history=True),
+                ),
+            )
+        if selected == self.SAVE_CURRENT_SEED:
+            return Destination(ToolsTpSeedkeeperSelectLoadedSeedView)
+        if selected == self.SAVE_STEEL_CIPHER:
+            if not self.controller.storage.has_steel_encrypted_mnemonic():
                 self.run_screen(
                     WarningScreen,
                     title="提示",
                     status_headline=None,
-                    text="请先在“助记词工具”里导入或创建助记词，再写入智能卡。",
-                    show_back_button=True,
+                    text="当前没有钢板二次加密助记词缓存，请先完成二次加密后再保存。",
+                    show_back_button=False,
                     button_data=[ButtonOption("继续")],
                 )
-                return _smartcard_tools_destination()
-
-            from seedsigner.views.tools_views import ToolsSatochipImportSeedView
-
-            return Destination(ToolsSatochipImportSeedView)
-
+                return Destination(ToolsTpSeedkeeperToolsView, clear_history=True)
+            from seedsigner.views.seed_views import SaveToSeedkeeperView
+            return Destination(
+                SaveToSeedkeeperView,
+                view_args=dict(
+                    words_override=self.controller.storage.get_steel_encrypted_mnemonic(),
+                    label_prefix=TP_STEEL_SECRET_PREFIX,
+                    success_text="二次加密助记词已保存到 SeedKeeper",
+                    return_destination=Destination(ToolsTpSeedkeeperToolsView, clear_history=True),
+                ),
+            )
+        if selected == self.LOAD_STEEL_CIPHER:
+            return Destination(ToolsTpSeedkeeperLoadSteelCipherView)
         if selected == self.CHANGE_PIN:
             from seedsigner.views.tools_views import ToolsSatochipChangePinView
-
-            return Destination(ToolsSatochipChangePinView)
-
+            return Destination(
+                ToolsSatochipChangePinView,
+                view_args=dict(
+                    card_filter=["seedkeeper"],
+                    card_label="SeedKeeper",
+                    return_destination=Destination(ToolsTpSeedkeeperToolsView, clear_history=True),
+                ),
+            )
         if selected == self.FACTORY_RESET:
             from seedsigner.views.tools_views import ToolsSatochipFactoryResetView
-
-            return Destination(ToolsSatochipFactoryResetView)
-
-        return _tp_home_destination()
+            return Destination(
+                ToolsSatochipFactoryResetView,
+                view_args=dict(
+                    card_filter=["seedkeeper"],
+                    card_label="SeedKeeper",
+                    return_destination=Destination(ToolsTpSeedkeeperToolsView, clear_history=True),
+                ),
+            )
+        if selected == self.MORE:
+            from seedsigner.views.tools_views import ToolsSeedkeeperView
+            return Destination(ToolsSeedkeeperView)
+        return _smartcard_tools_destination()
 
 
 class ToolsTpSmartcardAddressPathView(View):
