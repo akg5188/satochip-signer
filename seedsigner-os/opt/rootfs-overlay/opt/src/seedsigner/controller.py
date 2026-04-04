@@ -197,6 +197,7 @@ class Controller(Singleton):
     GPG_Admin_PIN = None
     tools_common_card_filter: list[str] = None
     javacard_keys: dict | None = None
+    tp_ui_unlocked: bool = False
 
     # Destination placeholder for when we need to jump out to a side flow but intend to
     # return navigation to the main flow (e.g. PSBT flow, load multisig descriptor,

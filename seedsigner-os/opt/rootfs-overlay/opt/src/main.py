@@ -63,9 +63,9 @@ def main(sys_argv=None):
         tp_only_mode = False
     else:
         os.environ["TP_ONLY_MODE"] = "1"
-        from seedsigner.views.tp_views import ToolsTpHomeView
+        from seedsigner.views.tp_views import ToolsTpUiLockView
 
-        initial_destination = Destination(ToolsTpHomeView, clear_history=True)
+        initial_destination = Destination(ToolsTpUiLockView, clear_history=True)
 
     Controller.get_instance().start(
         initial_destination=initial_destination,

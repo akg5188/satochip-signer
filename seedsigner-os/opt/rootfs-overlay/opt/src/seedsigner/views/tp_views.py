@@ -1,4 +1,6 @@
 import json
+import hashlib
+import hmac
 import logging
 import os
 import subprocess
@@ -41,7 +43,7 @@ from seedsigner.models.mnemonic_steel import (
 )
 from seedsigner.models.seed import InvalidSeedException, Seed, TransientWordSeed, XprvSeed
 from seedsigner.models.steel_plate_scan import recognize_plate_groups_from_image
-from seedsigner.models.settings import SettingsConstants
+from seedsigner.models.settings import Settings, SettingsConstants
 from seedsigner.hardware.buttons import HardwareButtonsConstants
 
 from .view import Destination, ErrorView, View
@@ -61,6 +63,10 @@ CAMO_TEXT = " "
 STEEL_WRAP_WIDTH = 18
 SECP256K1_FIELD_PRIME = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
 TP_STEEL_SECRET_PREFIX = "TP-STEEL:"
+TP_UI_LOCK_FILENAME = "offline-signer-login.json"
+TP_UI_LOCK_MIN_LEN = 4
+TP_UI_LOCK_MAX_LEN = 12
+TP_UI_LOCK_PBKDF2_ITERATIONS = 200_000
 
 logger = logging.getLogger(__name__)
 _SIGNER_PREVIEW_MODULE = None
@@ -68,6 +74,94 @@ _SIGNER_PREVIEW_MODULE = None
 
 def _smartcard_tools_destination() -> Destination:
     return Destination(ToolsTpSmartcardToolsView, clear_history=True)
+
+
+def _tp_ui_lock_path() -> Path:
+    settings_path = Path(Settings.SETTINGS_FILENAME).expanduser()
+    if not settings_path.is_absolute():
+        settings_path = settings_path.resolve()
+    return settings_path.with_name(TP_UI_LOCK_FILENAME)
+
+
+def _load_tp_ui_lock_record() -> dict | None:
+    path = _tp_ui_lock_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("version") != 1:
+            return None
+        if not data.get("salt_hex") or not data.get("hash_hex"):
+            return None
+        return data
+    except Exception:
+        logger.exception("Failed to load TP UI lock record")
+        return None
+
+
+def _normalize_tp_ui_password(raw: str) -> str:
+    return "".join(ch for ch in str(raw or "").strip() if ch.isdigit())
+
+
+def _validate_tp_ui_password(password: str) -> None:
+    if not password:
+        raise ValueError("请输入登录密码。")
+    if not password.isdigit():
+        raise ValueError("登录密码只能使用数字。")
+    if not (TP_UI_LOCK_MIN_LEN <= len(password) <= TP_UI_LOCK_MAX_LEN):
+        raise ValueError(f"登录密码长度必须在 {TP_UI_LOCK_MIN_LEN} 到 {TP_UI_LOCK_MAX_LEN} 位之间。")
+
+
+def _hash_tp_ui_password(password: str, salt: bytes, iterations: int = TP_UI_LOCK_PBKDF2_ITERATIONS) -> bytes:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        iterations,
+    )
+
+
+def _save_tp_ui_password(password: str) -> None:
+    _validate_tp_ui_password(password)
+    salt = os.urandom(16)
+    digest = _hash_tp_ui_password(password, salt)
+    payload = {
+        "version": 1,
+        "kind": "tp_ui_lock",
+        "iterations": TP_UI_LOCK_PBKDF2_ITERATIONS,
+        "salt_hex": salt.hex(),
+        "hash_hex": digest.hex(),
+    }
+    path = _tp_ui_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def _verify_tp_ui_password(password: str) -> bool:
+    record = _load_tp_ui_lock_record()
+    if record is None:
+        return False
+    try:
+        salt = bytes.fromhex(record["salt_hex"])
+        expected = bytes.fromhex(record["hash_hex"])
+        iterations = int(record.get("iterations", TP_UI_LOCK_PBKDF2_ITERATIONS))
+    except Exception:
+        logger.exception("Failed to parse TP UI lock record")
+        return False
+
+    actual = _hash_tp_ui_password(password, salt, iterations=iterations)
+    return hmac.compare_digest(actual, expected)
+
+
+def _prompt_for_tp_ui_password(parent_view, title: str, default: str = "") -> str | None:
+    ret = ToolsTextQRTextEntryScreen(
+        textToEncode=default,
+        title=title,
+        initial_keyboard=ToolsTextQRTextEntryScreen.KEYBOARD__DIGITS_BUTTON_TEXT,
+    ).display()
+    if ret.get("is_back_button"):
+        return None
+    return _normalize_tp_ui_password(ret.get("textToEncode", ""))
 
 
 def _localize_error_detail(detail: str) -> str:
@@ -1156,7 +1250,7 @@ def _official_home_destination() -> Destination:
 
 def _tp_home_destination() -> Destination:
     _set_runtime_mode(True)
-    return Destination(ToolsTpHomeView, clear_history=True)
+    return Destination(ToolsTpUiLockView, clear_history=True)
 
 
 def _steel_camera_capture_destination() -> Destination:
@@ -1441,6 +1535,106 @@ class ToolsTpHomeView(View):
             return Destination(ToolsTpSmartcardToolsView)
 
         return _tp_home_destination()
+
+
+class ToolsTpUiLockView(View):
+    SETUP = ButtonOption("设置登录密码")
+    UNLOCK = ButtonOption("输入登录密码")
+
+    def _power_destination(self) -> Destination:
+        from seedsigner.views.view import PowerOptionsView
+
+        return Destination(PowerOptionsView)
+
+    def _unlock_destination(self) -> Destination:
+        self.controller.tp_ui_unlocked = True
+        return Destination(ToolsTpHomeView, clear_history=True)
+
+    def _warn_and_retry(self, text: str) -> Destination:
+        self.run_screen(
+            WarningScreen,
+            title="登录密码",
+            status_headline=None,
+            text=text,
+            show_back_button=False,
+            button_data=[ButtonOption("继续")],
+        )
+        return Destination(ToolsTpUiLockView, clear_history=True)
+
+    def _setup_password(self) -> Destination:
+        self.run_screen(
+            LargeIconStatusScreen,
+            title="设备登录",
+            status_headline=None,
+            text=(
+                "这是首次启动。\n"
+                "请先设置 4 到 12 位数字登录密码。\n"
+                "以后每次开机先输入它，才会进入离线签名器。"
+            ),
+            show_back_button=False,
+            button_data=[self.SETUP],
+        )
+
+        password = _prompt_for_tp_ui_password(self, "设置登录密码")
+        if password is None:
+            return self._power_destination()
+        try:
+            _validate_tp_ui_password(password)
+        except ValueError as exc:
+            return self._warn_and_retry(str(exc))
+
+        confirm_password = _prompt_for_tp_ui_password(self, "确认登录密码")
+        if confirm_password is None:
+            return self._power_destination()
+        if password != confirm_password:
+            return self._warn_and_retry("两次输入的登录密码不一致，请重新设置。")
+
+        try:
+            _save_tp_ui_password(password)
+        except Exception as exc:
+            logger.exception("Failed to save TP UI password")
+            return self._warn_and_retry(str(exc) or "保存登录密码失败。")
+
+        self.run_screen(
+            LargeIconStatusScreen,
+            title="设置完成",
+            status_headline=None,
+            text=(
+                "登录密码已启用。\n"
+                "以后开机要先输入它，才会进入离线签名器。\n\n"
+                "如果以后忘记，可删除微型存储卡里的 "
+                f"{TP_UI_LOCK_FILENAME} 文件后重新设置。"
+            ),
+            show_back_button=False,
+            button_data=[ButtonOption("进入离线签名器")],
+        )
+        return self._unlock_destination()
+
+    def _enter_password(self) -> Destination:
+        password = _prompt_for_tp_ui_password(self, "输入登录密码")
+        if password is None:
+            return self._power_destination()
+        if _verify_tp_ui_password(password):
+            return self._unlock_destination()
+        return self._warn_and_retry("登录密码错误，请重试。")
+
+    def run(self):
+        if getattr(self.controller, "tp_ui_unlocked", False):
+            return Destination(ToolsTpHomeView, clear_history=True)
+
+        record = _load_tp_ui_lock_record()
+        if record is None:
+            return self._setup_password()
+
+        self.run_screen(
+            LargeIconStatusScreen,
+            title="设备登录",
+            status_headline=None,
+            text="请输入登录密码后进入离线签名器。",
+            show_back_button=False,
+            button_data=[self.UNLOCK],
+        )
+        return self._enter_password()
 
 
 class ToolsTpSeedToolsView(View):
