@@ -17,10 +17,8 @@
 
 当前该下载的 release：
 
-- 树莓派 clean 正式固件：
+- 树莓派当前固件：
   看 [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md) 里的当前推荐 release
-- 树莓派功能预览固件：
-  看 [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md) 里的 `BIP85 / 智能卡写入` 预览说明
 - 安卓正式钱包：
   [wallet-android-20260403-0.1.3](https://github.com/akg5188/satochip-signer/releases/tag/wallet-android-20260403-0.1.3)
 - 安卓智能卡 App：
@@ -86,25 +84,24 @@ bash scripts/rebuild_official_release.sh wallet-release
 
 仓库和 GitHub 现在主要保留两张树莓派镜像：
 
-- `dist/system-update-latest.img.xz`
-  这是当前 clean 正式版，也是现在优先推荐刷的包。
+- `dist/system-update-bip85-smartcard-test.img.xz`
+  这是现在优先推荐直接刷的包。
   已确认支持：
   - 自有安卓钱包扫码签名
   - `BlueWallet` 的 `BTC PSBT`
   - `TokenPocket` 中转场景
   - 助记词/BIP39 序号查看、`BIP85` 子助记词、钢板数字流程、智能卡工具、固件完整性自检
   - 交易详情核对页 + 单次 PIN 流程
-
-- `dist/system-update-bip85-smartcard-test.img.xz`
-  这是当前功能预览版，用来优先体验：
-  - `BIP85` 子助记词
-  - 当前助记词直接写入智能卡
-  - 子助记词直接写入智能卡
-  - 最新助记词工具菜单调整
   注意：
-  - 这张是可直接刷机使用的预览包
-  - 不是当前可复现的 clean 正式基线
-  - 以后想重建并严格对哈希，还是先看 `system-update-latest.img.xz`
+  - 这张现在就是当前推荐下载入口
+  - 以后想重建并严格对哈希，仍然看 `system-update-latest.img.xz` 这条 clean 基线
+
+- `dist/system-update-latest.img.xz`
+  这是保留的 clean 正式基线。
+  用途：
+  - 以后严格重建并校验哈希
+  - 做长期基线留档
+  - 不再作为当前首先推荐下载的固件
 
 怎么对应源码，看这里：
 
