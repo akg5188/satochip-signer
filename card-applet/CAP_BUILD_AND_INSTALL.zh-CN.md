@@ -7,6 +7,10 @@
 - `card-applet/prebuilt/SatoChip-3.0.4.cap`
 - `card-applet/prebuilt/SHA256SUMS.txt`
 
+下载 `gp.jar`、上游官方 CAP、以及固定 `SHA256` 的验真流程，先看：
+
+- [../docs/官方程序下载验真与校验.zh-CN.md](../docs/官方程序下载验真与校验.zh-CN.md)
+
 ## 1. 前提条件
 
 - 系统：Linux/Tails（建议离线环境进行助记词导入和关键操作）
@@ -75,17 +79,20 @@ card-applet/SatochipApplet/SatoChip-3.0.4.cap
 
 ## 5. 安装 CAP 到卡（GlobalPlatformPro）
 
-下载 `gp.jar`：
+下载固定版本 `gp.jar`：
 
 ```bash
 mkdir -p ~/card-work && cd ~/card-work
-wget -O gp.jar https://github.com/martinpaljak/GlobalPlatformPro/releases/latest/download/gp.jar
+wget -O gp.jar \
+  https://github.com/martinpaljak/GlobalPlatformPro/releases/download/v25.10.20/gp.jar
 ```
 
 说明：
 
-- 这里为了方便仍然写 `latest`
-- 但长期维护时，最好把第一次验证通过的 `GlobalPlatformPro` 版本号单独记下来
+- 当前固定版本是 `v25.10.20`
+- 对应 `SHA256` 是：
+  `c88e0c5093032ec4571571f5397b6174e56bf632667950fa5bb716338534b122`
+- 长期维护时，最好把第一次验证通过的 `GlobalPlatformPro` 版本号单独记下来
 - 如果你手里已经有一份能稳定装卡的 `gp.jar`，不要随便替换
 
 安装 CAP：

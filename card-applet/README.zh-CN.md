@@ -69,7 +69,7 @@
 - 当前目录里给你的是 `SatochipApplet`
 - `backups/satochip-utils/` 主要是 `Satochip` 卡初始化/导种流程
 - 如果你以后想做“两张卡方案”，建议一张 `SeedKeeper`、一张 `Satochip`
-- 不建议拿同一张卡来回刷两种 applet
+- 同一张卡也可以同时装两种 applet；如果 `gp.jar --list` 已经能看到两条 `APP`，就不要再为了切换功能重刷
 
 ## 对应关系
 

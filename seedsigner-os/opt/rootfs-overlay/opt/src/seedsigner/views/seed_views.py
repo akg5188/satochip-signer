@@ -3191,6 +3191,7 @@ class SeedWordIndexView(View):
 
 
 class SeedEntropyView(View):
+    SHOW_QR = ButtonOption("显示二维码")
     DONE = ButtonOption("完成")
 
     def __init__(
@@ -3251,16 +3252,28 @@ class SeedEntropyView(View):
             for i in range(0, len(entropy_hex), 16)
         )
 
-        selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
-            title=f"{self.title} {entropy_bits}bit",
-            text=text,
-            button_data=[self.DONE],
-        )
+        while True:
+            selected_menu_num = self.run_screen(
+                ToolsFormattedTextScreen,
+                title=f"{self.title} {entropy_bits}bit",
+                text=text,
+                button_data=[self.SHOW_QR, self.DONE],
+            )
 
-        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            if selected_menu_num == RET_CODE__BACK_BUTTON:
+                return self._return()
+
+            selected_option = [self.SHOW_QR, self.DONE][selected_menu_num]
+            if selected_option == self.SHOW_QR:
+                from seedsigner.gui.screens.screen import QRDisplayScreen
+
+                self.run_screen(
+                    QRDisplayScreen,
+                    qr_encoder=GenericStaticQrEncoder(data=entropy_hex),
+                )
+                continue
+
             return self._return()
-        return self._return()
 
 
 
@@ -3385,6 +3398,7 @@ class SeedWordsBackupTestPromptView(View):
     SKIP = ButtonOption("跳过")
     FINALIZE = ButtonOption("完成子助记词")
     IMPORT_TO_SMARTCARD = ButtonOption("子助记词写入智能卡")
+    SAVE_TO_SEEDKEEPER = ButtonOption("子助记词写入 SeedKeeper")
 
     def __init__(self, seed_num: int, bip85_data: dict = None, share_index: int | None = None):
         super().__init__()
@@ -3397,6 +3411,8 @@ class SeedWordsBackupTestPromptView(View):
         button_data = [self.VERIFY, self.REVIEW, self.SKIP]
         if self.seed_num is not None and self.bip85_data:
             button_data.append(self.FINALIZE)
+            if self.settings.get_value(SettingsConstants.SETTING__SMARTCARD_SUPPORT) == SettingsConstants.OPTION__ENABLED:
+                button_data.append(self.SAVE_TO_SEEDKEEPER)
             if os.environ.get("TP_ONLY_MODE") == "1":
                 button_data.append(self.IMPORT_TO_SMARTCARD)
 
@@ -3435,6 +3451,31 @@ class SeedWordsBackupTestPromptView(View):
                 ).split())
             self.controller.storage.set_pending_seed(child)
             return Destination(SeedFinalizeView)
+
+        elif button_data[selected_menu_num] == self.SAVE_TO_SEEDKEEPER:
+            parent = self.controller.storage.seeds[self.seed_num]
+            child = Seed(parent.get_bip85_child_mnemonic(
+                self.bip85_data["child_index"], self.bip85_data["num_words"]
+            ).split())
+            self.controller.storage.set_pending_seed(child)
+            child_seed_num = self.controller.storage.finalize_pending_seed()
+            return_destination = Destination(SeedOptionsView, view_args=dict(seed_num=child_seed_num), clear_history=True)
+            if os.environ.get("TP_ONLY_MODE") == "1":
+                from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+
+                return_destination = Destination(
+                    ToolsTpLoadedSeedOptionsView,
+                    view_args=dict(seed_num=child_seed_num),
+                    clear_history=True,
+                )
+            return Destination(
+                SaveToSeedkeeperView,
+                view_args=dict(
+                    seed_num=child_seed_num,
+                    return_destination=return_destination,
+                ),
+                clear_history=True,
+            )
 
         elif button_data[selected_menu_num] == self.IMPORT_TO_SMARTCARD:
             parent = self.controller.storage.seeds[self.seed_num]
@@ -5624,11 +5665,23 @@ class SaveToSeedkeeperView(View):
         entropy = mnemonic_obj.to_entropy(bip39_mnemonic)
 
         return entropy  # bytearray
-    def __init__(self, seed_num: int, bip85_data: dict = None, share_index: int | None = None):
+    def __init__(
+        self,
+        seed_num: int,
+        bip85_data: dict = None,
+        share_index: int | None = None,
+        return_destination: Destination | None = None,
+    ):
         super().__init__()
         self.seed_num = seed_num
         self.bip85_data = bip85_data
         self.share_index = share_index
+        self.return_destination = return_destination
+
+    def _success_destination(self) -> Destination:
+        if self.return_destination is not None:
+            return self.return_destination
+        return Destination(SeedOptionsView, view_args={"seed_num": self.seed_num}, clear_history=True)
 
     def run(self):
         from seedsigner.gui.screens.screen import LoadingScreenThread
@@ -5796,7 +5849,7 @@ class SaveToSeedkeeperView(View):
                 text=f"Secret Successfully Saved to Seedkeeper",
                 show_back_button=True,
             )
-            return Destination(SeedOptionsView, view_args={"seed_num": self.seed_num}, clear_history=True)
+            return self._success_destination()
 
         except Exception as e:
             print(e)

@@ -1657,6 +1657,7 @@ class ToolsTpLoadedSeedOptionsView(View):
     EXPORT_BTC_XPUB = ButtonOption("导出当前助记词 BTC xpub")
     BIP85_CHILD_SEED = ButtonOption("BIP-85 子助记词")
     IMPORT_TO_SMARTCARD = ButtonOption("写入当前助记词到智能卡")
+    SAVE_TO_SEEDKEEPER = ButtonOption("写入当前助记词到 SeedKeeper")
     SECONDARY_ENCRYPT = ButtonOption("二次加密助记词")
     SECONDARY_DECRYPT = ButtonOption("二次还原助记词")
     PLATE_NUMBERS = ButtonOption("转成钢板打孔数字")
@@ -1691,6 +1692,8 @@ class ToolsTpLoadedSeedOptionsView(View):
             and self.settings.get_value(SettingsConstants.SETTING__BIP85_CHILD_SEEDS) == SettingsConstants.OPTION__ENABLED
         ):
             button_data.insert(-1, self.BIP85_CHILD_SEED)
+        if self.settings.get_value(SettingsConstants.SETTING__SMARTCARD_SUPPORT) == SettingsConstants.OPTION__ENABLED:
+            button_data.insert(-1, self.SAVE_TO_SEEDKEEPER)
         if not isinstance(self.seed, XprvSeed):
             button_data.insert(-1, self.IMPORT_TO_SMARTCARD)
 
@@ -1752,6 +1755,19 @@ class ToolsTpLoadedSeedOptionsView(View):
                 ToolsSatochipImportSeedView,
                 view_args=dict(
                     preferred_seed_num=self.seed_num,
+                    return_destination=Destination(
+                        ToolsTpLoadedSeedOptionsView,
+                        view_args=dict(seed_num=self.seed_num),
+                        clear_history=True,
+                    ),
+                ),
+            )
+        if selected == self.SAVE_TO_SEEDKEEPER:
+            from seedsigner.views.seed_views import SaveToSeedkeeperView
+            return Destination(
+                SaveToSeedkeeperView,
+                view_args=dict(
+                    seed_num=self.seed_num,
                     return_destination=Destination(
                         ToolsTpLoadedSeedOptionsView,
                         view_args=dict(seed_num=self.seed_num),
@@ -2749,6 +2765,8 @@ class ToolsTpSteelPlateWordsView(View):
 
 
 class ToolsTpSmartcardToolsView(View):
+    FULL_SMARTCARD_MENU = ButtonOption("完整智能卡菜单")
+    SEEDKEEPER_TOOLS = ButtonOption("SeedKeeper 功能")
     VIEW_ADDRESS = ButtonOption("按路径查看智能卡地址")
     EXPORT_BTC_ZPUB = ButtonOption("导出智能卡 BTC zpub")
     EXPORT_BTC_XPUB = ButtonOption("导出智能卡 BTC xpub")
@@ -2758,6 +2776,8 @@ class ToolsTpSmartcardToolsView(View):
 
     def run(self):
         button_data = [
+            self.FULL_SMARTCARD_MENU,
+            self.SEEDKEEPER_TOOLS,
             self.VIEW_ADDRESS,
             self.EXPORT_BTC_ZPUB,
             self.EXPORT_BTC_XPUB,
@@ -2777,6 +2797,16 @@ class ToolsTpSmartcardToolsView(View):
             return _tp_home_destination()
 
         selected = button_data[selected_menu_num]
+
+        if selected == self.FULL_SMARTCARD_MENU:
+            from seedsigner.views.tools_views import ToolsSmartcardMenuView
+
+            return Destination(ToolsSmartcardMenuView)
+
+        if selected == self.SEEDKEEPER_TOOLS:
+            from seedsigner.views.tools_views import ToolsSeedkeeperView
+
+            return Destination(ToolsSeedkeeperView)
 
         if selected == self.VIEW_ADDRESS:
             return Destination(ToolsTpSmartcardAddressPathView)
