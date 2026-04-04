@@ -1651,6 +1651,7 @@ class ToolsTpBip39CheckResultView(View):
 class ToolsTpLoadedSeedOptionsView(View):
     VIEW_WORDS = ButtonOption("查看助记词")
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
+    VIEW_ENTROPY = ButtonOption("查看原始熵(HEX)")
     DERIVE_ADDRESS = ButtonOption("派生路径算地址")
     EXPORT_BTC_ZPUB = ButtonOption("导出当前助记词 BTC zpub")
     EXPORT_BTC_XPUB = ButtonOption("导出当前助记词 BTC xpub")
@@ -1678,6 +1679,9 @@ class ToolsTpLoadedSeedOptionsView(View):
         ]
         if self.seed.bip39_word_indices_supported:
             button_data.insert(1, self.VIEW_INDICES)
+        if getattr(self.seed, "bip39_entropy_supported", False):
+            insert_at = 2 if self.seed.bip39_word_indices_supported else 1
+            button_data.insert(insert_at, self.VIEW_ENTROPY)
         if not isinstance(self.seed, TransientWordSeed):
             button_data.insert(1, self.DERIVE_ADDRESS)
             button_data.insert(2, self.EXPORT_BTC_ZPUB)
@@ -1712,6 +1716,20 @@ class ToolsTpLoadedSeedOptionsView(View):
                 view_args=dict(
                     seed_num=self.seed_num,
                     title="BIP39 序号",
+                    return_destination=Destination(
+                        ToolsTpLoadedSeedOptionsView,
+                        view_args=dict(seed_num=self.seed_num),
+                        skip_current_view=True,
+                    ),
+                ),
+            )
+        if selected == self.VIEW_ENTROPY:
+            from seedsigner.views.seed_views import SeedEntropyView
+            return Destination(
+                SeedEntropyView,
+                view_args=dict(
+                    seed_num=self.seed_num,
+                    title="原始熵(HEX)",
                     return_destination=Destination(
                         ToolsTpLoadedSeedOptionsView,
                         view_args=dict(seed_num=self.seed_num),

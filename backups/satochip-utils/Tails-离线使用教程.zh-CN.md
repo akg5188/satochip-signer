@@ -3,10 +3,17 @@
 这份教程对应的是：
 
 - 系统：`Tails OS`
-- 卡：`J3R180`（卡里已经安装好 Satochip applet）
+- 卡：`J3R180`（卡里已经安装好 `SatochipApplet`）
 - 读卡器：例如 `ACR39U`
 - 工具：`Satochip-Utils`
 - 目标：在尽量离线的环境里设置卡的 `PIN`，并导入或生成助记词
+
+先记住：
+
+- 这份教程不是教你给白卡切换 `SeedKeeper / SatochipApplet`
+- 它讲的是“已经装好 `SatochipApplet` 以后，怎么离线初始化这张卡”
+- 如果你没搞清楚两者区别，先看：
+  [../../docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md](../../docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md)
 
 ## 0. 你当前实际使用的是哪一套文件
 
@@ -48,6 +55,12 @@
 如果你的卡还是白卡、还没写入 Satochip applet，请先看：
 
 - [../../card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md](../../card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md)
+
+如果你想问的是：
+
+- 能不能在这套工具里来回切换 `SeedKeeper` 和 `SatochipApplet`
+
+答案是不能。这件事不属于 `Satochip-Utils` 的职责。
 
 ## 2. 离线使用前的重要提醒
 

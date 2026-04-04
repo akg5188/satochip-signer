@@ -20,7 +20,7 @@ from seedsigner.gui.components import FontAwesomeIconConstants, GUIConstants, Se
 from seedsigner.gui.screens import (RET_CODE__BACK_BUTTON, ButtonListScreen,
     WarningScreen, DireWarningScreen, seed_screens, LargeIconStatusScreen)
 from seedsigner.gui.screens.screen import ButtonOption, KeyboardScreen
-from seedsigner.gui.screens.tools_screens import ToolsFormattedTextScreen
+from seedsigner.gui.screens.tools_screens import ToolsFormattedTextScreen, ToolsTextQRTextEntryScreen
 from seedsigner.hardware.microsd import MicroSD
 from seedsigner.helpers.bitbox02_backup import (
     Bitbox02BackupDetails,
@@ -286,6 +286,7 @@ class LoadSeedView(View):
     TYPE_18WORD = ButtonOption("输入 18 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=18)
     TYPE_21WORD = ButtonOption("输入 21 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=21)
     TYPE_24WORD = ButtonOption("输入 24 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=24)
+    TYPE_BIP39_INDICES = ButtonOption("按编号导入 BIP39 助记词", FontAwesomeIconConstants.KEYBOARD)
     TYPE_ELECTRUM = ButtonOption("输入 Electrum 助记词", FontAwesomeIconConstants.KEYBOARD)
     TYPE_AEZEED = ButtonOption("输入 Aezeed 助记词", FontAwesomeIconConstants.KEYBOARD)
     TYPE_SLIP39 = ButtonOption("输入 SLIP-39 分片", FontAwesomeIconConstants.KEYBOARD)
@@ -308,6 +309,7 @@ class LoadSeedView(View):
         # Start with the option to scan a SeedQR
         button_data = [self.SEED_QR]
         button_data.extend([options[l] for l in seed_lengths])
+        button_data.append(self.TYPE_BIP39_INDICES)
 
         if self.settings.get_value(SettingsConstants.SETTING__SMARTCARD_SUPPORT) == SettingsConstants.OPTION__ENABLED:
             button_data.append(self.IMPORT_SEEDKEEPER)
@@ -350,6 +352,9 @@ class LoadSeedView(View):
             self.controller.storage.init_pending_mnemonic(num_words=button_data[selected_menu_num].return_data)
             return Destination(SeedMnemonicEntryView)
 
+        elif button_data[selected_menu_num] == self.TYPE_BIP39_INDICES:
+            return Destination(SeedMnemonicIndexLengthView)
+
         elif button_data[selected_menu_num] == self.IMPORT_SEEDKEEPER:
             return Destination(SeedKeeperSelectView)
 
@@ -374,7 +379,40 @@ class LoadSeedView(View):
         elif button_data[selected_menu_num] == self.CREATE:
             from .tools_views import ToolsMenuView
             return Destination(ToolsMenuView, view_args={"include_password_generator": False})
-    
+
+
+class SeedMnemonicIndexLengthView(View):
+    TYPE_12 = ButtonOption("输入 12 个编号助记词", FontAwesomeIconConstants.KEYBOARD, return_data=12)
+    TYPE_15 = ButtonOption("输入 15 个编号助记词", FontAwesomeIconConstants.KEYBOARD, return_data=15)
+    TYPE_18 = ButtonOption("输入 18 个编号助记词", FontAwesomeIconConstants.KEYBOARD, return_data=18)
+    TYPE_21 = ButtonOption("输入 21 个编号助记词", FontAwesomeIconConstants.KEYBOARD, return_data=21)
+    TYPE_24 = ButtonOption("输入 24 个编号助记词", FontAwesomeIconConstants.KEYBOARD, return_data=24)
+
+    def run(self):
+        seed_lengths = self.settings.get_value(SettingsConstants.SETTING__SEED_WORD_LENGTHS)
+        options = {
+            12: self.TYPE_12,
+            15: self.TYPE_15,
+            18: self.TYPE_18,
+            21: self.TYPE_21,
+            24: self.TYPE_24,
+        }
+        button_data = [options[length] for length in seed_lengths]
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="按编号导入",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(LoadSeedView, clear_history=True)
+
+        self.controller.storage.init_pending_mnemonic(num_words=button_data[selected_menu_num].return_data)
+        return Destination(SeedMnemonicIndexEntryView)
+
+
 class SeedKeeperSelectView(View):
     def entropy_to_mnemonic(self, entropy_bytes, wordlist):
         from mnemonic import Mnemonic
@@ -1118,14 +1156,105 @@ class SeedMnemonicEntryView(View):
             return Destination(SeedFinalizeView)
 
 
+class SeedMnemonicIndexEntryView(View):
+    def __init__(self, cur_word_index: int = 0):
+        super().__init__()
+        self.cur_word_index = cur_word_index
+        self.wordlist = Seed.get_wordlist(
+            wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE)
+        )
+        self.cur_word = self.controller.storage.get_pending_mnemonic_word(cur_word_index)
+
+    def _current_index_text(self) -> str:
+        if not self.cur_word:
+            return ""
+        try:
+            return str(self.wordlist.index(self.cur_word))
+        except ValueError:
+            return ""
+
+    @staticmethod
+    def _normalize_index_entry(raw: str) -> str:
+        return " ".join(str(raw or "").replace("，", " ").replace(",", " ").split())
+
+    def _parse_index(self, raw: str) -> int:
+        normalized = self._normalize_index_entry(raw)
+        if not normalized:
+            raise ValueError("请输入 0 到 2047 的编号。")
+        parts = normalized.split()
+        if len(parts) != 1 or not parts[0].isdigit():
+            raise ValueError("这里只能输入一个 0 到 2047 的编号。")
+        index = int(parts[0])
+        if index < 0 or index >= len(self.wordlist):
+            raise ValueError("编号必须在 0 到 2047 之间。")
+        return index
+
+    def run(self):
+        ret = ToolsTextQRTextEntryScreen(
+            textToEncode=self._current_index_text(),
+            title=f"第 {self.cur_word_index + 1} 个编号",
+            initial_keyboard=ToolsTextQRTextEntryScreen.KEYBOARD__DIGITS_BUTTON_TEXT,
+            digits_entry_mode=True,
+        ).display()
+
+        if ret.get("is_back_button"):
+            if self.cur_word_index > 0:
+                return Destination(BackStackView)
+            self.controller.storage.discard_pending_mnemonic()
+            return Destination(LoadSeedView, clear_history=True)
+
+        try:
+            index = self._parse_index(ret.get("textToEncode", ""))
+        except ValueError as exc:
+            self.run_screen(
+                WarningScreen,
+                title="输入有误",
+                status_headline=None,
+                text=str(exc),
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return Destination(
+                SeedMnemonicIndexEntryView,
+                view_args={"cur_word_index": self.cur_word_index},
+                clear_history=True,
+            )
+
+        self.controller.storage.update_pending_mnemonic(self.wordlist[index], self.cur_word_index)
+
+        if self.cur_word_index < self.controller.storage.pending_mnemonic_length - 1:
+            return Destination(
+                SeedMnemonicIndexEntryView,
+                view_args={"cur_word_index": self.cur_word_index + 1},
+            )
+
+        from seedsigner.models.seed import InvalidSeedException
+        try:
+            self.controller.storage.convert_pending_mnemonic_to_pending_seed(
+                wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
+            )
+        except InvalidSeedException:
+            if os.environ.get("TP_ONLY_MODE") == "1":
+                return Destination(SeedMnemonicRawReviewView, view_args={"entry_mode": "index"})
+            return Destination(SeedMnemonicInvalidView, view_args={"entry_mode": "index"})
+
+        if os.environ.get("TP_ONLY_MODE") == "1" and not self.controller.resume_main_flow:
+            seed_num = self.controller.storage.finalize_pending_seed()
+            from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+            return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
+
+        return Destination(SeedFinalizeView)
+
+
 
 class SeedMnemonicInvalidView(View):
     EDIT = ButtonOption("检查并修改")
     DISCARD = ButtonOption("丢弃", button_label_color="red")
 
-    def __init__(self):
+    def __init__(self, entry_mode: str = "word"):
         super().__init__()
         self.mnemonic: list[str] = self.controller.storage.pending_mnemonic
+        self.entry_mode = entry_mode
 
 
     def run(self):
@@ -1141,6 +1270,8 @@ class SeedMnemonicInvalidView(View):
         )
 
         if button_data[selected_menu_num] == self.EDIT:
+            if self.entry_mode == "index":
+                return Destination(SeedMnemonicIndexEntryView, view_args={"cur_word_index": 0})
             return Destination(SeedMnemonicEntryView, view_args={"cur_word_index": 0})
 
         elif button_data[selected_menu_num] == self.DISCARD:
@@ -1158,9 +1289,10 @@ class SeedMnemonicRawReviewView(View):
     REENTER = ButtonOption("重新输入")
     IMPORT_RAW = ButtonOption("按原样导入")
 
-    def __init__(self, page_index: int = 0):
+    def __init__(self, page_index: int = 0, entry_mode: str = "word"):
         super().__init__()
         self.page_index = page_index
+        self.entry_mode = entry_mode
 
     def run(self):
         mnemonic = self.controller.storage.pending_mnemonic
@@ -1184,11 +1316,12 @@ class SeedMnemonicRawReviewView(View):
             if self.page_index > 0:
                 return Destination(
                     SeedMnemonicRawReviewView,
-                    view_args=dict(page_index=self.page_index - 1),
+                    view_args=dict(page_index=self.page_index - 1, entry_mode=self.entry_mode),
                     clear_history=True,
                 )
+            reenter_view = SeedMnemonicIndexEntryView if self.entry_mode == "index" else SeedMnemonicEntryView
             return Destination(
-                SeedMnemonicEntryView,
+                reenter_view,
                 view_args=dict(cur_word_index=len(mnemonic) - 1),
                 clear_history=True,
             )
@@ -1202,7 +1335,7 @@ class SeedMnemonicRawReviewView(View):
                     title="待导入 BIP39 序号",
                     return_destination=Destination(
                         SeedMnemonicRawReviewView,
-                        view_args=dict(page_index=self.page_index),
+                        view_args=dict(page_index=self.page_index, entry_mode=self.entry_mode),
                         skip_current_view=True,
                     ),
                 ),
@@ -1211,12 +1344,13 @@ class SeedMnemonicRawReviewView(View):
         if selected == self.NEXT:
             return Destination(
                 SeedMnemonicRawReviewView,
-                view_args=dict(page_index=self.page_index + 1),
+                view_args=dict(page_index=self.page_index + 1, entry_mode=self.entry_mode),
             )
 
         if selected == self.REENTER:
+            reenter_view = SeedMnemonicIndexEntryView if self.entry_mode == "index" else SeedMnemonicEntryView
             return Destination(
-                SeedMnemonicEntryView,
+                reenter_view,
                 view_args=dict(cur_word_index=0),
                 clear_history=True,
             )
@@ -3053,6 +3187,79 @@ class SeedWordIndexView(View):
                 ),
             )
 
+        return self._return()
+
+
+class SeedEntropyView(View):
+    DONE = ButtonOption("完成")
+
+    def __init__(
+        self,
+        seed_num: int | None = None,
+        title: str = "原始熵(HEX)",
+        return_destination: Destination | None = None,
+    ):
+        super().__init__()
+        self.seed_num = seed_num
+        self.title = title
+        self.return_destination = return_destination
+
+    def _return(self) -> Destination:
+        if self.return_destination is not None:
+            return self.return_destination
+        return Destination(BackStackView)
+
+    def run(self):
+        seed = self.controller.get_seed(self.seed_num) if self.seed_num is not None else self.controller.storage.get_pending_seed()
+        if seed is None:
+            self.run_screen(
+                WarningScreen,
+                title="无法显示原始熵",
+                status_headline=None,
+                text="当前没有可显示的助记词。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return self._return()
+
+        try:
+            entropy_hex = seed.get_bip39_entropy_hex()
+        except SeedWordsUnavailableException as exc:
+            self.run_screen(
+                WarningScreen,
+                title="无法显示原始熵",
+                status_headline=None,
+                text=str(exc),
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return self._return()
+        except Exception:
+            self.run_screen(
+                WarningScreen,
+                title="无法显示原始熵",
+                status_headline=None,
+                text="当前助记词不是标准 BIP39，无法还原原始熵。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return self._return()
+
+        entropy_bits = len(entropy_hex) * 4
+        text = "\n".join(
+            entropy_hex[i:i + 16]
+            for i in range(0, len(entropy_hex), 16)
+        )
+
+        selected_menu_num = self.run_screen(
+            ToolsFormattedTextScreen,
+            title=f"{self.title} {entropy_bits}bit",
+            text=text,
+            button_data=[self.DONE],
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return self._return()
         return self._return()
 
 

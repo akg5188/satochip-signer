@@ -61,6 +61,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 
 - [一页式总导航](docs/一页式总导航.zh-CN.md)
 - [快速开始](docs/快速开始.zh-CN.md)
+- [SeedKeeper 与 SatochipApplet 分工指南](docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md)
 - [固定正式发布重建入口](docs/固定正式发布重建入口.zh-CN.md)
 - [非 GitHub 关键备份清单](docs/非GitHub关键备份清单.zh-CN.md)
 - [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
@@ -77,8 +78,8 @@ bash scripts/rebuild_official_release.sh wallet-release
 | 用自己的安卓观察钱包发起 EVM / BTC 冷签 | `wallet/` | `bash scripts/build_wallet_release.sh` |
 | 给 `BlueWallet` 做 `BTC PSBT` 冷签 | 树莓派离线签名器 | [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md) |
 | 刷树莓派固件 | `dist/` | `system-update-latest.img.xz` |
-| 写 `J3R180` 卡固件 | `card-applet/prebuilt/` | `SatoChip-3.0.4.cap` |
-| 在 `Tails` 里初始化卡、设 PIN、导助记词 | `backups/satochip-utils/` | 对应中文教程 |
+| 给 `J3R180` 白卡安装 `SatochipApplet` | `card-applet/prebuilt/` | `SatoChip-3.0.4.cap` |
+| 在 `Tails` 里初始化 `Satochip` 卡、设 PIN、导助记词 | `backups/satochip-utils/` | 对应中文教程 |
 
 ## 两张最重要的树莓派镜像
 
@@ -209,6 +210,9 @@ bash scripts/build_wallet_release.sh
 - `wallet/` 当前不是内置 `Hyperliquid` 浏览器钱包。
 - `wallet/` 现在是高安全观察钱包 + `WalletConnect` 协调器。
 - `app/` 不是独立钱包，它是 `TokenPocket` 配套的智能卡签名/中转 App。
+- `SeedKeeper` 和 `SatochipApplet` 不是同一个 applet。
+- 当前官方 `SeedSigner` 固件和本仓库树莓派固件都不能直接给卡刷 applet。
+- `backups/satochip-utils/` 当前讲的是 `Satochip` 卡初始化，不是白卡来回切换 `SeedKeeper / SatochipApplet`。
 - 树莓派首页已经不是 `TP only mode`，也没有“官方模式”入口了。
 - 仓库和 GitHub Releases 里已经不再保留旧 firmware 包，避免拿错。
 - 当前推荐 clean 包的精确源码不要拿 `main` 猜，必须看 [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)。
@@ -225,6 +229,8 @@ bash scripts/build_wallet_release.sh
 - [安卓构建环境准备](docs/安卓构建环境准备.zh-CN.md)
 - [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md)
 - [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md)
+- [SeedKeeper 与 SatochipApplet 分工指南](docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md)
+- [J3R180 刷 SatochipApplet 与 SeedKeeper 教程](card-applet/J3R180刷SatochipApplet与SeedKeeper.zh-CN.md)
 - [树莓派固件构建与备份](docs/树莓派固件构建与备份.zh-CN.md)
 - [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)
 - [长期维护总入口](docs/长期维护总入口.zh-CN.md)

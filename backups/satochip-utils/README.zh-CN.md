@@ -4,13 +4,14 @@
 
 它的用途很明确：
 
-- 给 `J3R180` 卡设置 `PIN`
-- 给卡导入或生成 `BIP39` 助记词
+- 给已经安装好 `SatochipApplet` 的 `J3R180` 卡设置 `PIN`
+- 给这张 `Satochip` 卡导入或生成 `BIP39` 助记词
 - 适合在 `Tails OS` 这种离线环境中使用
 
 它不是：
 
 - `J3R180` 卡固件
+- `SeedKeeper` applet 安装工具
 - 树莓派固件
 - 安卓 APK
 
@@ -72,10 +73,12 @@
 如果你要做的是：
 
 - 给卡写入 applet 固件
+- 搞清楚 `SeedKeeper` 和 `SatochipApplet` 的区别
 
 那去看：
 
 - [../../card-applet/README.zh-CN.md](../../card-applet/README.zh-CN.md)
+- [../../docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md](../../docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md)
 
 ## 离线恢复
 

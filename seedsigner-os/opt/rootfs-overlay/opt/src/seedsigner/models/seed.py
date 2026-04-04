@@ -193,6 +193,10 @@ class Seed:
     def bip39_word_indices_supported(self) -> bool:
         return type(self) is Seed
 
+    @property
+    def bip39_entropy_supported(self) -> bool:
+        return type(self) is Seed
+
     def get_bip39_word_indices(self) -> List[int]:
         if not self.bip39_word_indices_supported:
             raise SeedWordsUnavailableException("当前这类助记词不支持显示 BIP39 0-2047 序号。")
@@ -201,6 +205,18 @@ class Seed:
             return [self.wordlist.index(word) for word in self.mnemonic_list]
         except ValueError as exc:
             raise SeedWordsUnavailableException("当前这类助记词不支持显示 BIP39 0-2047 序号。") from exc
+
+    def get_bip39_entropy_bytes(self) -> bytes:
+        if not self.bip39_entropy_supported:
+            raise SeedWordsUnavailableException("当前这类助记词不支持显示原始熵。")
+
+        try:
+            return bip39.mnemonic_to_bytes(self.mnemonic_str, wordlist=self.wordlist)
+        except Exception as exc:
+            raise SeedWordsUnavailableException("当前这类助记词不支持显示原始熵。") from exc
+
+    def get_bip39_entropy_hex(self) -> str:
+        return self.get_bip39_entropy_bytes().hex()
         
 
     def wipe(self):
