@@ -1441,10 +1441,9 @@ class ToolsSmartcardMenuView(View):
     COMMON = ButtonOption("通用功能")
     SATOCHIP = ButtonOption("Satochip 功能")
     SEEDKEEPER = ButtonOption("SeedKeeper 功能")
-    Satochip_DIY = ButtonOption("DIY 工具")
 
     def run(self):
-        button_data = [self.COMMON, self.SEEDKEEPER, self.SATOCHIP, self.Satochip_DIY]
+        button_data = [self.COMMON, self.SEEDKEEPER, self.SATOCHIP]
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
@@ -1464,9 +1463,6 @@ class ToolsSmartcardMenuView(View):
         
         elif button_data[selected_menu_num] == self.SEEDKEEPER:
             return Destination(ToolsSeedkeeperView)
-
-        elif button_data[selected_menu_num] == self.Satochip_DIY:
-            return Destination(ToolsSatochipDIYView)
 
 class ToolsCommonView(View):
     FILTER = ButtonOption("设备筛选")
@@ -2189,6 +2185,22 @@ class ToolsSatochipFactoryResetView(View):
         if ret == RET_CODE__BACK_BUTTON:
             return self._return_destination()
 
+        if self.card_label == "SeedKeeper":
+            ret = self.run_screen(
+                DireWarningScreen,
+                title="高风险",
+                status_headline=None,
+                text=(
+                    "如果同一张卡上同时装了 SeedKeeper 和 SatochipApplet，"
+                    "这里的恢复出厂可能让另一边也变得不可用。"
+                    "除非你就是要整张卡全部清空，否则不要继续。"
+                ),
+                show_back_button=True,
+                button_data=[ButtonOption("继续重置 SeedKeeper")],
+            )
+            if ret == RET_CODE__BACK_BUTTON:
+                return self._return_destination()
+
         """Initiate the card Factory Reset Process using the legacy or new approach based on card type and version
 
         factory reset support:
@@ -2663,7 +2675,7 @@ class ToolsSeedkeeperView(View):
     SAVE_DESCRIPTOR = ButtonOption("保存多签描述符")
     CLONE_SECRETS = ButtonOption("克隆卡内秘密")
     CHANGE_PIN = ButtonOption("更改 SeedKeeper PIN")
-    FACTORY_RESET = ButtonOption("重置 SeedKeeper")
+    FACTORY_RESET = ButtonOption("高风险：重置 SeedKeeper")
 
     def run(self):
         button_data = [

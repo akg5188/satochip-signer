@@ -173,6 +173,7 @@ def main() -> int:
         )
         from seedsigner.views.tools_views import (
             ToolsSeedkeeperView,
+            ToolsSmartcardMenuView,
             ToolsSatochipFactoryResetView,
             ToolsSatochipDIYView,
             _seedkeeper_build_entries,
@@ -191,6 +192,8 @@ def main() -> int:
         assert ToolsTpUiLockView.SETUP.button_label == "设置登录密码"
         assert ToolsTpUiLockView.UNLOCK.button_label == "输入登录密码"
         assert ToolsSeedkeeperView.VIEW_SECRETS.button_label == "查看和管理卡内助记词"
+        assert ToolsSeedkeeperView.FACTORY_RESET.button_label == "高风险：重置 SeedKeeper"
+        assert not hasattr(ToolsSmartcardMenuView, "Satochip_DIY")
         assert ToolsSatochipFactoryResetView.LEGACY_RESET.button_label == "拔插卡恢复出厂（推荐）"
         assert ToolsSatochipFactoryResetView.BLOCKING_RESET.button_label == "锁死 PIN/PUK 恢复出厂"
         assert ToolsSatochipDIYView.MANAGE_KEYS.button_label == "管理卡默认密钥"
