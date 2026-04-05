@@ -106,7 +106,7 @@ bash scripts/rebuild_official_release.sh wallet-release
   - 这张是当前功能预览版，不是 clean 逐字节复现基线
   - build info 在：
     `dist/system-update-seedkeeper-suite-test.build-info.txt`
-  - `sha256 = 04421fb74d4225cf3a4685b923cb991d4cb0cb65e9951250f5bb4ae9b4fc420f`
+  - `sha256 = 98201df6e3d9c7af6c9a21327c068dda4b5b31069a9dac45a6f270d042a19754`
 
 - `dist/system-update-latest.img.xz`
   这是保留的 clean 正式基线。
