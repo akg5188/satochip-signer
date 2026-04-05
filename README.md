@@ -85,10 +85,10 @@ bash scripts/rebuild_official_release.sh wallet-release
 
 ## 两张最重要的树莓派镜像
 
-仓库和 GitHub 现在主要保留两张“公开版”树莓派镜像，另外本机还有一张最新测试包：
+仓库和 GitHub 现在主要保留两张树莓派镜像：
 
-- `dist/system-update-bip85-smartcard-test.img.xz`
-  这是现在优先推荐直接刷的包。
+- `dist/system-update-seedkeeper-suite-test.img.xz`
+  这是现在优先推荐直接刷的包，也是 GitHub 当前公开下载入口。
   已确认支持：
   - 自有安卓钱包扫码签名
   - `BlueWallet` 的 `BTC PSBT`
@@ -100,24 +100,10 @@ bash scripts/rebuild_official_release.sh wallet-release
   - `SeedKeeper` 里保存二次加密后的假助记词，并可重新加载回树莓派继续二次还原
   - 分开的 `更改 Satochip PIN / 更改 SeedKeeper PIN`
   - 分开的 `重置 Satochip / 重置 SeedKeeper`
+  - 开机 `4-12` 位数字登录密码
   - 交易详情核对页 + 单次 PIN 流程
   注意：
-  - 这张现在就是当前推荐下载入口
-  - 以后想重建并严格对哈希，仍然看 `system-update-latest.img.xz` 这条 clean 基线
-
-- `dist/system-update-seedkeeper-suite-test.img.xz`
-  这是当前这台机器上最新编出来的测试功能包。
-  已带上：
-  - 开机 `4-12` 位数字登录密码
-  - `助记词工具 -> 智能卡真随机创建助记词`
-  - `智能卡工具 -> Satochip 功能 / SeedKeeper 功能 / 完整智能卡菜单`
-  - `导入助记词 -> 按编号导入 BIP39 助记词`
-  - 标准 `BIP39` 助记词查看 `原始熵(HEX)` 与二维码
-  - `SeedKeeper` 保存/加载二次加密后的假助记词
-  - `BIP85` 子助记词与写入 `Satochip / SeedKeeper`
-  注意：
-  - 这张现在已经能本机直接刷机试功能
-  - 但它还没推到 GitHub Release，所以文档里提到 GitHub 当前公开下载时，仍然会先提公开版
+  - 这张是当前功能预览版，不是 clean 逐字节复现基线
   - build info 在：
     `dist/system-update-seedkeeper-suite-test.build-info.txt`
   - `sha256 = 04421fb74d4225cf3a4685b923cb991d4cb0cb65e9951250f5bb4ae9b4fc420f`
