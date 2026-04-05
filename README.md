@@ -103,13 +103,13 @@ bash scripts/rebuild_official_release.sh wallet-release
   - 开机 `4-12` 位数字登录密码
   - 交易详情核对页 + 单次 PIN 流程
   注意：
-  - 这张是当前功能预览版，不是 clean 逐字节复现基线
+  - 这张是当前功能版，不是 clean 逐字节复现基线
   - 当前长期建议是 `一张卡只装一个程序`
   - `重置 Satochip / 重置 SeedKeeper` 只建议在专用单程序卡上使用
   - 如果同一张卡还装了另一个 applet，不要在固件里做恢复出厂
   - build info 在：
     `dist/system-update-seedkeeper-suite-test.build-info.txt`
-  - `sha256 = 98201df6e3d9c7af6c9a21327c068dda4b5b31069a9dac45a6f270d042a19754`
+  - `sha256 = c9e17f49763e4585b3b15380393764092843cc3d55097895df8de61785ab3070`
 
 - `dist/system-update-latest.img.xz`
   这是保留的 clean 正式基线。
