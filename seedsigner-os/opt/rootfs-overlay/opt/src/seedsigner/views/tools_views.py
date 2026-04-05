@@ -35,7 +35,8 @@ from seedsigner.gui.screens.tools_screens import (ToolsCalcFinalWordDoneScreen, 
     ToolsImageEntropyLivePreviewScreen, ToolsAddressExplorerAddressTypeScreen, ToolsTextQRTextEntryScreen, ToolsTextQRReviewTextScreen,
     ToolsTextQRTranscribeModePromptScreen, ToolsTranscribeTextQRWholeQRScreen, ToolsTranscribeTextQRZoomedInScreen,
     ToolsTranscribeTextQRConfirmQRPromptScreen, ToolsCommonFilterScreen, ToolsNetworkInfoScreen,
-    ToolsBatteryCalibrationIntroScreen, ToolsBatteryCalibrationStartScreen, ToolsBatteryCalibrationRunningScreen)
+    ToolsBatteryCalibrationIntroScreen, ToolsBatteryCalibrationStartScreen, ToolsBatteryCalibrationRunningScreen,
+    ToolsFormattedTextScreen)
 from seedsigner.helpers import embit_utils, mnemonic_generation
 from seedsigner.helpers import bip85_drng, diceware, password_generation
 from seedsigner.helpers.iso7816 import format_sw_error
@@ -1678,7 +1679,7 @@ def _seedkeeper_entry_kind(secret_type: str, subtype: int, label: str) -> str:
     return "generic"
 
 
-def _seedkeeper_build_entries(headers: list[dict]) -> list[dict]:
+def _seedkeeper_build_entries(headers: list[dict], mnemonic_only: bool = False) -> list[dict]:
     entries = []
     for header in headers:
         secret_type = SEEDKEEPER_DIC_TYPE.get(header["type"], hex(header["type"]))
@@ -1689,6 +1690,8 @@ def _seedkeeper_build_entries(headers: list[dict]) -> list[dict]:
             continue
 
         kind = _seedkeeper_entry_kind(secret_type, subtype, label)
+        if mnemonic_only and kind not in ("rng_mnemonic", "mnemonic"):
+            continue
         if kind == "rng_mnemonic":
             suffix = _seedkeeper_shorten_label(label[len(SEEDKEEPER_RANDOM_LABEL_PREFIX):] or label)
             display_label = f"真随机助记词 · {suffix}"
@@ -2153,6 +2156,9 @@ class ToolsSatochipChangeNFCView(View):
         return Destination(MainMenuView)
 
 class ToolsSatochipFactoryResetView(View):
+    LEGACY_RESET = ButtonOption("拔插卡恢复出厂（推荐）")
+    BLOCKING_RESET = ButtonOption("锁死 PIN/PUK 恢复出厂")
+
     def __init__(
         self,
         card_filter: list[str] | None = None,
@@ -2206,8 +2212,22 @@ class ToolsSatochipFactoryResetView(View):
             (response, sw1, sw2, d) = Satochip_Connector.card_get_status()
             version = d["protocol_version"]
             if (version >= 2):
-                print("This SeedKeeper supports factory reset (new version)!")
-                resetStatus = self.common_reset_factory_new(Satochip_Connector)
+                selected_menu_num = self.run_screen(
+                    ButtonListScreen,
+                    title="选择重置方式",
+                    is_button_text_centered=False,
+                    button_data=[self.LEGACY_RESET, self.BLOCKING_RESET],
+                    show_back_button=True,
+                )
+                if selected_menu_num == RET_CODE__BACK_BUTTON:
+                    return self._return_destination()
+
+                if [self.LEGACY_RESET, self.BLOCKING_RESET][selected_menu_num] == self.BLOCKING_RESET:
+                    print("This SeedKeeper supports factory reset (new version)!")
+                    resetStatus = self.common_reset_factory_new(Satochip_Connector)
+                else:
+                    print("This SeedKeeper supports factory reset (legacy)!")
+                    resetStatus = self.common_reset_factory_legacy(Satochip_Connector)
             else: 
                 print("This SeedKeeper supports factory reset (legacy)!")
                 resetStatus = self.common_reset_factory_legacy(Satochip_Connector)
@@ -2479,22 +2499,29 @@ class ToolsSatochipFactoryResetView(View):
                 DireWarningScreen,
                 title="恢复出厂",
                 status_headline=None,
-                text="请连续输入错误 PIN，直到进入下一步恢复出厂。" + remaining_string,
+                text="请故意连续输入错误 PIN，直到进入下一步恢复出厂。输入正确 PIN 会立即中止本次恢复出厂。" + remaining_string,
                 show_back_button=True,
                 button_data=[ButtonOption("继续")],
             )
             if ret == RET_CODE__BACK_BUTTON:
                 return resetStatus
 
-            pin = seedkeeper_utils.prompt_for_pin(self, "输入 PIN")
+            pin = seedkeeper_utils.prompt_for_pin(self, "故意输入错误 PIN")
 
             if pin is None:
-                return Destination(ToolsSmartcardMenuView)
+                return resetStatus
 
             try:
                 (response, sw1, sw2)= Satochip_Connector.card_verify_PIN(pin)
                 if sw1 == 0x90 and sw2 == 0x00:
                     print("You have entered a correct PIN, factory reset is aborted")
+                    self.run_screen(
+                        WarningScreen,
+                        title="已中止",
+                        status_headline=None,
+                        text="你输入的是正确 PIN。出于安全考虑，恢复出厂已经中止；如果你真的要重置，请重新进入后故意连续输入错误 PIN。",
+                        show_back_button=True,
+                    )
                     doReset = False
                     pinRemaining = -1
                     break
@@ -2519,13 +2546,13 @@ class ToolsSatochipFactoryResetView(View):
                 DireWarningScreen,
                 title="恢复出厂",
                 status_headline=None,
-                text="请连续输入错误 PUK，直到完成恢复出厂。" + remaining_string,
+                text="请故意连续输入错误 PUK，直到完成恢复出厂。输入正确 PUK 会立即中止本次恢复出厂。" + remaining_string,
                 show_back_button=True,
             )
             if ret == RET_CODE__BACK_BUTTON:
                 return resetStatus
 
-            puk = seed_screens.SeedAddPassphraseScreen(title="输入 PUK").display()
+            puk = seed_screens.SeedAddPassphraseScreen(title="故意输入错误 PUK").display()
 
             if "is_back_button" in puk:
                 return resetStatus
@@ -2542,6 +2569,13 @@ class ToolsSatochipFactoryResetView(View):
                 (response, sw1, sw2)= Satochip_Connector.card_unblock_PIN(0, puk_list)
                 if sw1 == 0x90 and sw2 == 0x00:
                     print("You have entered a correct PUK, factory reset is aborted, PIN is unblocked")
+                    self.run_screen(
+                        WarningScreen,
+                        title="已中止",
+                        status_headline=None,
+                        text="你输入的是正确 PUK。出于安全考虑，恢复出厂已经中止；如果你真的要重置，请重新进入后故意连续输入错误 PUK。",
+                        show_back_button=True,
+                    )
                     doReset = False
                     pinRemaining = -1
                     pukRemaining = -1
@@ -2623,7 +2657,7 @@ class ToolsSatochipChangeLabelView(View):
 class ToolsSeedkeeperView(View):
     GENERATE_MNEMONIC = ButtonOption("卡上真随机创建助记词")
     VIEW_FREE_SPACE = ButtonOption("查看剩余空间")
-    VIEW_SECRETS = ButtonOption("查看和管理卡内秘密")
+    VIEW_SECRETS = ButtonOption("查看和管理卡内助记词")
     IMPORT_PASSWORD = ButtonOption("保存密码到卡片")
     LOAD_DESCRIPTOR = ButtonOption("加载多签描述符")
     SAVE_DESCRIPTOR = ButtonOption("保存多签描述符")
@@ -3038,7 +3072,7 @@ class ToolsSeedkeeperCloneSecretsView(View):
 
 class ToolsSeedkeeperViewSecretsView(View):
     SHOW_QR = ButtonOption("显示二维码")
-    DELETE = ButtonOption("删除秘密")
+    DELETE = ButtonOption("删除助记词")
     DONE = ButtonOption("完成")
 
     def run(self):
@@ -3062,20 +3096,20 @@ class ToolsSeedkeeperViewSecretsView(View):
                     loading.stop()
                     loading = None
 
-                entries = _seedkeeper_build_entries(headers)
+                entries = _seedkeeper_build_entries(headers, mnemonic_only=True)
                 if not entries:
                     self.run_screen(
                         WarningScreen,
-                        title="没有可加载内容",
+                        title="没有可查看助记词",
                         status_headline=None,
-                        text="SeedKeeper 里没有允许明文导出的秘密。",
+                        text="SeedKeeper 里没有允许明文导出的助记词。",
                         show_back_button=False,
                     )
                     return Destination(BackStackView)
 
                 selected_menu_num = self.run_screen(
                     ButtonListScreen,
-                    title="选择秘密",
+                    title="选择助记词",
                     is_button_text_centered=False,
                     button_data=[ButtonOption(entry["display_label"]) for entry in entries],
                     show_back_button=True,
@@ -3124,12 +3158,12 @@ class ToolsSeedkeeperViewSecretsView(View):
                 if selected_button == self.DELETE:
                     warning_screen_num = DireWarningScreen(
                         status_headline="删除确认",
-                        text="这会永久删除卡内这条秘密，不能撤销。",
+                        text="这会永久删除卡内这条助记词，不能撤销。",
                     ).display()
                     if warning_screen_num == RET_CODE__BACK_BUTTON:
                         continue
 
-                    loading = LoadingScreenThread(text="删除 SeedKeeper 秘密\n\n\n\n\n\n")
+                    loading = LoadingScreenThread(text="删除 SeedKeeper 助记词\n\n\n\n\n\n")
                     loading.start()
                     try:
                         connector.seedkeeper_reset_secret(selected_entry["id"])
@@ -3141,7 +3175,7 @@ class ToolsSeedkeeperViewSecretsView(View):
                         LargeIconStatusScreen,
                         title="删除完成",
                         status_headline=None,
-                        text="这条秘密已经从 SeedKeeper 删除。",
+                        text="这条助记词已经从 SeedKeeper 删除。",
                         show_back_button=False,
                         button_data=[ButtonOption("继续")],
                     )

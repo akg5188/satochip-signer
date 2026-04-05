@@ -173,6 +173,7 @@ def main() -> int:
         )
         from seedsigner.views.tools_views import (
             ToolsSeedkeeperView,
+            ToolsSatochipFactoryResetView,
             ToolsSatochipDIYView,
             _seedkeeper_build_entries,
             _seedkeeper_decode_secret_detail,
@@ -189,7 +190,9 @@ def main() -> int:
         assert ToolsTpSeedkeeperToolsView.LOAD_STEEL_CIPHER.button_label == "从 SeedKeeper 加载二次加密助记词"
         assert ToolsTpUiLockView.SETUP.button_label == "设置登录密码"
         assert ToolsTpUiLockView.UNLOCK.button_label == "输入登录密码"
-        assert ToolsSeedkeeperView.VIEW_SECRETS.button_label == "查看和管理卡内秘密"
+        assert ToolsSeedkeeperView.VIEW_SECRETS.button_label == "查看和管理卡内助记词"
+        assert ToolsSatochipFactoryResetView.LEGACY_RESET.button_label == "拔插卡恢复出厂（推荐）"
+        assert ToolsSatochipFactoryResetView.BLOCKING_RESET.button_label == "锁死 PIN/PUK 恢复出厂"
         assert ToolsSatochipDIYView.MANAGE_KEYS.button_label == "管理卡默认密钥"
         assert ToolsSatochipDIYView.BUILD_APPLETS.button_label == "编译 CAP 安装包"
         assert ToolsSatochipDIYView.INSTALL_APPLET.button_label == "安装卡片程序"
@@ -225,6 +228,9 @@ def main() -> int:
         entries = _seedkeeper_build_entries(headers)
         assert entries[0]["display_label"].startswith("真随机助记词")
         assert entries[1]["display_label"].startswith("假助记词缓存")
+        mnemonic_entries = _seedkeeper_build_entries(headers, mnemonic_only=True)
+        assert len(mnemonic_entries) == 1
+        assert mnemonic_entries[0]["display_label"].startswith("真随机助记词")
 
         class _FakeConnector:
             def card_get_status(self):
