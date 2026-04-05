@@ -135,6 +135,10 @@ def _save_tp_ui_password(password: str) -> None:
     path = _tp_ui_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        logger.exception("Failed to tighten TP UI lock permissions")
 
 
 def _verify_tp_ui_password(password: str) -> bool:

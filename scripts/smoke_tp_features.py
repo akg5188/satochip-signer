@@ -171,6 +171,12 @@ def main() -> int:
             _decode_seedkeeper_text_payload,
             _parse_seedkeeper_steel_words,
         )
+        from seedsigner.views.tools_views import (
+            ToolsSeedkeeperView,
+            ToolsSatochipDIYView,
+            _seedkeeper_build_entries,
+            _seedkeeper_decode_secret_detail,
+        )
         import seedsigner.views.tp_views as tp_views_mod
 
         tp_views_mod.LoadingScreenThread = _FakeLoadingScreenThread
@@ -183,6 +189,11 @@ def main() -> int:
         assert ToolsTpSeedkeeperToolsView.LOAD_STEEL_CIPHER.button_label == "从 SeedKeeper 加载二次加密助记词"
         assert ToolsTpUiLockView.SETUP.button_label == "设置登录密码"
         assert ToolsTpUiLockView.UNLOCK.button_label == "输入登录密码"
+        assert ToolsSeedkeeperView.VIEW_SECRETS.button_label == "查看和管理卡内秘密"
+        assert ToolsSatochipDIYView.MANAGE_KEYS.button_label == "管理卡默认密钥"
+        assert ToolsSatochipDIYView.BUILD_APPLETS.button_label == "编译 CAP 安装包"
+        assert ToolsSatochipDIYView.INSTALL_APPLET.button_label == "安装卡片程序"
+        assert ToolsSatochipDIYView.UNINSTALL_APPLET.button_label == "卸载卡片程序"
 
         plain_words = (
             "abandon ability able about above absent "
@@ -192,6 +203,28 @@ def main() -> int:
         text = _decode_seedkeeper_text_payload(hex_payload)
         words = _parse_seedkeeper_steel_words(text)
         assert len(words) == 12 and words[0] == "abandon" and words[-1] == "accident"
+
+        headers = [
+            {
+                "id": 1,
+                "type": 0x10,
+                "subtype": 0x01,
+                "label": "BIP39-RNG-12w-20260405-0800",
+                "export_rights": 0x01,
+                "fingerprint": "abcd1234",
+            },
+            {
+                "id": 2,
+                "type": 0xC0,
+                "subtype": 0x00,
+                "label": TP_STEEL_SECRET_PREFIX + "demo",
+                "export_rights": 0x01,
+                "fingerprint": "deadbeef",
+            },
+        ]
+        entries = _seedkeeper_build_entries(headers)
+        assert entries[0]["display_label"].startswith("真随机助记词")
+        assert entries[1]["display_label"].startswith("假助记词缓存")
 
         class _FakeConnector:
             def card_get_status(self):
@@ -229,9 +262,39 @@ def main() -> int:
             tp_views_mod._save_tp_ui_password("246824")
             assert tp_views_mod._verify_tp_ui_password("246824") is True
             assert tp_views_mod._verify_tp_ui_password("135790") is False
+            assert oct((tmp_lock_dir / "offline-signer-login.json").stat().st_mode & 0o777) == "0o600"
         finally:
             tp_views_mod.seedkeeper_utils.init_satochip = orig_init_satochip
             tp_views_mod._tp_ui_lock_path = orig_ui_lock_path
+
+        rng_secret_dict = {
+            "type": 0x10,
+            "subtype": 0x01,
+            "secret": "00112233445566778899aabbccddeeff"  # replaced below
+        }
+        from mnemonic import Mnemonic
+        entropy = bytes.fromhex("00000000000000000000000000000000")
+        rng_secret_dict["secret"] = (
+            bytes([0])
+            + bytes([0])  # placeholder, replaced below
+        ).hex()
+        wordlist_code = 0x00
+        passphrase = b""
+        payload = (
+            bytes([len(entropy)])
+            + entropy
+            + bytes([wordlist_code])
+            + bytes([len(entropy)])
+            + entropy
+            + bytes([len(passphrase)])
+            + passphrase
+        )
+        rng_secret_dict["secret"] = payload.hex()
+        detail = _seedkeeper_decode_secret_detail(entries[0], rng_secret_dict)
+        assert detail["title"].startswith("真随机助记词")
+        assert "abandon" in detail["text"]
+        assert "Passphrase" not in detail["text"]
+        assert detail["qr_text"].startswith("abandon")
     finally:
         view_mod.View._initialize = orig_init
 

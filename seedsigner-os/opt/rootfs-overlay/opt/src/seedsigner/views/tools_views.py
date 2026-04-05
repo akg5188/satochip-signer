@@ -1626,6 +1626,228 @@ class ToolsSeedkeeperGenerateMnemonicView(View):
         return Destination(SeedFinalizeView)
 
 
+SEEDKEEPER_STEEL_SECRET_PREFIX = "TP-STEEL:"
+SEEDKEEPER_RANDOM_LABEL_PREFIX = "BIP39-RNG-"
+
+
+def _seedkeeper_decode_text_payload(secret_hex: str) -> str:
+    raw = bytes.fromhex(secret_hex)
+    if len(raw) >= 2 and int.from_bytes(raw[:2], "big") == len(raw[2:]):
+        return raw[2:].decode("utf-8")
+    if len(raw) >= 1 and raw[0] == len(raw[1:]):
+        return raw[1:].decode("utf-8")
+    return raw.decode("utf-8")
+
+
+def _seedkeeper_is_bip39_secret(secret_type: str, subtype: int) -> bool:
+    return secret_type == "BIP39 mnemonic" or (secret_type == "Masterseed" and subtype == 0x01)
+
+
+def _seedkeeper_shorten_label(label: str, max_len: int = 18) -> str:
+    value = (label or "").strip()
+    if len(value) <= max_len:
+        return value
+    return value[: max_len - 1] + "…"
+
+
+def _seedkeeper_format_words(words: list[str]) -> str:
+    if not words:
+        return ""
+    words_per_line = 4 if len(words) >= 16 else 3
+    lines = []
+    for index in range(0, len(words), words_per_line):
+        lines.append(" ".join(words[index:index + words_per_line]))
+    return "\n".join(lines)
+
+
+def _seedkeeper_entry_kind(secret_type: str, subtype: int, label: str) -> str:
+    if _seedkeeper_is_bip39_secret(secret_type, subtype):
+        if label.startswith(SEEDKEEPER_RANDOM_LABEL_PREFIX):
+            return "rng_mnemonic"
+        return "mnemonic"
+    if label.startswith(SEEDKEEPER_STEEL_SECRET_PREFIX):
+        return "steel_cipher"
+    if secret_type == "Password":
+        return "password"
+    if secret_type == "Descriptor":
+        return "descriptor"
+    if secret_type == "Data":
+        return "data"
+    if secret_type == "Public Key":
+        return "public_key"
+    return "generic"
+
+
+def _seedkeeper_build_entries(headers: list[dict]) -> list[dict]:
+    entries = []
+    for header in headers:
+        secret_type = SEEDKEEPER_DIC_TYPE.get(header["type"], hex(header["type"]))
+        subtype = header.get("subtype", 0)
+        label = str(header.get("label", "") or "").strip()
+        export_rights = SEEDKEEPER_DIC_EXPORT_RIGHTS.get(header["export_rights"], hex(header["export_rights"]))
+        if export_rights != "Plaintext export allowed":
+            continue
+
+        kind = _seedkeeper_entry_kind(secret_type, subtype, label)
+        if kind == "rng_mnemonic":
+            suffix = _seedkeeper_shorten_label(label[len(SEEDKEEPER_RANDOM_LABEL_PREFIX):] or label)
+            display_label = f"真随机助记词 · {suffix}"
+        elif kind == "mnemonic":
+            suffix = _seedkeeper_shorten_label(label or str(header.get("fingerprint") or header["id"]))
+            display_label = f"助记词 · {suffix}"
+        elif kind == "steel_cipher":
+            suffix = _seedkeeper_shorten_label(label[len(SEEDKEEPER_STEEL_SECRET_PREFIX):] or "未命名缓存")
+            display_label = f"假助记词缓存 · {suffix}"
+        elif kind == "password":
+            suffix = _seedkeeper_shorten_label(label or str(header["id"]))
+            display_label = f"密码 · {suffix}"
+        elif kind == "descriptor":
+            suffix = _seedkeeper_shorten_label(label or str(header["id"]))
+            display_label = f"多签描述符 · {suffix}"
+        elif kind == "data":
+            suffix = _seedkeeper_shorten_label(label or str(header["id"]))
+            display_label = f"数据 · {suffix}"
+        elif kind == "public_key":
+            suffix = _seedkeeper_shorten_label(label or str(header["id"]))
+            display_label = f"公钥 · {suffix}"
+        else:
+            display_label = _seedkeeper_shorten_label(label or f"秘密 #{header['id']}")
+
+        entries.append(
+            {
+                "id": header["id"],
+                "label": label,
+                "display_label": display_label,
+                "secret_type": secret_type,
+                "subtype": subtype,
+                "fingerprint": header.get("fingerprint"),
+                "kind": kind,
+            }
+        )
+    return entries
+
+
+def _decode_seedkeeper_mnemonic_payload(secret_dict: dict) -> tuple[str, str]:
+    secret_type = SEEDKEEPER_DIC_TYPE.get(secret_dict["type"], hex(secret_dict["type"]))
+    subtype = secret_dict.get("subtype", 0)
+
+    if secret_type == "BIP39 mnemonic":
+        bip39_secret = unhexlify(secret_dict["secret"])[1:].decode().rstrip("\x00")
+        secret_size = secret_dict["secret_list"][0]
+        mnemonic = bip39_secret[:secret_size].strip()
+        passphrase = bip39_secret[secret_size + 1:].strip()
+        return mnemonic, passphrase
+
+    if secret_type == "Masterseed" and subtype == 0x01:
+        from mnemonic import Mnemonic
+
+        secret_raw_bytes = bytes.fromhex(secret_dict["secret"])
+        offset = 0
+        masterseed_size = secret_raw_bytes[offset]
+        offset += 1 + masterseed_size
+        wordlist_byte = secret_raw_bytes[offset]
+        offset += 1
+        wordlist = BIP39_WORDLIST_DIC.get(wordlist_byte)
+        if wordlist is None:
+            raise ValueError("SeedKeeper 里的 BIP39 词表标识无法识别。")
+
+        entropy_size = secret_raw_bytes[offset]
+        offset += 1
+        entropy_bytes = secret_raw_bytes[offset:(offset + entropy_size)]
+        offset += entropy_size
+        passphrase_size = secret_raw_bytes[offset]
+        offset += 1
+        passphrase_bytes = secret_raw_bytes[offset:(offset + passphrase_size)]
+        mnemonic = Mnemonic(wordlist).to_mnemonic(entropy_bytes)
+        passphrase = passphrase_bytes.decode("utf-8") if passphrase_bytes else ""
+        return mnemonic, passphrase
+
+    raise ValueError("当前秘密不是 BIP39 助记词。")
+
+
+def _seedkeeper_decode_secret_detail(entry: dict, secret_dict: dict) -> dict:
+    kind = entry["kind"]
+
+    if kind in ("mnemonic", "rng_mnemonic"):
+        mnemonic, passphrase = _decode_seedkeeper_mnemonic_payload(secret_dict)
+        words = mnemonic.split()
+        title = "真随机助记词" if kind == "rng_mnemonic" else "助记词"
+        if passphrase:
+            title = f"{title}（另有密码短语）"
+        font_size = GUIConstants.get_body_font_size() + (2 if len(words) <= 12 else 1 if len(words) <= 18 else 0)
+        return {
+            "title": title,
+            "text": _seedkeeper_format_words(words),
+            "qr_text": mnemonic,
+            "text_font_name": GUIConstants.get_body_font_name(),
+            "text_font_size": font_size,
+        }
+
+    if kind == "steel_cipher":
+        text_value = _seedkeeper_decode_text_payload(secret_dict["secret"]).strip()
+        words = [word.strip() for word in text_value.replace("\n", " ").split() if word.strip()]
+        return {
+            "title": "假助记词缓存",
+            "text": _seedkeeper_format_words(words) if words else text_value,
+            "qr_text": text_value,
+            "text_font_name": GUIConstants.get_body_font_name(),
+            "text_font_size": GUIConstants.get_body_font_size() + 1,
+        }
+
+    if kind == "password":
+        secret_raw = bytes.fromhex(secret_dict["secret"])
+        password_length = secret_dict["secret_list"][0]
+        try:
+            login_length = secret_dict["secret_list"][password_length + 1]
+            url_length = secret_dict["secret_list"][password_length + login_length + 2]
+        except IndexError:
+            login_length = 0
+            url_length = 0
+
+        parts = []
+        password_text = secret_raw[1:password_length + 1].decode()
+        parts.append(f"密码\n{password_text}")
+        if login_length > 0:
+            login_text = secret_raw[password_length + 2: password_length + login_length + 2].decode()
+            parts.append(f"登录名\n{login_text}")
+        if url_length > 0:
+            url_text = secret_raw[-url_length:].decode()
+            parts.append(f"网址\n{url_text}")
+
+        display_text = "\n\n".join(parts)
+        return {
+            "title": "密码",
+            "text": display_text,
+            "qr_text": display_text,
+            "text_font_name": GUIConstants.get_body_font_name(),
+            "text_font_size": GUIConstants.get_body_font_size(),
+        }
+
+    if kind in ("descriptor", "data", "public_key"):
+        text_value = unhexlify(secret_dict["secret"])[2:].decode()
+        title_map = {
+            "descriptor": "多签描述符",
+            "data": "数据",
+            "public_key": "公钥",
+        }
+        return {
+            "title": title_map[kind],
+            "text": text_value,
+            "qr_text": text_value,
+            "text_font_name": GUIConstants.FIXED_WIDTH_FONT_NAME,
+            "text_font_size": GUIConstants.get_body_font_size(),
+        }
+
+    raw_text = secret_dict["secret"][2:]
+    return {
+        "title": entry["display_label"],
+        "text": raw_text,
+        "qr_text": raw_text,
+        "text_font_name": GUIConstants.FIXED_WIDTH_FONT_NAME,
+        "text_font_size": GUIConstants.get_body_font_size(),
+    }
+
+
 class ToolsCommonFilterView(View):
     def run(self):
         devices = [
@@ -2401,9 +2623,8 @@ class ToolsSatochipChangeLabelView(View):
 class ToolsSeedkeeperView(View):
     GENERATE_MNEMONIC = ButtonOption("卡上真随机创建助记词")
     VIEW_FREE_SPACE = ButtonOption("查看剩余空间")
-    VIEW_SECRETS = ButtonOption("查看卡内秘密")
+    VIEW_SECRETS = ButtonOption("查看和管理卡内秘密")
     IMPORT_PASSWORD = ButtonOption("保存密码到卡片")
-    DELETE_SECRET = ButtonOption("删除卡内秘密")
     LOAD_DESCRIPTOR = ButtonOption("加载多签描述符")
     SAVE_DESCRIPTOR = ButtonOption("保存多签描述符")
     CLONE_SECRETS = ButtonOption("克隆卡内秘密")
@@ -2415,7 +2636,6 @@ class ToolsSeedkeeperView(View):
             self.GENERATE_MNEMONIC,
             self.VIEW_SECRETS,
             self.IMPORT_PASSWORD,
-            self.DELETE_SECRET,
             self.LOAD_DESCRIPTOR,
             self.SAVE_DESCRIPTOR,
             self.CLONE_SECRETS,
@@ -2450,9 +2670,6 @@ class ToolsSeedkeeperView(View):
 
         elif button_data[selected_menu_num] == self.IMPORT_PASSWORD:
             return Destination(ToolsSeedkeeperImportPasswordView)
-
-        elif button_data[selected_menu_num] == self.DELETE_SECRET:
-            return Destination(ToolsSeedkeeperDeleteSecretView)
 
         elif button_data[selected_menu_num] == self.LOAD_DESCRIPTOR:
             return Destination(ToolsSeedkeeperLoadDescriptorView)
@@ -2820,239 +3037,128 @@ class ToolsSeedkeeperCloneSecretsView(View):
                 return Destination(BackStackView)
 
 class ToolsSeedkeeperViewSecretsView(View):
-
-    def entropy_to_mnemonic(self, entropy_bytes, wordlist):
-        from mnemonic import Mnemonic
-        logger.info(f"Worldlist: {wordlist}")
-
-        mnemonic_obj = Mnemonic(wordlist)
-        mnemonic = mnemonic_obj.to_mnemonic(entropy_bytes)
-
-        return mnemonic # str
+    SHOW_QR = ButtonOption("显示二维码")
+    DELETE = ButtonOption("删除秘密")
+    DONE = ButtonOption("完成")
 
     def run(self):
-        from seedsigner.gui.screens.screen import LoadingScreenThread
+        from seedsigner.gui.screens.screen import LoadingScreenThread, QRDisplayScreen
+        connector = None
+        loading = None
         try:
-            Satochip_Connector = seedkeeper_utils.init_satochip(self, init_card_filter=["seedkeeper"])
-            
-            if not Satochip_Connector:
+            connector = seedkeeper_utils.init_satochip(self, init_card_filter=["seedkeeper"])
+            if not connector:
                 return Destination(BackStackView)
 
-            self.loading_screen = LoadingScreenThread(text="Listing Secrets\n\n\n\n\n\n")
-            self.loading_screen.start()
+            status = connector.card_get_status()[3]
+            allow_delete = status.get("protocol_minor_version") != 1
 
-            headers = Satochip_Connector.seedkeeper_list_secret_headers()
-
-            self.loading_screen.stop()
-
-            headers_parsed = []
-            button_data = []
-            for header in headers:
-                sid = header['id']
-                stype = SEEDKEEPER_DIC_TYPE.get(header['type'], hex(header['type']))  # hex(header['type'])
-                subtype = header['subtype']
-                label = stype
-                if stype == "Password":
-                    label = "Pass:" + header['label']
-                elif stype == "BIP39 mnemonic": # Older Seedkeeper v1 BIP39 seeds
-                    label = "Seed:" + header['label']
-                elif stype == 'Masterseed' and subtype==0x01: # Newer SeedKeeper V2 Seeds
-                    label = "Seed:" + header['label']
-                elif stype == "2FA secret":
-                    label = "2FA:" + header['label']
-                elif stype == "Descriptor":
-                    label = "Descriptor:" + header['label']
-                elif stype == "Data":
-                    label = "Data:" + header['label']
-                else: 
-                    label = header['label']
-                origin = SEEDKEEPER_DIC_ORIGIN.get(header['origin'], hex(header['origin']))  # hex(header['origin'])
-                export_rights = SEEDKEEPER_DIC_EXPORT_RIGHTS.get(header['export_rights'],
-                                                                 hex(header[
-                                                                         'export_rights']))  # str(header['export_rights'])
-                export_nbplain = str(header['export_nbplain'])
-                export_nbsecure = str(header['export_nbsecure'])
-                export_nbcounter = str(header['export_counter']) if header['type'] == 0x70 else 'N/A'
-                fingerprint = header['fingerprint']
-
-                if export_rights == 'Plaintext export allowed':
-                    if len(label) == 0: label = "Unnamed Secret"
-                    headers_parsed.append((sid, label))
-                    button_data.append(ButtonOption(label))
-
-            logger.debug("headers_parsed: %s", headers_parsed)
-            if len(headers_parsed) < 1:
-                self.run_screen(
-                WarningScreen,
-                title="No Secrets to Load",
-                status_headline=None,
-                text=f"No Secrets to Load from Seedkeeper",
-                show_back_button=False,
-                )   
-                return Destination(BackStackView)
-
-            selected_menu_num = self.run_screen(
-                ButtonListScreen,
-                title="Select Secret",
-                is_button_text_centered=False,
-                button_data=button_data,
-                show_back_button=True,
-            )
-
-            if selected_menu_num == RET_CODE__BACK_BUTTON:
-                return Destination(BackStackView)
-
-            self.loading_screen = LoadingScreenThread(text="Loading Secret\n\n\n\n\n\n")
-            self.loading_screen.start()
-
-            secret_dict = Satochip_Connector.seedkeeper_export_secret(headers_parsed[selected_menu_num][0], None)
-
-            self.loading_screen.stop()
-
-            stype = SEEDKEEPER_DIC_TYPE.get(secret_dict['type'], hex(secret_dict['type']))  # hex(header['type'])
-
-            if 'mnemonic' in stype:
-                secret_dict['secret'] = unhexlify(secret_dict['secret'])[1:].decode().rstrip("\x00")
-
-                bip39_secret = secret_dict['secret']
-
-                secret_size = secret_dict['secret_list'][0]
-                secret_mnemonic = bip39_secret[:secret_size]
-                secret_passphrase = bip39_secret[secret_size + 1:]
-
-                secret_dict['secret'] = "Mnemonic:" + secret_mnemonic + " Passphrase:" + secret_passphrase
-
-            #elif stype == 'BIP39 mnemonic v2':
-            elif stype == 'Masterseed' and subtype==0x01:
-
-                # this format is backward compatible with Masterseed (BIP39 info appended after Masterseed)
-                # mnemonic in compressed format using entropy (16-32 bytes)
-                secret_raw_hex = secret_dict['secret']
-                secret_raw_bytes = bytes.fromhex(secret_raw_hex)
-                
-                offset = 0
-                masterseed_size = secret_raw_bytes[offset]
-                offset+=1
-
-                masterseed_bytes= secret_raw_bytes[offset: (offset+masterseed_size)]
-                offset+=masterseed_size
-                masterseed_hex= masterseed_bytes.hex()
-
-                wordlist_byte = secret_raw_bytes[offset]
-                offset+=1
-                wordlist = BIP39_WORDLIST_DIC.get(wordlist_byte)
-                if wordlist is None:
-                    logger.info("Error: unsupported BIP39 wordlist identifier encountered")
-                    exit()
-                
-                entropy_size = secret_raw_bytes[offset]
-                offset+=1
-
-                entropy_bytes = secret_raw_bytes[offset:(offset+entropy_size)]
-                offset+=entropy_size
+            while True:
+                loading = LoadingScreenThread(text="读取 SeedKeeper 列表\n\n\n\n\n\n")
+                loading.start()
                 try:
-                    bip39_mnemonic = self.entropy_to_mnemonic(entropy_bytes, wordlist)
+                    headers = connector.seedkeeper_list_secret_headers()
+                finally:
+                    loading.stop()
+                    loading = None
 
-                except Exception as ex:
-                    logger.info(f"Error during entropy conversion: {ex}")
-                    bip39_mnemonic = f"failed to convert entropy: {entropy_bytes.hex()}"
+                entries = _seedkeeper_build_entries(headers)
+                if not entries:
+                    self.run_screen(
+                        WarningScreen,
+                        title="没有可加载内容",
+                        status_headline=None,
+                        text="SeedKeeper 里没有允许明文导出的秘密。",
+                        show_back_button=False,
+                    )
+                    return Destination(BackStackView)
 
-                passphrase_size= secret_raw_bytes[offset]
-                offset+=1
-
-                passphrase_bytes= secret_raw_bytes[offset: (offset+passphrase_size)]
-                offset+=passphrase_size
-                try:
-                    passphrase = passphrase_bytes.decode("utf-8")
-                except Exception as ex:
-                    logger.info(f"Error during passphrase decoding: {ex}")
-                    passphrase = f"failed to decode passphrase bytes: {passphrase_bytes.hex()}"
-
-                secret_dict['secret']= f'BIP39 mnemonic: "{bip39_mnemonic}" \nPassphrase: "{passphrase}"'  
-
-            elif stype == 'Password':
-                
-                password_length = secret_dict['secret_list'][0]
-                try:
-                    login_length = secret_dict['secret_list'][password_length + 1]
-                    url_length = secret_dict['secret_list'][password_length + login_length + 2]
-                except IndexError: # Older Seedkeeper software didn't include these optional fields
-                    login_length = 0
-                    url_length = 0
-
-                secret_string = ""
-
-                # Password is always present, so no need to test for this
-                password_text = binascii.unhexlify(secret_dict['secret'])[1:password_length+1].decode()
-                secret_string += " Password:" + "\"" + password_text + "\""
-
-                if login_length > 0:
-                    login_text = binascii.unhexlify(secret_dict['secret'])[
-                                    password_length + 2: password_length + login_length + 2].decode()
-                    secret_string += " Login:" + "\"" + login_text + "\""
-
-                if url_length > 0:
-                    url_text = binascii.unhexlify(secret_dict['secret'])[-url_length:].decode()
-                    secret_string += " URL:" + "\"" + url_text + "\""
-
-                secret_dict['secret'] = secret_string
-
-
-            elif stype in ('Descriptor', 'Data', 'Public Key'):
-                secret_dict['secret'] = unhexlify(secret_dict['secret'])[2:].decode()
-                
-            else:
-                secret_dict['secret'] =  secret_dict['secret'][2:]
-
-            selected_menu_num = self.run_screen(
-                LargeIconStatusScreen,
-                title=secret_dict['label'],
-                status_headline=None,
-                text = secret_dict['secret'],
-                status_icon_size=0,
-                show_back_button=True,
-                allow_text_overflow=True,
-                button_data=[ButtonOption("Show as QR")],
-            )
-
-            if selected_menu_num == RET_CODE__BACK_BUTTON:
-                return Destination(BackStackView)
-            else:
-                from seedsigner.gui.screens.screen import QRDisplayScreen
-                from seedsigner.models.encode_qr import GenericStaticQrEncoder
-
-                qr_encoder = GenericStaticQrEncoder(data=secret_dict['secret'])
-                self.run_screen(
-                    QRDisplayScreen,
-                    qr_encoder=qr_encoder,
+                selected_menu_num = self.run_screen(
+                    ButtonListScreen,
+                    title="选择秘密",
+                    is_button_text_centered=False,
+                    button_data=[ButtonOption(entry["display_label"]) for entry in entries],
+                    show_back_button=True,
                 )
 
-            return Destination(BackStackView)
-            
+                if selected_menu_num == RET_CODE__BACK_BUTTON:
+                    return Destination(BackStackView)
+
+                selected_entry = entries[selected_menu_num]
+                loading = LoadingScreenThread(text="读取 SeedKeeper 内容\n\n\n\n\n\n")
+                loading.start()
+                try:
+                    secret_dict = connector.seedkeeper_export_secret(selected_entry["id"], None)
+                finally:
+                    loading.stop()
+                    loading = None
+
+                detail = _seedkeeper_decode_secret_detail(selected_entry, secret_dict)
+                action_buttons = [self.SHOW_QR]
+                if allow_delete:
+                    action_buttons.append(self.DELETE)
+                action_buttons.append(self.DONE)
+
+                selected_action = self.run_screen(
+                    ToolsFormattedTextScreen,
+                    title=detail["title"],
+                    text=detail["text"],
+                    text_font_name=detail["text_font_name"],
+                    text_font_size=detail["text_font_size"],
+                    text_is_centered=False,
+                    allow_text_overflow=True,
+                    button_data=action_buttons,
+                )
+
+                if selected_action == RET_CODE__BACK_BUTTON:
+                    continue
+
+                selected_button = action_buttons[selected_action]
+                if selected_button == self.SHOW_QR:
+                    self.run_screen(
+                        QRDisplayScreen,
+                        qr_encoder=GenericStaticQrEncoder(data=detail["qr_text"]),
+                    )
+                    continue
+
+                if selected_button == self.DELETE:
+                    warning_screen_num = DireWarningScreen(
+                        status_headline="删除确认",
+                        text="这会永久删除卡内这条秘密，不能撤销。",
+                    ).display()
+                    if warning_screen_num == RET_CODE__BACK_BUTTON:
+                        continue
+
+                    loading = LoadingScreenThread(text="删除 SeedKeeper 秘密\n\n\n\n\n\n")
+                    loading.start()
+                    try:
+                        connector.seedkeeper_reset_secret(selected_entry["id"])
+                    finally:
+                        loading.stop()
+                        loading = None
+
+                    self.run_screen(
+                        LargeIconStatusScreen,
+                        title="删除完成",
+                        status_headline=None,
+                        text="这条秘密已经从 SeedKeeper 删除。",
+                        show_back_button=False,
+                        button_data=[ButtonOption("继续")],
+                    )
+                    continue
+
+                continue
         except Exception as e:
             logger.info(e)
-            self.loading_screen.stop()
+            if loading is not None:
+                loading.stop()
             self.run_screen(
                 WarningScreen,
-                title="Error",
+                title="错误",
                 status_headline=None,
                 text=str(e),
                 show_back_button=True,
-                button_data=[ButtonOption("Show as QR")],
             )
-
-            if selected_menu_num == RET_CODE__BACK_BUTTON:
-                return Destination(BackStackView)
-            else:
-                from seedsigner.gui.screens.screen import QRDisplayScreen
-                from seedsigner.models.encode_qr import GenericStaticQrEncoder
-
-                qr_encoder = GenericStaticQrEncoder(data=secret_dict['secret'])
-                self.run_screen(
-                    QRDisplayScreen,
-                    qr_encoder=qr_encoder,
-                )
-
             return Destination(BackStackView)
 
 
@@ -4633,10 +4739,10 @@ class SatochipLoadDescriptorDetailsView(View):
         return Destination(MainMenuView)
 
 class ToolsSatochipDIYView(View):
-    MANAGE_KEYS = ButtonOption("Card Keys")
-    BUILD_APPLETS = ButtonOption("Build Applets")
-    INSTALL_APPLET = ButtonOption("Install Applet")
-    UNINSTALL_APPLET = ButtonOption("Uninstall Applet")
+    MANAGE_KEYS = ButtonOption("管理卡默认密钥")
+    BUILD_APPLETS = ButtonOption("编译 CAP 安装包")
+    INSTALL_APPLET = ButtonOption("安装卡片程序")
+    UNINSTALL_APPLET = ButtonOption("卸载卡片程序")
 
     def run(self):
         # Check if GlobalPlatoform is available as a way of checking if the DIY tools we need are available
@@ -4655,9 +4761,9 @@ class ToolsSatochipDIYView(View):
         else:
             self.run_screen(
                 WarningScreen,
-                title="Failed",
+                title="缺少刷卡环境",
                 status_headline=None,
-                text="MicroSD with SeedSigner+Satochip Required...",
+                text="需要插入带 Satochip-DIY 工具的 microSD，才能继续编译或安装卡片程序。",
                 show_back_button=False,
             )
 
@@ -4670,7 +4776,7 @@ class ToolsSatochipDIYView(View):
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title="Javacard DIY",
+            title="Javacard 刷卡工具",
             is_button_text_centered=False,
             button_data=button_data
         )
