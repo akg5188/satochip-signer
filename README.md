@@ -104,6 +104,9 @@ bash scripts/rebuild_official_release.sh wallet-release
   - 交易详情核对页 + 单次 PIN 流程
   注意：
   - 这张是当前功能预览版，不是 clean 逐字节复现基线
+  - 当前长期建议是 `一张卡只装一个程序`
+  - `重置 Satochip / 重置 SeedKeeper` 只建议在专用单程序卡上使用
+  - 如果同一张卡还装了另一个 applet，不要在固件里做恢复出厂
   - build info 在：
     `dist/system-update-seedkeeper-suite-test.build-info.txt`
   - `sha256 = 98201df6e3d9c7af6c9a21327c068dda4b5b31069a9dac45a6f270d042a19754`
@@ -229,7 +232,8 @@ bash scripts/build_wallet_release.sh
 - `wallet/` 现在是高安全观察钱包 + `WalletConnect` 协调器。
 - `app/` 不是独立钱包，它是 `TokenPocket` 配套的智能卡签名/中转 App。
 - `SeedKeeper` 和 `SatochipApplet` 不是同一个 applet。
-- 同一张 `J3R180` 卡也可以同时装这两个 applet；如果 `gp.jar --list` 已经能看到两条 `APP`，就不要再为了切换功能去重刷。
+- 技术上同一张 `J3R180` 卡也可以同时装这两个 applet，但当前长期建议已经改成：`一张卡只装一个程序`。
+- 如果你手里已经是双 applet 共卡，日常查看/导入/签名还可以继续用，但不要在固件里做恢复出厂。
 - 当前官方 `SeedSigner` 固件和本仓库树莓派固件都不能直接给卡刷 applet。
 - `backups/satochip-utils/` 当前讲的是 `Satochip` 卡初始化，不是白卡来回切换 `SeedKeeper / SatochipApplet`。
 - 树莓派首页已经不是 `TP only mode`，也没有“官方模式”入口了。

@@ -2178,28 +2178,17 @@ class ToolsSatochipFactoryResetView(View):
                 DireWarningScreen,
                 title="警告",
                 status_headline=None,
-                text=f"如果没有可用备份就重置 {self.card_label}，其中的资金或秘密可能无法找回。",
+                text=(
+                    f"如果没有可用备份就重置 {self.card_label}，其中的资金或秘密可能无法找回。"
+                    f"\n\n只建议在只安装 {self.card_label} 的专用单程序卡上继续。"
+                    "如果同一张卡还装了另一个 applet，恢复出厂可能把整张卡一起清空，"
+                    "或者让另一边也变得不可用。"
+                ),
                 show_back_button=True,
-                button_data=[ButtonOption("我明白")],
+                button_data=[ButtonOption("我明白并继续")],
             )
         if ret == RET_CODE__BACK_BUTTON:
             return self._return_destination()
-
-        if self.card_label == "SeedKeeper":
-            ret = self.run_screen(
-                DireWarningScreen,
-                title="高风险",
-                status_headline=None,
-                text=(
-                    "如果同一张卡上同时装了 SeedKeeper 和 SatochipApplet，"
-                    "这里的恢复出厂可能让另一边也变得不可用。"
-                    "除非你就是要整张卡全部清空，否则不要继续。"
-                ),
-                show_back_button=True,
-                button_data=[ButtonOption("继续重置 SeedKeeper")],
-            )
-            if ret == RET_CODE__BACK_BUTTON:
-                return self._return_destination()
 
         """Initiate the card Factory Reset Process using the legacy or new approach based on card type and version
 
