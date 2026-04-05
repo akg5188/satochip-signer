@@ -79,13 +79,13 @@ bash scripts/rebuild_official_release.sh wallet-release
 | 给 `TokenPocket` 做手机端扫码与智能卡签名 | `app/` | `bash scripts/build_tp_relay_apk.sh` |
 | 用自己的安卓观察钱包发起 EVM / BTC 冷签 | `wallet/` | `bash scripts/build_wallet_release.sh` |
 | 给 `BlueWallet` 做 `BTC PSBT` 冷签 | 树莓派离线签名器 | [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md) |
-| 刷树莓派固件 | `dist/` | `system-update-bip85-smartcard-test.img.xz` |
+| 刷树莓派固件 | `dist/` | `system-update-seedkeeper-suite-test.img.xz` |
 | 给 `J3R180` 白卡安装 `SatochipApplet` | `card-applet/prebuilt/` | `SatoChip-3.0.4.cap` |
 | 在 `Tails` 里初始化 `Satochip` 卡、设 PIN、导助记词 | `backups/satochip-utils/` | 对应中文教程 |
 
 ## 两张最重要的树莓派镜像
 
-仓库和 GitHub 现在主要保留两张树莓派镜像：
+仓库和 GitHub 现在主要保留两张“公开版”树莓派镜像，另外本机还有一张最新测试包：
 
 - `dist/system-update-bip85-smartcard-test.img.xz`
   这是现在优先推荐直接刷的包。
@@ -105,6 +105,23 @@ bash scripts/rebuild_official_release.sh wallet-release
   - 这张现在就是当前推荐下载入口
   - 以后想重建并严格对哈希，仍然看 `system-update-latest.img.xz` 这条 clean 基线
 
+- `dist/system-update-seedkeeper-suite-test.img.xz`
+  这是当前这台机器上最新编出来的测试功能包。
+  已带上：
+  - 开机 `4-12` 位数字登录密码
+  - `助记词工具 -> 智能卡真随机创建助记词`
+  - `智能卡工具 -> Satochip 功能 / SeedKeeper 功能 / 完整智能卡菜单`
+  - `导入助记词 -> 按编号导入 BIP39 助记词`
+  - 标准 `BIP39` 助记词查看 `原始熵(HEX)` 与二维码
+  - `SeedKeeper` 保存/加载二次加密后的假助记词
+  - `BIP85` 子助记词与写入 `Satochip / SeedKeeper`
+  注意：
+  - 这张现在已经能本机直接刷机试功能
+  - 但它还没推到 GitHub Release，所以文档里提到 GitHub 当前公开下载时，仍然会先提公开版
+  - build info 在：
+    `dist/system-update-seedkeeper-suite-test.build-info.txt`
+  - `sha256 = 04421fb74d4225cf3a4685b923cb991d4cb0cb65e9951250f5bb4ae9b4fc420f`
+
 - `dist/system-update-latest.img.xz`
   这是保留的 clean 正式基线。
   用途：
@@ -115,6 +132,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 怎么对应源码，看这里：
 
 - [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)
+- [当前测试固件功能与验证范围](docs/当前测试固件功能与验证范围.zh-CN.md)
 
 ## 当前主界面长什么样
 
