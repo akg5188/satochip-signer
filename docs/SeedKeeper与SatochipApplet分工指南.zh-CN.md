@@ -119,11 +119,10 @@
 - 写卡前先按固定 `tag + 文件名 + SHA256` 做验真：
   [官方程序下载验真与校验](官方程序下载验真与校验.zh-CN.md)
 
-本仓库当前已经整理好的，是 `SatochipApplet` 这条线：
+本仓库现在不再维护 `SatochipApplet` 的本地 `CAP` 归档。
+如果以后真的要刷 applet，统一改走上游官方 release，并先做固定 tag / 文件名 / `SHA256` 验真：
 
-- `card-applet/prebuilt/SatoChip-3.0.4.cap`
-- [../card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md](../card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md)
-- [../card-applet/J3R180刷SatochipApplet与SeedKeeper.zh-CN.md](../card-applet/J3R180刷SatochipApplet与SeedKeeper.zh-CN.md)
+- [官方程序下载验真与校验](官方程序下载验真与校验.zh-CN.md)
 
 ## 7. 最稳的实际方案
 
@@ -219,5 +218,4 @@ java -jar gp.jar --list
 - [官方程序下载验真与校验](官方程序下载验真与校验.zh-CN.md)
 - [离线签名器使用教程](离线签名器使用教程.zh-CN.md)
 - [固件下载与写入指南](固件下载与写入指南.zh-CN.md)
-- [../card-applet/README.zh-CN.md](../card-applet/README.zh-CN.md)
 - [../backups/satochip-utils/Tails-离线使用教程.zh-CN.md](../backups/satochip-utils/Tails-离线使用教程.zh-CN.md)

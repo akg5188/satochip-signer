@@ -1,6 +1,0 @@
-Upstream repository: https://github.com/Toporin/SatochipApplet
-Snapshot commit: 8cbaa1d
-
-Notes:
-- This folder is a source snapshot copied into this repository.
-- Removed from snapshot: .git directory, sdks submodule content, gp.jar/gp.exe binaries, and generated CAP output.

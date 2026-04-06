@@ -24,6 +24,8 @@
   [wallet-android-20260403-0.1.3](https://github.com/akg5188/satochip-signer/releases/tag/wallet-android-20260403-0.1.3)
 - 安卓智能卡 App：
   [smartcard-app-android-20260330](https://github.com/akg5188/satochip-signer/releases/tag/smartcard-app-android-20260330)
+- 智能卡 applet：
+  改用上游官方 release，看 [官方程序下载验真与校验](docs/官方程序下载验真与校验.zh-CN.md)
 
 以后如果让 AI 重建正式发布版，先跑这几条，不要自己猜 tag：
 
@@ -45,7 +47,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 
 - `tp-satochip-signer`
 
-按现在源码里的真实状态，它包含 5 条主线：
+按现在源码里的真实状态，它主要维护 4 条主线，另保留 1 份离线初始化工具备份：
 
 - `seedsigner-os/` 与 `dist/`
   树莓派 `Pi Zero` 离线签名器固件与镜像备份
@@ -53,8 +55,6 @@ bash scripts/rebuild_official_release.sh wallet-release
   安卓“智能卡”App，负责 `TokenPocket` 请求扫码、智能卡签名，也能把 TP 动态码转成树莓派更容易扫的静态码
 - `wallet/`
   安卓高安全观察钱包，当前主打 `Arbitrum One` 观察地址、`WalletConnect v2` 协调、树莓派离线签名，以及 `BTC xpub/ypub/zpub` 观察账户原型
-- `card-applet/`
-  `J3R180` 智能卡固件
 - `backups/satochip-utils/`
   `Tails` 离线卡初始化工具备份
 
@@ -83,15 +83,15 @@ bash scripts/rebuild_official_release.sh wallet-release
 | 给 `BlueWallet` 做 `BTC PSBT` 冷签 | 树莓派离线签名器 | [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md) |
 | 想系统搞懂 `BIP85` 子助记词 | 树莓派离线签名器 | [BIP85子助记词使用教程](docs/BIP85子助记词使用教程.zh-CN.md) |
 | 想把助记词做成钛板/钢板备份 | 树莓派离线签名器 | [钛板打孔备份助记词教程](docs/钛板打孔备份助记词教程.zh-CN.md) |
-| 刷树莓派固件 | `dist/` | `system-update-seedkeeper-fingerprint-page-lock-fix-test.img.xz` |
-| 给 `J3R180` 白卡安装 `SatochipApplet` | `card-applet/prebuilt/` | `SatoChip-3.0.4.cap` |
+| 刷树莓派固件 | `dist/` | `system-update-steel-restore-fix-test.img.xz` |
+| 给智能卡刷官方 applet | 官方 release | [官方程序下载验真与校验](docs/官方程序下载验真与校验.zh-CN.md) |
 | 在 `Tails` 里初始化 `Satochip` 卡、设 PIN、导助记词 | `backups/satochip-utils/` | 对应中文教程 |
 
 ## 两张最重要的树莓派镜像
 
 仓库和 GitHub 现在主要保留两张树莓派镜像：
 
-- `dist/system-update-seedkeeper-fingerprint-page-lock-fix-test.img.xz`
+- `dist/system-update-steel-restore-fix-test.img.xz`
   这是现在优先推荐直接刷的本机功能测试包。
   GitHub 当前公开下载入口使用同内容的公开文件名：
   `system-update-seedkeeper-suite-test.img.xz`
@@ -114,8 +114,8 @@ bash scripts/rebuild_official_release.sh wallet-release
   - `重置 Satochip / 重置 SeedKeeper` 只建议在专用单程序卡上使用
   - 如果同一张卡还装了另一个 applet，不要在固件里做恢复出厂
   - build info 在：
-    `dist/system-update-seedkeeper-fingerprint-page-lock-fix-test.build-info.txt`
-  - `sha256 = 5886d142dd046833d91084545df66ecd23d364d7da39c0b11814131d46b0e6c3`
+    `dist/system-update-steel-restore-fix-test.build-info.txt`
+  - `sha256 = 10d9aa45998feba5317837db16c4aeffb7e9b1a548096ec46d52d01e54d162e2`
 
 - `dist/system-update-latest.img.xz`
   这是保留的 clean 正式基线。
@@ -260,7 +260,6 @@ bash scripts/build_wallet_release.sh
 - [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md)
 - [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md)
 - [SeedKeeper 与 SatochipApplet 分工指南](docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md)
-- [J3R180 刷 SatochipApplet 与 SeedKeeper 教程](card-applet/J3R180刷SatochipApplet与SeedKeeper.zh-CN.md)
 - [树莓派固件构建与备份](docs/树莓派固件构建与备份.zh-CN.md)
 - [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)
 - [长期维护总入口](docs/长期维护总入口.zh-CN.md)
