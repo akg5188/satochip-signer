@@ -256,6 +256,7 @@ def main() -> int:
             encode_seedkeeper_tp_steel_payload,
         )
         from seedsigner.models.mnemonic_steel import (
+            indices_to_words,
             indices_to_plate_groups,
             parse_restore_indices,
             shift_mnemonic,
@@ -423,6 +424,18 @@ def main() -> int:
         assert isinstance(fake_view.controller.storage.seeds[0], TransientWordSeed)
         assert fake_view.controller.storage.get_steel_encrypted_mnemonic() == words
         assert SeedsMenuView.get_seed_type_label(fake_view.controller.storage.seeds[0]) == "假助记词"
+
+        restored_from_indices_view = types.SimpleNamespace(controller=_FakeController())
+        restored_from_indices_words = indices_to_words(list(range(12)))
+        seed_num = _store_restored_steel_cipher(
+            restored_from_indices_view,
+            ["坏词"] * 12,
+            indices=list(range(12)),
+        )
+        assert seed_num == 0
+        assert restored_from_indices_view.controller.storage.get_steel_encrypted_mnemonic() == restored_from_indices_words
+        assert restored_from_indices_view.controller.storage.get_steel_bip39_indices() == list(range(12))
+        assert isinstance(restored_from_indices_view.controller.storage.seeds[0], TransientWordSeed)
 
         class _FakeConnector:
             def card_get_status(self):

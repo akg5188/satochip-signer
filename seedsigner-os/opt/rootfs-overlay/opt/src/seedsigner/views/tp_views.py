@@ -1470,8 +1470,11 @@ def _format_number_groups(entries: list[str], page_index: int, entries_per_page:
 
 
 def _store_restored_steel_cipher(view: View, words: list[str], indices: list[int] | None = None) -> int:
-    canonical_words = _canonicalize_bip39_words(words, context="钢板恢复结果")
-    if indices is None:
+    if indices is not None:
+        indices = [int(index) for index in list(indices)]
+        canonical_words = [get_word_at_index(index) for index in indices]
+    else:
+        canonical_words = _canonicalize_bip39_words(words, context="钢板恢复结果")
         indices = words_to_indices(canonical_words)
     view.controller.storage.set_steel_encrypted_mnemonic(
         canonical_words,
