@@ -79,7 +79,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 | 给 `TokenPocket` 做手机端扫码与智能卡签名 | `app/` | `bash scripts/build_tp_relay_apk.sh` |
 | 用自己的安卓观察钱包发起 EVM / BTC 冷签 | `wallet/` | `bash scripts/build_wallet_release.sh` |
 | 给 `BlueWallet` 做 `BTC PSBT` 冷签 | 树莓派离线签名器 | [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md) |
-| 刷树莓派固件 | `dist/` | `system-update-seedkeeper-suite-test.img.xz` |
+| 刷树莓派固件 | `dist/` | `system-update-seedkeeper-fingerprint-page-lock-fix-test.img.xz` |
 | 给 `J3R180` 白卡安装 `SatochipApplet` | `card-applet/prebuilt/` | `SatoChip-3.0.4.cap` |
 | 在 `Tails` 里初始化 `Satochip` 卡、设 PIN、导助记词 | `backups/satochip-utils/` | 对应中文教程 |
 
@@ -87,8 +87,10 @@ bash scripts/rebuild_official_release.sh wallet-release
 
 仓库和 GitHub 现在主要保留两张树莓派镜像：
 
-- `dist/system-update-seedkeeper-suite-test.img.xz`
-  这是现在优先推荐直接刷的包，也是 GitHub 当前公开下载入口。
+- `dist/system-update-seedkeeper-fingerprint-page-lock-fix-test.img.xz`
+  这是现在优先推荐直接刷的本机功能测试包。
+  GitHub 当前公开下载入口使用同内容的公开文件名：
+  `system-update-seedkeeper-suite-test.img.xz`
   已确认支持：
   - 自有安卓钱包扫码签名
   - `BlueWallet` 的 `BTC PSBT`
@@ -108,8 +110,8 @@ bash scripts/rebuild_official_release.sh wallet-release
   - `重置 Satochip / 重置 SeedKeeper` 只建议在专用单程序卡上使用
   - 如果同一张卡还装了另一个 applet，不要在固件里做恢复出厂
   - build info 在：
-    `dist/system-update-seedkeeper-suite-test.build-info.txt`
-  - `sha256 = c9e17f49763e4585b3b15380393764092843cc3d55097895df8de61785ab3070`
+    `dist/system-update-seedkeeper-fingerprint-page-lock-fix-test.build-info.txt`
+  - `sha256 = 5886d142dd046833d91084545df66ecd23d364d7da39c0b11814131d46b0e6c3`
 
 - `dist/system-update-latest.img.xz`
   这是保留的 clean 正式基线。
