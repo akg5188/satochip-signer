@@ -60,7 +60,7 @@ class ToolsNetworkInfoScreen(ButtonListScreen):
         message_display = TextArea(
             text=self.paged_info[self.page_num],
             is_text_centered=False,
-            allow_text_overflow=True,
+            allow_text_overflow=False,
             font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
             screen_y=start_y,
             height=info_height,
@@ -74,7 +74,7 @@ class ToolsFormattedTextScreen(ButtonListScreen):
     text_font_name: str = GUIConstants.FIXED_WIDTH_FONT_NAME
     text_font_size: int = None
     text_is_centered: bool = False
-    allow_text_overflow: bool = True
+    allow_text_overflow: bool = False
 
     def __post_init__(self):
         self.is_bottom_list = True
@@ -107,6 +107,7 @@ class ToolsBatteryCalibrationIntroScreen(ButtonListScreen):
         self.components.append(TextArea(
             text=_("Charge the battery fully. Select Next to start the discharge test."),
             screen_y=self.top_nav.height + int(GUIConstants.COMPONENT_PADDING / 2),
+            height=self.get_body_height(self.top_nav.height + int(GUIConstants.COMPONENT_PADDING / 2)),
         ))
 
 
@@ -122,6 +123,7 @@ class ToolsBatteryCalibrationStartScreen(ButtonListScreen):
         self.components.append(TextArea(
             text=_("Test runs until empty. Leave the device unplugged."),
             screen_y=self.top_nav.height + int(GUIConstants.COMPONENT_PADDING / 2),
+            height=self.get_body_height(self.top_nav.height + int(GUIConstants.COMPONENT_PADDING / 2)),
         ))
 
 
@@ -478,6 +480,7 @@ class ToolsCalcFinalWordFinalizePromptScreen(ButtonListScreen):
         self.components.append(TextArea(
             text=text,
             screen_y=self.top_nav.height + int(GUIConstants.COMPONENT_PADDING/2),
+            height=self.get_body_height(self.top_nav.height + int(GUIConstants.COMPONENT_PADDING/2)),
         ))
 
 
@@ -690,6 +693,7 @@ class ToolsCalcFinalWordDoneScreen(ButtonListScreen):
             font_size=26,
             is_text_centered=True,
             screen_y=self.top_nav.height + GUIConstants.COMPONENT_PADDING,
+            height=self.get_body_height(self.top_nav.height + GUIConstants.COMPONENT_PADDING),
         ))
 
         self.components.append(IconTextLine(
@@ -767,6 +771,7 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
     initial_keyboard: str = None
     steel_entry_mode: bool = False
     digits_entry_mode: bool = False
+    quick_space_backspace: bool = False
 
     KEYBOARD__LOWERCASE_BUTTON_TEXT = "abc"
     KEYBOARD__UPPERCASE_BUTTON_TEXT = "ABC"
@@ -1073,6 +1078,28 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
                     return dict(textToEncode=self.textToEncode, is_back_button=True)
 
                 # Check for keyboard swaps
+                if self.quick_space_backspace and input in [HardwareButtonsConstants.KEY1, HardwareButtonsConstants.KEY2]:
+                    if input == HardwareButtonsConstants.KEY1:
+                        if cursor_position == len(self.textToEncode):
+                            self.textToEncode += " "
+                        else:
+                            self.textToEncode = self.textToEncode[:cursor_position] + " " + self.textToEncode[cursor_position:]
+                        cursor_position += 1
+                    else:
+                        if cursor_position > 0:
+                            if cursor_position == len(self.textToEncode):
+                                self.textToEncode = self.textToEncode[:-1]
+                            else:
+                                self.textToEncode = self.textToEncode[:cursor_position - 1] + self.textToEncode[cursor_position:]
+                            cursor_position -= 1
+                    self.text_entry_display.render(self.textToEncode, cursor_position)
+                    self.hw_button1.is_selected = False
+                    self.hw_button2.is_selected = False
+                    self.hw_button1.render()
+                    self.hw_button2.render()
+                    self.renderer.show_image()
+                    continue
+
                 if (self.steel_entry_mode or self.digits_entry_mode) and input in [HardwareButtonsConstants.KEY1, HardwareButtonsConstants.KEY2]:
                     continue
 
@@ -1234,6 +1261,8 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
                 self.renderer.show_image()
 
     def _get_button_texts(self, cur_keyboard):
+        if self.quick_space_backspace:
+            return "空格", "退格"
         if self.steel_entry_mode or self.digits_entry_mode:
             return "", ""
         if cur_keyboard == self.keyboard_ABC:

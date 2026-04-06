@@ -48,7 +48,8 @@ class SettingsEntryUpdateSelectionScreen(ButtonListScreen):
             font_size=GUIConstants.BODY_FONT_MAX_SIZE,
             is_text_centered=True,
             auto_line_break=True,
-            screen_y=self.top_nav.height + GUIConstants.COMPONENT_PADDING
+            screen_y=self.top_nav.height + GUIConstants.COMPONENT_PADDING,
+            height=max(GUIConstants.BUTTON_HEIGHT, int(self.get_body_height(self.top_nav.height + GUIConstants.COMPONENT_PADDING) * 0.35)),
         ))
 
         if self.help_text:
@@ -59,6 +60,7 @@ class SettingsEntryUpdateSelectionScreen(ButtonListScreen):
                 is_text_centered=True,
                 screen_y=prev_component_bottom + GUIConstants.COMPONENT_PADDING,
                 auto_line_break=True,
+                height=self.get_body_height(prev_component_bottom + GUIConstants.COMPONENT_PADDING),
             ))
 
 
@@ -572,14 +574,16 @@ class SettingsQRConfirmationScreen(ButtonListScreen):
                 text=f'"{self.config_name}"',  # User-supplied string (from SettingsQR); don't wrap to translate
                 is_text_centered=True,
                 auto_line_break=True,
-                screen_y=start_y
+                screen_y=start_y,
+                height=max(GUIConstants.BUTTON_HEIGHT, int(self.get_body_height(start_y) * 0.35)),
             )
             self.components.append(self.config_name_textarea)
-            start_y = self.config_name_textarea.screen_y + 50
-        
+            start_y = self.config_name_textarea.screen_y + self.config_name_textarea.height + GUIConstants.COMPONENT_PADDING
+
         self.components.append(TextArea(
             text=_(self.status_message),
             is_text_centered=True,
             auto_line_break=True,
-            screen_y=start_y
+            screen_y=start_y,
+            height=self.get_body_height(start_y),
         ))

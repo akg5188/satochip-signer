@@ -580,6 +580,16 @@ class ButtonListScreen(BaseTopNavScreen):
         return threads
 
 
+    def get_body_bottom(self) -> int:
+        if self.buttons:
+            return self.buttons[0].screen_y - GUIConstants.COMPONENT_PADDING
+        return self.canvas_height - GUIConstants.EDGE_PADDING
+
+
+    def get_body_height(self, start_y: int) -> int:
+        return max(GUIConstants.COMPONENT_PADDING, self.get_body_bottom() - start_y)
+
+
     def _render(self):
         super()._render()
         self._render_visible_buttons()
@@ -1126,7 +1136,7 @@ class LargeIconStatusScreen(ButtonListScreen):
 
         if self.text:
             self.components.append(TextArea(
-                height=self.buttons[0].screen_y - next_y,
+                height=self.get_body_height(next_y),
                 text=_(self.text),
                 width=self.canvas_width,
                 edge_padding=self.text_edge_padding,  # Don't render all the way up to the far left/right edges

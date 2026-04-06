@@ -247,24 +247,44 @@ build_image() {
   #make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ #2> /dev/null > /dev/null
 
   PATH="/usr/lib/ccache:${PATH}" make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ ${config_name}_defconfig
-  if [ "${3}" = "skip-repo" ] && [ -f "${build_dir}/.config" ]; then
-    python3 - "${build_dir}/.config" "${rootfs_overlay}" <<'EOF'
+  if [ -f "${build_dir}/.config" ]; then
+    python3 - "${build_dir}/.config" "${rootfs_overlay}" "${3}" "${BR2_JLEVEL:-}" <<'EOF'
 import re
 import sys
 from pathlib import Path
 
 config_path = Path(sys.argv[1])
 overlay_path = Path(sys.argv[2]).resolve().as_posix()
+skip_repo = sys.argv[3] == "skip-repo"
+br2_jlevel = sys.argv[4]
 content = config_path.read_text(encoding="utf-8")
-updated = re.sub(
-    r'^BR2_ROOTFS_OVERLAY=".*"$',
-    f'BR2_ROOTFS_OVERLAY="{overlay_path}"',
-    content,
-    flags=re.MULTILINE,
-)
-if updated == content:
-    raise SystemExit("BR2_ROOTFS_OVERLAY not found in generated Buildroot config")
-config_path.write_text(updated, encoding="utf-8")
+updated = content
+
+if skip_repo:
+    updated = re.sub(
+        r'^BR2_ROOTFS_OVERLAY=".*"$',
+        f'BR2_ROOTFS_OVERLAY="{overlay_path}"',
+        updated,
+        flags=re.MULTILINE,
+    )
+    if updated == content:
+        raise SystemExit("BR2_ROOTFS_OVERLAY not found in generated Buildroot config")
+
+if br2_jlevel:
+    if not br2_jlevel.isdigit():
+        raise SystemExit(f"Invalid BR2_JLEVEL override: {br2_jlevel}")
+    if re.search(r"^BR2_JLEVEL=.*$", updated, flags=re.MULTILINE):
+        updated = re.sub(
+            r"^BR2_JLEVEL=.*$",
+            f"BR2_JLEVEL={br2_jlevel}",
+            updated,
+            flags=re.MULTILINE,
+        )
+    else:
+        updated = updated.rstrip() + f"\nBR2_JLEVEL={br2_jlevel}\n"
+
+if updated != content:
+    config_path.write_text(updated, encoding="utf-8")
 EOF
   fi
 

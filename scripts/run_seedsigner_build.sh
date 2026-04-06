@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="$ROOT_DIR/logs"
-LOG_FILE="$LOG_DIR/seedsigner-build-live.log"
+LOG_FILE="${TP_BUILD_LOG_FILE:-$LOG_DIR/seedsigner-build-live.log}"
 APP_DIR="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt"
 APP_SETTINGS_TEMPLATE="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/default-settings.json"
 APP_SETTINGS_TARGET="$APP_DIR/src/settings.json"
@@ -21,6 +21,7 @@ TP_BUILD_CPUSET="${TP_BUILD_CPUSET:-0,1,2,3}"
 TP_BUILD_NICE="${TP_BUILD_NICE:-19}"
 TP_BUILD_IONICE_CLASS="${TP_BUILD_IONICE_CLASS:-3}"
 TP_BUILD_CLEAN_MODE="${TP_BUILD_CLEAN_MODE:-clean}"
+TP_SKIP_HOST_FIX_RPATH="${TP_SKIP_HOST_FIX_RPATH:-1}"
 
 case "$TP_BUILD_CLEAN_MODE" in
   clean|no-clean)
@@ -93,6 +94,7 @@ export LANG=C.UTF-8
 export TP_BUILD_DIR="$ASCII_BUILD_DIR"
 export TP_IMAGE_DIR="$ASCII_IMAGE_DIR"
 BUILD_PREFIX=(env "BR2_JLEVEL=$BR2_JLEVEL")
+BUILD_PREFIX+=("TP_SKIP_HOST_FIX_RPATH=$TP_SKIP_HOST_FIX_RPATH")
 if command -v taskset >/dev/null 2>&1; then
   BUILD_PREFIX=(taskset -c "$TP_BUILD_CPUSET" "${BUILD_PREFIX[@]}")
 fi
@@ -105,6 +107,7 @@ echo "Starting SeedSigner OS build"
 echo "  BR2_JLEVEL=$BR2_JLEVEL"
 echo "  TP_BUILD_CPUSET=$TP_BUILD_CPUSET"
 echo "  TP_BUILD_CLEAN_MODE=$TP_BUILD_CLEAN_MODE"
+echo "  TP_SKIP_HOST_FIX_RPATH=$TP_SKIP_HOST_FIX_RPATH"
 echo "  log=$LOG_FILE"
 
 nice -n "$TP_BUILD_NICE" ionice -c "$TP_BUILD_IONICE_CLASS" \

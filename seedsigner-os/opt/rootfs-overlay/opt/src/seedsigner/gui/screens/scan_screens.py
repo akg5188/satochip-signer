@@ -328,6 +328,7 @@ class ScanEncryptedQRScreen(ButtonListScreen):
             text=self.public_data,
             screen_y=self.top_nav.height,
             is_text_centered=True,
+            height=self.get_body_height(self.top_nav.height),
         ))
 
 

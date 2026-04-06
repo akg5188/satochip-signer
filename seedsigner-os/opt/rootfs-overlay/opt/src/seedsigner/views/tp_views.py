@@ -31,18 +31,21 @@ from seedsigner.models.encode_qr import GenericStaticQrEncoder
 from seedsigner.models.mnemonic_steel import (
     DEFAULT_SHIFT_OPERATOR,
     OPERATOR_LABELS,
+    WEIGHTS,
     WEIGHT_SET,
     WORDLIST as STEEL_WORDLIST,
     get_word_at_index,
+    indices_to_plate_groups,
     indices_to_words,
     lookup_word_index,
     parse_restore_indices,
+    shift_indices,
     shift_mnemonic,
     solve_weights,
+    words_to_indices,
     words_to_plate_groups,
 )
 from seedsigner.models.seed import InvalidSeedException, Seed, TransientWordSeed, XprvSeed
-from seedsigner.models.steel_plate_scan import recognize_plate_groups_from_image
 from seedsigner.models.settings import Settings, SettingsConstants
 from seedsigner.hardware.buttons import HardwareButtonsConstants
 
@@ -63,10 +66,13 @@ CAMO_TEXT = " "
 STEEL_WRAP_WIDTH = 18
 SECP256K1_FIELD_PRIME = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
 TP_STEEL_SECRET_PREFIX = "TP-STEEL:"
+TP_UI_LOCK_DIRNAME = ".offline-signer"
 TP_UI_LOCK_FILENAME = "offline-signer-login.json"
 TP_UI_LOCK_MIN_LEN = 4
 TP_UI_LOCK_MAX_LEN = 12
 TP_UI_LOCK_PBKDF2_ITERATIONS = 200_000
+_TP_UI_LOCK_RECORD_CACHE: dict | None = None
+_TP_UI_LOCK_CACHE_INITIALIZED = False
 
 logger = logging.getLogger(__name__)
 _SIGNER_PREVIEW_MODULE = None
@@ -79,12 +85,15 @@ def _smartcard_tools_destination() -> Destination:
 def _tp_ui_lock_path() -> Path:
     settings_path = Path(Settings.SETTINGS_FILENAME).expanduser()
     if not settings_path.is_absolute():
-        settings_path = settings_path.resolve()
+        settings_path = (Path.cwd() / settings_path).resolve()
     return settings_path.with_name(TP_UI_LOCK_FILENAME)
 
 
-def _load_tp_ui_lock_record() -> dict | None:
-    path = _tp_ui_lock_path()
+def _tp_ui_legacy_lock_path() -> Path:
+    return Path.home() / TP_UI_LOCK_DIRNAME / TP_UI_LOCK_FILENAME
+
+
+def _read_tp_ui_lock_record(path: Path) -> dict | None:
     if not path.exists():
         return None
     try:
@@ -95,8 +104,48 @@ def _load_tp_ui_lock_record() -> dict | None:
             return None
         return data
     except Exception:
-        logger.exception("Failed to load TP UI lock record")
+        logger.exception("Failed to load TP UI lock record from %s", path)
         return None
+
+
+def _write_tp_ui_lock_record(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        logger.exception("Failed to tighten TP UI lock permissions")
+
+
+def _load_tp_ui_lock_record() -> dict | None:
+    global _TP_UI_LOCK_RECORD_CACHE, _TP_UI_LOCK_CACHE_INITIALIZED
+
+    if _TP_UI_LOCK_RECORD_CACHE is not None:
+        return dict(_TP_UI_LOCK_RECORD_CACHE)
+    if _TP_UI_LOCK_CACHE_INITIALIZED:
+        return None
+    _TP_UI_LOCK_CACHE_INITIALIZED = True
+
+    primary_path = _tp_ui_lock_path()
+    primary_record = _read_tp_ui_lock_record(primary_path)
+    if primary_record is not None:
+        _TP_UI_LOCK_RECORD_CACHE = dict(primary_record)
+        return dict(primary_record)
+
+    legacy_path = _tp_ui_legacy_lock_path()
+    if legacy_path == primary_path:
+        return None
+
+    legacy_record = _read_tp_ui_lock_record(legacy_path)
+    if legacy_record is None:
+        return None
+
+    try:
+        _write_tp_ui_lock_record(primary_path, legacy_record)
+    except Exception:
+        logger.exception("Failed to migrate TP UI lock record to %s", primary_path)
+    _TP_UI_LOCK_RECORD_CACHE = dict(legacy_record)
+    return dict(legacy_record)
 
 
 def _normalize_tp_ui_password(raw: str) -> str:
@@ -122,6 +171,8 @@ def _hash_tp_ui_password(password: str, salt: bytes, iterations: int = TP_UI_LOC
 
 
 def _save_tp_ui_password(password: str) -> None:
+    global _TP_UI_LOCK_RECORD_CACHE, _TP_UI_LOCK_CACHE_INITIALIZED
+
     _validate_tp_ui_password(password)
     salt = os.urandom(16)
     digest = _hash_tp_ui_password(password, salt)
@@ -132,13 +183,9 @@ def _save_tp_ui_password(password: str) -> None:
         "salt_hex": salt.hex(),
         "hash_hex": digest.hex(),
     }
-    path = _tp_ui_lock_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except Exception:
-        logger.exception("Failed to tighten TP UI lock permissions")
+    _write_tp_ui_lock_record(_tp_ui_lock_path(), payload)
+    _TP_UI_LOCK_RECORD_CACHE = dict(payload)
+    _TP_UI_LOCK_CACHE_INITIALIZED = True
 
 
 def _verify_tp_ui_password(password: str) -> bool:
@@ -289,6 +336,7 @@ def _chunk_text(text: str, width: int = 16) -> str:
     value = str(text or "").strip()
     if not value:
         return ""
+    width = max(1, int(width))
     return "\n".join(value[i:i + width] for i in range(0, len(value), width))
 
 
@@ -332,6 +380,7 @@ def _paginate_report_lines(lines: list[str], lines_per_page: int = 10) -> list[s
     cleaned = [line.rstrip() for line in lines]
     if not cleaned:
         return [""]
+    lines_per_page = max(1, int(lines_per_page))
     pages = []
     for start in range(0, len(cleaned), lines_per_page):
         page = "\n".join(cleaned[start:start + lines_per_page]).strip("\n")
@@ -1257,15 +1306,6 @@ def _tp_home_destination() -> Destination:
     return Destination(ToolsTpUiLockView, clear_history=True)
 
 
-def _steel_camera_capture_destination() -> Destination:
-    from seedsigner.views.tools_views import ToolsImageEntropyLivePreviewView
-
-    return Destination(
-        ToolsImageEntropyLivePreviewView,
-        view_args=dict(next_view=ToolsTpSteelPlatePhotoProcessView),
-    )
-
-
 def _normalize_numeric_entry(raw: str) -> str:
     return " ".join(str(raw or "").replace("，", " ").replace(",", " ").split())
 
@@ -1279,15 +1319,17 @@ def _decode_seedkeeper_text_payload(secret_hex: str) -> str:
     return raw.decode("utf-8")
 
 
-def _parse_seedkeeper_steel_words(secret_text: str) -> list[str]:
-    words = [word.strip().lower() for word in str(secret_text or "").replace("\n", " ").split() if word.strip()]
+def _parse_seedkeeper_steel_payload(secret_text: str) -> tuple[list[str], list[int] | None]:
+    words, indices = seedkeeper_utils.decode_seedkeeper_tp_steel_payload(secret_text)
     if len(words) != 12:
         raise ValueError("当前钢板二次加密助记词只支持 12 词。")
+    if indices is not None and len(indices) != len(words):
+        indices = None
+    return words, indices
 
-    invalid_words = [word for word in words if word not in STEEL_WORDLIST]
-    if invalid_words:
-        raise ValueError(f"SeedKeeper 数据里包含无效 BIP39 单词：{invalid_words[0]}")
 
+def _parse_seedkeeper_steel_words(secret_text: str) -> list[str]:
+    words, _ = _parse_seedkeeper_steel_payload(secret_text)
     return words
 
 
@@ -1415,6 +1457,7 @@ def _wrap_number_group(index: int, entry: str, wrap_width: int = STEEL_WRAP_WIDT
 
 
 def _format_number_groups(entries: list[str], page_index: int, entries_per_page: int) -> tuple[str, int]:
+    entries_per_page = max(1, int(entries_per_page))
     total_pages = max(1, (len(entries) + entries_per_page - 1) // entries_per_page)
     start = page_index * entries_per_page
     selected_entries = entries[start:start + entries_per_page]
@@ -1424,6 +1467,22 @@ def _format_number_groups(entries: list[str], page_index: int, entries_per_page:
             lines.append("")
         lines.extend(_wrap_number_group(start + offset, entry))
     return "\n".join(lines), total_pages
+
+
+def _store_restored_steel_cipher(view: View, words: list[str], indices: list[int] | None = None) -> int:
+    canonical_words = _canonicalize_bip39_words(words, context="钢板恢复结果")
+    if indices is None:
+        indices = words_to_indices(canonical_words)
+    view.controller.storage.set_steel_encrypted_mnemonic(
+        canonical_words,
+        bip39_indices=indices,
+        source_fingerprint="钢板恢复",
+    )
+    view.controller.storage.set_steel_plate_groups(indices_to_plate_groups(indices))
+    view.controller.storage.set_pending_seed(
+        TransientWordSeed(canonical_words, bip39_word_indices=indices)
+    )
+    return view.controller.storage.finalize_pending_seed()
 
 
 def _format_shift_entries(entries: list[str], page_index: int, entries_per_page: int = 6) -> tuple[str, int]:
@@ -1437,6 +1496,56 @@ def _format_shift_entries(entries: list[str], page_index: int, entries_per_page:
     return "\n".join(lines), total_pages
 
 
+def _resolve_plate_selected_weights(group: str) -> list[int]:
+    normalized = _normalize_numeric_entry(group)
+    selected_weights = []
+    if normalized:
+        tokens = normalized.split()
+        if all(token.isdigit() for token in tokens):
+            numbers = [int(token) for token in tokens]
+            if len(numbers) == 1 and 0 <= numbers[0] < len(STEEL_WORDLIST):
+                selected_weights = solve_weights(numbers[0])
+            elif all(number in WEIGHT_SET for number in numbers):
+                selected_weights = numbers
+    return list(selected_weights)
+
+
+def _format_plate_pattern(selected_weights: list[int], section_weights: list[int]) -> str:
+    selected_set = set(selected_weights)
+    return " ".join("●" if weight in selected_set else "○" for weight in section_weights)
+
+
+def _format_plate_word_page(
+    words: list[str],
+    groups: list[str],
+    page_index: int,
+    indices: list[int] | None = None,
+) -> tuple[str, str]:
+    if indices is not None and page_index < len(indices):
+        index_text = f"{int(indices[page_index]):04d}"
+    else:
+        try:
+            word = str(words[page_index] or "").strip() if page_index < len(words) else ""
+            word_index = lookup_word_index(word)
+            index_text = f"{word_index:04d}"
+        except Exception:
+            index_text = "----"
+    selected_weights = _resolve_plate_selected_weights(groups[page_index])
+    first_half = WEIGHTS[:6]
+    second_half = WEIGHTS[6:]
+    title = f"第 {page_index + 1:02d} 词"
+    text = "\n".join(
+        [
+            f"序号 {index_text}",
+            " ".join(f"{weight:>3d}" for weight in first_half),
+            _format_plate_pattern(selected_weights, first_half),
+            " ".join(f"{weight:>3d}" for weight in second_half),
+            _format_plate_pattern(selected_weights, second_half),
+        ]
+    )
+    return title, text
+
+
 def _is_lossy_operator(operator: str | None) -> bool:
     return operator in ("*", "/")
 
@@ -1444,6 +1553,52 @@ def _is_lossy_operator(operator: str | None) -> bool:
 def _normalize_bip39_word(word: str) -> str:
     normalized = unicodedata.normalize("NFKC", str(word or "")).lower()
     return "".join(ch for ch in normalized if "a" <= ch <= "z")
+
+
+def _resolve_seed_bip39_indices(seed) -> list[int] | None:
+    explicit_indices = getattr(seed, "bip39_word_indices", None)
+    if explicit_indices is not None:
+        explicit_indices = list(explicit_indices)
+        if len(explicit_indices) == len(getattr(seed, "mnemonic_list", [])):
+            return explicit_indices
+    if getattr(seed, "bip39_word_indices_supported", False):
+        try:
+            resolved = seed.get_bip39_word_indices()
+            if len(resolved) == len(getattr(seed, "mnemonic_list", [])):
+                return list(resolved)
+        except Exception:
+            return None
+    return None
+
+
+def _canonicalize_bip39_words(words: list[str], context: str = "助记词") -> list[str]:
+    canonical_words = []
+    for position, word in enumerate(list(words or []), 1):
+        raw_word = str(word or "").strip()
+        try:
+            canonical_words.append(get_word_at_index(lookup_word_index(raw_word)))
+        except Exception as exc:
+            display_word = raw_word or "（空）"
+            raise ValueError(f"{context}第 {position} 个单词不是官方 BIP39 英文词：{display_word}") from exc
+    return canonical_words
+
+
+def _prepare_shift_source_words(
+    words: list[str],
+    context: str = "助记词",
+    expected_len: int = 12,
+) -> list[str]:
+    cleaned_words = []
+    for position, word in enumerate(list(words or []), 1):
+        display_word = str(word or "").strip()
+        if not display_word:
+            raise ValueError(f"{context}第 {position} 个单词为空，请先补全后再继续。")
+        cleaned_words.append(display_word)
+
+    if len(cleaned_words) != expected_len:
+        raise ValueError(f"{context}当前只支持 {expected_len} 词助记词。")
+
+    return cleaned_words
 
 
 def _format_weight_line(index: int) -> str:
@@ -1606,8 +1761,7 @@ class ToolsTpUiLockView(View):
             text=(
                 "登录密码已启用。\n"
                 "以后开机要先输入它，才会进入离线签名器。\n\n"
-                "如果以后忘记，可删除微型存储卡里的 "
-                f"{TP_UI_LOCK_FILENAME} 文件后重新设置。"
+                "如果以后忘记，需要删除设备本地保存的登录密码文件后重新设置。"
             ),
             show_back_button=False,
             button_data=[ButtonOption("进入离线签名器")],
@@ -1647,8 +1801,6 @@ class ToolsTpSeedToolsView(View):
     DICE_CREATE = ButtonOption("摇骰子创建助记词")
     IMPORT_SEED = ButtonOption("导入助记词")
     BIP39_CHECK = ButtonOption("BIP39 单词自检")
-    STEEL_RESTORE = ButtonOption("从钢板数字恢复二次助记词")
-    STEEL_SCAN = ButtonOption("拍照识别钢板/纸张点位")
     MANAGE_SEEDS = ButtonOption("已加载助记词")
 
     def run(self):
@@ -1658,8 +1810,6 @@ class ToolsTpSeedToolsView(View):
             self.DICE_CREATE,
             self.IMPORT_SEED,
             self.BIP39_CHECK,
-            self.STEEL_RESTORE,
-            self.STEEL_SCAN,
             self.MANAGE_SEEDS,
         ]
 
@@ -1705,12 +1855,6 @@ class ToolsTpSeedToolsView(View):
 
         if selected == self.BIP39_CHECK:
             return Destination(ToolsTpBip39CheckMenuView)
-
-        if selected == self.STEEL_RESTORE:
-            return Destination(ToolsTpSteelPlateEntryView)
-
-        if selected == self.STEEL_SCAN:
-            return _steel_camera_capture_destination()
 
         if selected == self.MANAGE_SEEDS:
             if not self.controller.storage.seeds and not self.controller.storage.has_steel_encrypted_mnemonic():
@@ -1884,7 +2028,7 @@ class ToolsTpBip39CheckResultView(View):
 
 
 class ToolsTpLoadedSeedOptionsView(View):
-    VIEW_WORDS = ButtonOption("查看助记词")
+    VIEW_WORDS = ButtonOption("查看 BIP39 序号")
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     VIEW_ENTROPY = ButtonOption("查看原始熵(HEX)")
     DERIVE_ADDRESS = ButtonOption("派生路径算地址")
@@ -1913,10 +2057,8 @@ class ToolsTpLoadedSeedOptionsView(View):
             self.PLATE_NUMBERS,
             self.DISCARD,
         ]
-        if self.seed.bip39_word_indices_supported:
-            button_data.insert(1, self.VIEW_INDICES)
         if getattr(self.seed, "bip39_entropy_supported", False):
-            insert_at = 2 if self.seed.bip39_word_indices_supported else 1
+            insert_at = 1
             button_data.insert(insert_at, self.VIEW_ENTROPY)
         if not isinstance(self.seed, TransientWordSeed):
             button_data.insert(1, self.DERIVE_ADDRESS)
@@ -1947,20 +2089,6 @@ class ToolsTpLoadedSeedOptionsView(View):
         if selected == self.VIEW_WORDS:
             from seedsigner.views.seed_views import SeedWordsWarningView
             return Destination(SeedWordsWarningView, view_args=dict(seed_num=self.seed_num))
-        if selected == self.VIEW_INDICES:
-            from seedsigner.views.seed_views import SeedWordIndexView
-            return Destination(
-                SeedWordIndexView,
-                view_args=dict(
-                    seed_num=self.seed_num,
-                    title="BIP39 序号",
-                    return_destination=Destination(
-                        ToolsTpLoadedSeedOptionsView,
-                        view_args=dict(seed_num=self.seed_num),
-                        skip_current_view=True,
-                    ),
-                ),
-            )
         if selected == self.VIEW_ENTROPY:
             from seedsigner.views.seed_views import SeedEntropyView
             return Destination(
@@ -1999,6 +2127,21 @@ class ToolsTpLoadedSeedOptionsView(View):
             )
         if selected == self.SAVE_TO_SEEDKEEPER:
             from seedsigner.views.seed_views import SaveToSeedkeeperView
+            if isinstance(self.seed, TransientWordSeed):
+                return Destination(
+                    SaveToSeedkeeperView,
+                    view_args=dict(
+                        words_override=list(self.seed.mnemonic_list),
+                        bip39_indices_override=_resolve_seed_bip39_indices(self.seed),
+                        label_prefix=TP_STEEL_SECRET_PREFIX,
+                        success_text="假助记词已保存到 SeedKeeper",
+                        return_destination=Destination(
+                            ToolsTpLoadedSeedOptionsView,
+                            view_args=dict(seed_num=self.seed_num),
+                            clear_history=True,
+                        ),
+                    ),
+                )
             return Destination(
                 SaveToSeedkeeperView,
                 view_args=dict(
@@ -2238,7 +2381,7 @@ class ToolsTpSeedBtcXpubQrView(View):
 
 
 class ToolsTpSteelCipherOptionsView(View):
-    VIEW_WORDS = ButtonOption("查看二次加密助记词")
+    VIEW_WORDS = ButtonOption("查看 BIP39 序号")
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     VIEW_PLATE = ButtonOption("查看钢板打孔数字")
     SAVE_TO_SEEDKEEPER = ButtonOption("保存到 SeedKeeper")
@@ -2259,7 +2402,6 @@ class ToolsTpSteelCipherOptionsView(View):
 
         button_data = [
             self.VIEW_WORDS,
-            self.VIEW_INDICES,
             self.VIEW_PLATE,
             self.SAVE_TO_SEEDKEEPER,
             self.DECRYPT,
@@ -2279,18 +2421,17 @@ class ToolsTpSteelCipherOptionsView(View):
         selected = button_data[selected_menu_num]
         if selected == self.VIEW_WORDS:
             return Destination(ToolsTpSteelCipherWordsView, view_args=dict(page_index=0))
-        if selected == self.VIEW_INDICES:
-            from seedsigner.views.seed_views import SeedWordIndexView
-            return Destination(
-                SeedWordIndexView,
-                view_args=dict(
-                    title="钢板缓存 BIP39 序号",
-                    use_steel_cache=True,
-                    return_destination=Destination(ToolsTpSteelCipherOptionsView, skip_current_view=True),
-                ),
-            )
         if selected == self.VIEW_PLATE:
-            groups = words_to_plate_groups(self.controller.storage.get_steel_encrypted_mnemonic())
+            groups = self.controller.storage.get_steel_plate_groups()
+            if not groups:
+                cached_indices = self.controller.storage.get_steel_bip39_indices()
+                if cached_indices:
+                    groups = indices_to_plate_groups(cached_indices)
+                else:
+                    try:
+                        groups = words_to_plate_groups(self.controller.storage.get_steel_encrypted_mnemonic())
+                    except Exception:
+                        groups = []
             self.controller.storage.set_steel_plate_groups(groups)
             return Destination(ToolsTpSteelPlateWordsView, view_args=dict(page_index=0))
         if selected == self.SAVE_TO_SEEDKEEPER:
@@ -2299,6 +2440,7 @@ class ToolsTpSteelCipherOptionsView(View):
                 SaveToSeedkeeperView,
                 view_args=dict(
                     words_override=self.controller.storage.get_steel_encrypted_mnemonic(),
+                    bip39_indices_override=self.controller.storage.get_steel_bip39_indices(),
                     label_prefix=TP_STEEL_SECRET_PREFIX,
                     success_text="二次加密助记词已保存到 SeedKeeper",
                     return_destination=Destination(ToolsTpSteelCipherOptionsView, clear_history=True),
@@ -2370,18 +2512,14 @@ class ToolsTpSteelShiftInputView(View):
             words = self.controller.storage.get_steel_encrypted_mnemonic()
             if not words:
                 raise ValueError("当前没有可还原的钢板二次加密助记词缓存。")
-            if len(words) != 12:
-                raise ValueError("钢板二次加密流程当前只支持 12 词助记词。")
-            return words
+            return _prepare_shift_source_words(words, context="当前缓存")
         if self.seed_num is None:
             raise ValueError("缺少助记词来源。")
         seed = self.controller.get_seed(self.seed_num)
         if seed is None:
             raise ValueError("没有找到这条已加载助记词，请重新进入后再试。")
         words = seed.mnemonic_display_list
-        if len(words) != 12:
-            raise ValueError("钢板二次加密流程当前只支持 12 词助记词。")
-        return words
+        return _prepare_shift_source_words(words, context="当前助记词")
 
     def _back_destination(self) -> Destination:
         if self.word_index > 0:
@@ -2401,6 +2539,13 @@ class ToolsTpSteelShiftInputView(View):
             return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
         return Destination(ToolsTpSeedToolsView, clear_history=True)
 
+    def _source_error_destination(self) -> Destination:
+        if self.mode == "decrypt_cache":
+            return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
+        if self.seed_num is not None:
+            return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
+        return Destination(ToolsTpSeedToolsView, clear_history=True)
+
     def _default_entries(self, word_count: int) -> list[str]:
         return _ensure_shift_entry_list(None, word_count)
 
@@ -2408,6 +2553,18 @@ class ToolsTpSteelShiftInputView(View):
         entries = list(self.entries or [])
         try:
             source_words = self._source_words()
+        except Exception as exc:
+            self.run_screen(
+                WarningScreen,
+                title="操作失败",
+                status_headline=None,
+                text=str(exc) or "当前助记词词数不完整，暂时不能继续二次加密/还原。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return self._source_error_destination()
+
+        try:
             entries = _ensure_shift_entry_list(entries, len(source_words))
 
             current_entry = str(entries[self.word_index] or "").strip()
@@ -2488,11 +2645,46 @@ class ToolsTpSteelShiftReviewView(View):
             words = self.controller.storage.get_steel_encrypted_mnemonic()
             if not words:
                 raise ValueError("当前没有可还原的钢板二次加密助记词缓存。")
-            return words
+            return _prepare_shift_source_words(words, context="当前缓存")
         seed = self.controller.get_seed(self.seed_num)
         if seed is None:
             raise ValueError("没有找到这条已加载助记词，请重新进入后再试。")
-        return seed.mnemonic_display_list
+        return _prepare_shift_source_words(seed.mnemonic_display_list, context="当前助记词")
+
+    def _source_indices(self, source_words: list[str]) -> list[int]:
+        if self.mode == "decrypt_cache":
+            cached_indices = self.controller.storage.get_steel_bip39_indices()
+            if len(cached_indices) == len(source_words):
+                return cached_indices
+        if self.mode != "decrypt_cache" and self.seed_num is not None:
+            seed = self.controller.get_seed(self.seed_num)
+            if seed is not None and getattr(seed, "bip39_word_indices_supported", False):
+                try:
+                    indices = seed.get_bip39_word_indices()
+                    if len(indices) == len(source_words):
+                        return indices
+                except Exception:
+                    pass
+        return words_to_indices(source_words)
+
+    def _source_error_destination(self) -> Destination:
+        if self.mode == "decrypt_cache":
+            return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
+        if self.seed_num is not None:
+            return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
+        return Destination(ToolsTpSeedToolsView, clear_history=True)
+
+    def _input_destination(self, word_index: int = 0) -> Destination:
+        return Destination(
+            ToolsTpSteelShiftInputView,
+            view_args=dict(
+                mode=self.mode,
+                seed_num=self.seed_num,
+                entries=self.entries,
+                word_index=word_index,
+            ),
+            clear_history=True,
+        )
 
     def _review_title(self, total_pages: int) -> str:
         return f"检查每词运算：{self.page_index + 1}/{total_pages}"
@@ -2572,6 +2764,7 @@ class ToolsTpSteelShiftReviewView(View):
         if selected == self.PREVIEW_INDICES:
             try:
                 source_words = self._source_words()
+                source_indices = self._source_indices(source_words)
                 parsed_entries = [
                     _parse_shift_entry(
                         entry,
@@ -2583,17 +2776,21 @@ class ToolsTpSteelShiftReviewView(View):
                 ]
                 operators = [operator for operator, _ in parsed_entries]
                 operands = [value for _, value in parsed_entries]
-                preview_words = shift_mnemonic(
-                    source_words,
+                preview_indices = shift_indices(
+                    source_indices,
                     operands,
-                    encrypt=self.mode in ("encrypt_seed", "encrypt_seed_plate"),
+                    encrypt=True,
                     operators=operators,
+                )
+                preview_words = indices_to_words(
+                    preview_indices
                 )
                 from seedsigner.views.seed_views import SeedWordIndexView
                 return Destination(
                     SeedWordIndexView,
                     view_args=dict(
                         words=preview_words,
+                        indices=preview_indices,
                         title="结果 BIP39 序号",
                         return_destination=Destination(
                             ToolsTpSteelShiftReviewView,
@@ -2663,6 +2860,7 @@ class ToolsTpSteelShiftReviewView(View):
 
         try:
             source_words = self._source_words()
+            source_indices = self._source_indices(source_words)
             parsed_entries = [
                 _parse_shift_entry(
                     entry,
@@ -2674,27 +2872,28 @@ class ToolsTpSteelShiftReviewView(View):
             ]
             operators = [operator for operator, _ in parsed_entries]
             operands = [value for _, value in parsed_entries]
-            encrypt = self.mode in ("encrypt_seed", "encrypt_seed_plate")
-            transformed_words = shift_mnemonic(
-                source_words,
+            transformed_indices = shift_indices(
+                source_indices,
                 operands,
-                encrypt=encrypt,
+                encrypt=True,
                 operators=operators,
             )
+            transformed_words = indices_to_words(transformed_indices)
 
-            if encrypt:
+            if self.mode in ("encrypt_seed", "encrypt_seed_plate"):
                 source_fingerprint = None
                 if self.seed_num is not None:
                     source_fingerprint = self.controller.get_seed(self.seed_num).get_fingerprint(self.settings.get_value(SettingsConstants.SETTING__NETWORK))
                 single_operator = operators[0] if len(set(operators)) == 1 else None
                 self.controller.storage.set_steel_encrypted_mnemonic(
                     transformed_words,
+                    bip39_indices=transformed_indices,
                     shift_values=operands,
                     shift_operators=operators,
                     shift_operator=single_operator,
                     source_fingerprint=source_fingerprint,
                 )
-                self.controller.storage.set_steel_plate_groups(words_to_plate_groups(transformed_words))
+                self.controller.storage.set_steel_plate_groups(indices_to_plate_groups(transformed_indices))
                 if self.mode == "encrypt_seed_plate":
                     return Destination(ToolsTpSteelPlateWordsView, view_args=dict(page_index=0), clear_history=True)
                 return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
@@ -2702,7 +2901,10 @@ class ToolsTpSteelShiftReviewView(View):
             try:
                 restored_seed = Seed(transformed_words)
             except InvalidSeedException:
-                restored_seed = TransientWordSeed(transformed_words)
+                restored_seed = TransientWordSeed(
+                    transformed_words,
+                    bip39_word_indices=transformed_indices,
+                )
             self.controller.storage.set_pending_seed(restored_seed)
             seed_num = self.controller.storage.finalize_pending_seed()
             return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=seed_num), clear_history=True)
@@ -2715,23 +2917,24 @@ class ToolsTpSteelShiftReviewView(View):
                 show_back_button=False,
                 button_data=[ButtonOption("继续")],
             )
-            return Destination(
-                ToolsTpSteelShiftInputView,
-                view_args=dict(
-                    mode=self.mode,
-                    seed_num=self.seed_num,
-                    entries=self.entries,
-                    word_index=0,
-                ),
-                clear_history=True,
-            )
+            if "当前助记词" in str(exc) or "当前缓存" in str(exc):
+                return self._source_error_destination()
+            return self._input_destination(word_index=0)
 
 
 class ToolsTpSteelPlateEntryView(View):
-    def __init__(self, entries: list[str] | None = None, word_index: int = 0):
+    def __init__(
+        self,
+        entries: list[str] | None = None,
+        word_index: int = 0,
+        review_page_index: int | None = None,
+        launched_from_load_seed: bool = False,
+    ):
         super().__init__()
         self.entries = _ensure_entry_list(entries, 12)
         self.word_index = word_index
+        self.review_page_index = review_page_index
+        self.launched_from_load_seed = launched_from_load_seed
 
     def run(self):
         ret = ToolsTextQRTextEntryScreen(
@@ -2739,14 +2942,33 @@ class ToolsTpSteelPlateEntryView(View):
             title=f"第 {self.word_index + 1} 个词钢板数字",
             initial_keyboard=ToolsTextQRTextEntryScreen.KEYBOARD__DIGITS_BUTTON_TEXT,
             digits_entry_mode=True,
+            quick_space_backspace=True,
         ).display()
 
         if ret.get("is_back_button"):
+            if self.review_page_index is not None:
+                return Destination(
+                    ToolsTpSteelPlateReviewView,
+                    view_args=dict(
+                        entries=self.entries,
+                        page_index=self.review_page_index,
+                        launched_from_load_seed=self.launched_from_load_seed,
+                    ),
+                    clear_history=True,
+                )
             if self.word_index == 0:
+                if self.launched_from_load_seed:
+                    from seedsigner.views.seed_views import LoadSeedView
+
+                    return Destination(LoadSeedView, clear_history=True)
                 return Destination(ToolsTpSeedToolsView, clear_history=True)
             return Destination(
                 ToolsTpSteelPlateEntryView,
-                view_args=dict(entries=self.entries, word_index=self.word_index - 1),
+                view_args=dict(
+                    entries=self.entries,
+                    word_index=self.word_index - 1,
+                    launched_from_load_seed=self.launched_from_load_seed,
+                ),
                 clear_history=True,
             )
 
@@ -2755,12 +2977,33 @@ class ToolsTpSteelPlateEntryView(View):
             if not normalized_entry:
                 raise ValueError("请输入当前这个助记词的钢板数字。")
             self.entries[self.word_index] = normalized_entry
+            if self.review_page_index is not None:
+                return Destination(
+                    ToolsTpSteelPlateReviewView,
+                    view_args=dict(
+                        entries=self.entries,
+                        page_index=self.review_page_index,
+                        launched_from_load_seed=self.launched_from_load_seed,
+                    ),
+                    clear_history=True,
+                )
             if self.word_index < len(self.entries) - 1:
                 return Destination(
                     ToolsTpSteelPlateEntryView,
-                    view_args=dict(entries=self.entries, word_index=self.word_index + 1),
+                    view_args=dict(
+                        entries=self.entries,
+                        word_index=self.word_index + 1,
+                        launched_from_load_seed=self.launched_from_load_seed,
+                    ),
                 )
-            return Destination(ToolsTpSteelPlateReviewView, view_args=dict(entries=self.entries, page_index=0))
+            return Destination(
+                ToolsTpSteelPlateReviewView,
+                view_args=dict(
+                    entries=self.entries,
+                    page_index=0,
+                    launched_from_load_seed=self.launched_from_load_seed,
+                ),
+            )
         except Exception as exc:
             self.run_screen(
                 WarningScreen,
@@ -2772,32 +3015,73 @@ class ToolsTpSteelPlateEntryView(View):
             )
             return Destination(
                 ToolsTpSteelPlateEntryView,
-                view_args=dict(entries=self.entries, word_index=self.word_index),
+                view_args=dict(
+                    entries=self.entries,
+                    word_index=self.word_index,
+                    review_page_index=self.review_page_index,
+                    launched_from_load_seed=self.launched_from_load_seed,
+                ),
                 clear_history=True,
             )
 
 
-class ToolsTpSteelPlateReviewView(View):
-    NEXT = ButtonOption("下一页")
-    REENTER = ButtonOption("重新输入")
-    PREVIEW_INDICES = ButtonOption("预览恢复序号")
-    CONFIRM = ButtonOption("确认恢复")
-
-    def __init__(self, entries: list[str], page_index: int = 0, source: str = "manual"):
+class ToolsTpSteelPlateEditSelectView(View):
+    def __init__(self, entries: list[str], page_index: int = 0):
         super().__init__()
         self.entries = entries
         self.page_index = page_index
-        self.source = source
 
     def run(self):
-        page_text, total_pages = _format_number_groups(self.entries, self.page_index, entries_per_page=2)
+        start = self.page_index * 2
+        indices = list(range(start, min(start + 2, len(self.entries))))
+        button_data = [ButtonOption(f"编辑第 {index + 1:02d} 词") for index in indices]
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="编辑哪一组",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(
+                ToolsTpSteelPlateReviewView,
+                view_args=dict(entries=self.entries, page_index=self.page_index),
+                clear_history=True,
+            )
+
+        selected_index = indices[selected_menu_num]
+        return Destination(
+            ToolsTpSteelPlateEntryView,
+            view_args=dict(
+                entries=self.entries,
+                word_index=selected_index,
+                review_page_index=self.page_index,
+            ),
+            clear_history=True,
+        )
+
+
+class ToolsTpSteelPlateReviewView(View):
+    NEXT = ButtonOption("下一页")
+    EDIT_PAGE = ButtonOption("编辑当前页")
+    PREVIEW_INDICES = ButtonOption("预览恢复序号")
+    CONFIRM = ButtonOption("确认恢复")
+
+    def __init__(self, entries: list[str], page_index: int = 0, launched_from_load_seed: bool = False):
+        super().__init__()
+        self.entries = entries
+        self.page_index = page_index
+        self.launched_from_load_seed = launched_from_load_seed
+
+    def run(self):
+        page_text, total_pages = _format_number_groups(self.entries, self.page_index, entries_per_page=1)
         is_last_page = self.page_index >= total_pages - 1
-        reshoot_button = ButtonOption("重新拍照")
-        button_data = [self.PREVIEW_INDICES, self.NEXT] if not is_last_page else [reshoot_button if self.source == "camera" else self.REENTER, self.PREVIEW_INDICES, self.CONFIRM]
+        button_data = [self.EDIT_PAGE, self.PREVIEW_INDICES, self.NEXT] if not is_last_page else [self.EDIT_PAGE, self.PREVIEW_INDICES, self.CONFIRM]
         selected_menu_num = self.run_screen(
             ToolsFormattedTextScreen,
             title=f"检查钢板数字：{self.page_index + 1}/{total_pages}",
             text=page_text,
+            text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
             button_data=button_data,
         )
 
@@ -2805,14 +3089,20 @@ class ToolsTpSteelPlateReviewView(View):
             if self.page_index > 0:
                 return Destination(
                     ToolsTpSteelPlateReviewView,
-                    view_args=dict(entries=self.entries, page_index=self.page_index - 1, source=self.source),
+                    view_args=dict(
+                        entries=self.entries,
+                        page_index=self.page_index - 1,
+                        launched_from_load_seed=self.launched_from_load_seed,
+                    ),
                     clear_history=True,
                 )
-            if self.source == "camera":
-                return _steel_camera_capture_destination()
             return Destination(
                 ToolsTpSteelPlateEntryView,
-                view_args=dict(entries=self.entries, word_index=len(self.entries) - 1),
+                view_args=dict(
+                    entries=self.entries,
+                    word_index=len(self.entries) - 1,
+                    launched_from_load_seed=self.launched_from_load_seed,
+                ),
                 clear_history=True,
             )
 
@@ -2820,14 +3110,24 @@ class ToolsTpSteelPlateReviewView(View):
         if selected == self.NEXT:
             return Destination(
                 ToolsTpSteelPlateReviewView,
-                view_args=dict(entries=self.entries, page_index=self.page_index + 1, source=self.source),
+                view_args=dict(
+                    entries=self.entries,
+                    page_index=self.page_index + 1,
+                    launched_from_load_seed=self.launched_from_load_seed,
+                ),
             )
 
-        if selected == reshoot_button:
-            return _steel_camera_capture_destination()
-
-        if selected == self.REENTER:
-            return Destination(ToolsTpSteelPlateEntryView, view_args=dict(entries=self.entries, word_index=0), clear_history=True)
+        if selected == self.EDIT_PAGE:
+            return Destination(
+                ToolsTpSteelPlateEntryView,
+                view_args=dict(
+                    entries=self.entries,
+                    word_index=self.page_index,
+                    review_page_index=self.page_index,
+                    launched_from_load_seed=self.launched_from_load_seed,
+                ),
+                clear_history=True,
+            )
 
         if selected == self.PREVIEW_INDICES:
             try:
@@ -2838,10 +3138,15 @@ class ToolsTpSteelPlateReviewView(View):
                     SeedWordIndexView,
                     view_args=dict(
                         words=words,
+                        indices=indices,
                         title="恢复结果 BIP39 序号",
                         return_destination=Destination(
                             ToolsTpSteelPlateReviewView,
-                            view_args=dict(entries=self.entries, page_index=self.page_index, source=self.source),
+                            view_args=dict(
+                                entries=self.entries,
+                                page_index=self.page_index,
+                                launched_from_load_seed=self.launched_from_load_seed,
+                            ),
                             skip_current_view=True,
                         ),
                     ),
@@ -2857,16 +3162,23 @@ class ToolsTpSteelPlateReviewView(View):
                 )
                 return Destination(
                     ToolsTpSteelPlateReviewView,
-                    view_args=dict(entries=self.entries, page_index=self.page_index, source=self.source),
+                    view_args=dict(
+                        entries=self.entries,
+                        page_index=self.page_index,
+                        launched_from_load_seed=self.launched_from_load_seed,
+                    ),
                     clear_history=True,
                 )
 
         try:
             indices = parse_restore_indices(",".join(self.entries))
             words = indices_to_words(indices)
-            self.controller.storage.set_steel_encrypted_mnemonic(words, source_fingerprint="钢板恢复")
-            self.controller.storage.set_steel_plate_groups(words_to_plate_groups(words))
-            return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
+            seed_num = _store_restored_steel_cipher(self, words, indices=indices)
+            return Destination(
+                ToolsTpLoadedSeedOptionsView,
+                view_args=dict(seed_num=seed_num),
+                clear_history=True,
+            )
         except Exception as exc:
             self.run_screen(
                 WarningScreen,
@@ -2876,49 +3188,19 @@ class ToolsTpSteelPlateReviewView(View):
                 show_back_button=False,
                 button_data=[ButtonOption("继续")],
             )
-            return Destination(ToolsTpSteelPlateEntryView, view_args=dict(entries=self.entries, word_index=0), clear_history=True)
-
-
-class ToolsTpSteelPlatePhotoProcessView(View):
-    def run(self):
-        image = getattr(self.controller, "image_entropy_final_image", None)
-        preview_frames = getattr(self.controller, "image_entropy_preview_frames", None)
-        self.controller.image_entropy_final_image = None
-        self.controller.image_entropy_preview_frames = None
-
-        if image is None:
-            return Destination(ToolsTpSeedToolsView, clear_history=True)
-
-        loading_screen = LoadingScreenThread(text="识别钢板点位...")
-        loading_screen.start()
-        try:
-            groups = recognize_plate_groups_from_image(image)
-        except Exception as exc:
-            loading_screen.stop()
-            self.run_screen(
-                WarningScreen,
-                title="拍照识别失败",
-                status_headline=None,
-                text=str(exc) or "请让单张钢板/纸卡铺满画面，并放在深色背景上重试。",
-                show_back_button=False,
-                button_data=[ButtonOption("继续")],
+            return Destination(
+                ToolsTpSteelPlateEntryView,
+                view_args=dict(
+                    entries=self.entries,
+                    word_index=0,
+                    launched_from_load_seed=self.launched_from_load_seed,
+                ),
+                clear_history=True,
             )
-            return Destination(ToolsTpSeedToolsView, clear_history=True)
-        finally:
-            image = None
-            preview_frames = None
-
-        loading_screen.stop()
-        return Destination(
-            ToolsTpSteelPlateReviewView,
-            view_args=dict(entries=groups, page_index=0, source="camera"),
-            clear_history=True,
-        )
 
 
 class ToolsTpSteelCipherWordsView(View):
     NEXT = ButtonOption("下一页")
-    VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     DONE = ButtonOption("完成")
 
     def __init__(self, page_index: int = 0):
@@ -2926,41 +3208,38 @@ class ToolsTpSteelCipherWordsView(View):
         self.page_index = page_index
 
     def run(self):
+        from seedsigner.views.seed_views import _format_word_position_lines
+
         words = self.controller.storage.get_steel_encrypted_mnemonic()
         if not words:
             return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
-        words_per_page = 4
+        words_per_page = 6
         num_pages = max(1, (len(words) + words_per_page - 1) // words_per_page)
-        page_words = words[self.page_index * words_per_page:(self.page_index + 1) * words_per_page]
-        button_data = [self.VIEW_INDICES, self.NEXT] if self.page_index < num_pages - 1 else [self.VIEW_INDICES, self.DONE]
-        selected_menu_num = seed_screens.SeedWordsScreen(
-            title=f"二次加密助记词：{self.page_index + 1}/{num_pages}",
-            words=page_words,
-            page_index=self.page_index,
-            num_pages=num_pages,
+        start = self.page_index * words_per_page
+        page_words = [str(word or "").strip() or "（空）" for word in words[start:start + words_per_page]]
+        all_indices = self.controller.storage.get_steel_bip39_indices()
+        if len(all_indices) != len(words):
+            all_indices = []
+        page_indices = all_indices[start:start + words_per_page] if all_indices else None
+        button_data = [self.NEXT] if self.page_index < num_pages - 1 else [self.DONE]
+        selected_menu_num = self.run_screen(
+            ToolsFormattedTextScreen,
+            title=f"二次加密 BIP39 序号：{self.page_index + 1}/{num_pages}",
+            text=_format_word_position_lines(
+                page_words,
+                start + 1,
+                page_indices,
+                show_index_placeholders=True,
+            ),
             button_data=button_data,
-        ).display()
+        )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
         if button_data[selected_menu_num] == self.NEXT:
             return Destination(ToolsTpSteelCipherWordsView, view_args=dict(page_index=self.page_index + 1))
-        if button_data[selected_menu_num] == self.VIEW_INDICES:
-            from seedsigner.views.seed_views import SeedWordIndexView
-            return Destination(
-                SeedWordIndexView,
-                view_args=dict(
-                    title="钢板缓存 BIP39 序号",
-                    use_steel_cache=True,
-                    return_destination=Destination(
-                        ToolsTpSteelCipherWordsView,
-                        view_args=dict(page_index=self.page_index),
-                        skip_current_view=True,
-                    ),
-                ),
-            )
         return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
 
@@ -2975,18 +3254,34 @@ class ToolsTpSteelPlateWordsView(View):
 
     def run(self):
         groups = self.controller.storage.get_steel_plate_groups()
+        cached_indices = self.controller.storage.get_steel_bip39_indices()
         if not groups:
-            groups = words_to_plate_groups(self.controller.storage.get_steel_encrypted_mnemonic())
+            if cached_indices:
+                groups = indices_to_plate_groups(cached_indices)
+            else:
+                try:
+                    groups = words_to_plate_groups(self.controller.storage.get_steel_encrypted_mnemonic())
+                except Exception:
+                    groups = []
             self.controller.storage.set_steel_plate_groups(groups)
         if not groups:
             return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
-        page_text, num_pages = _format_number_groups(groups, self.page_index, entries_per_page=2)
+        words = self.controller.storage.get_steel_encrypted_mnemonic()
+        page_title, page_text = _format_plate_word_page(
+            words,
+            groups,
+            self.page_index,
+            indices=cached_indices if len(cached_indices) == len(groups) else None,
+        )
+        num_pages = len(groups)
         button_data = [self.VIEW_INDICES, self.NEXT] if self.page_index < num_pages - 1 else [self.VIEW_INDICES, self.DONE]
         selected_menu_num = self.run_screen(
             ToolsFormattedTextScreen,
             title=f"钢板打孔数字：{self.page_index + 1}/{num_pages}",
             text=page_text,
+            text_font_name=GUIConstants.FIXED_WIDTH_EMPHASIS_FONT_NAME,
+            text_font_size=GUIConstants.get_body_font_size() + 13,
             button_data=button_data,
         )
 
@@ -3140,7 +3435,8 @@ class ToolsTpSeedkeeperSelectLoadedSeedView(View):
         button_data = []
         for seed in seeds:
             button_str = seed.get_fingerprint(self.settings.get_value(SettingsConstants.SETTING__NETWORK))
-            button_data.append(ButtonOption(button_str))
+            seed_type = "假助记词" if isinstance(seed, TransientWordSeed) else "助记词"
+            button_data.append(ButtonOption(f"{button_str} ({seed_type})"))
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
@@ -3151,6 +3447,19 @@ class ToolsTpSeedkeeperSelectLoadedSeedView(View):
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(ToolsTpSeedkeeperToolsView, clear_history=True)
+
+        selected_seed = seeds[selected_menu_num]
+        if isinstance(selected_seed, TransientWordSeed):
+            return Destination(
+                SaveToSeedkeeperView,
+                view_args=dict(
+                    words_override=list(selected_seed.mnemonic_list),
+                    bip39_indices_override=_resolve_seed_bip39_indices(selected_seed),
+                    label_prefix=TP_STEEL_SECRET_PREFIX,
+                    success_text="假助记词已保存到 SeedKeeper",
+                    return_destination=Destination(ToolsTpSeedkeeperToolsView, clear_history=True),
+                ),
+            )
 
         return Destination(
             SaveToSeedkeeperView,
@@ -3181,7 +3490,8 @@ class ToolsTpSeedkeeperLoadSteelCipherView(View):
             if not label.startswith(TP_STEEL_SECRET_PREFIX):
                 continue
             entries.append(header)
-            display_label = label[len(TP_STEEL_SECRET_PREFIX):] or "未命名钢板缓存"
+            source_label = label[len(TP_STEEL_SECRET_PREFIX):].strip() or f"记录 {header.get('id', len(entries))}"
+            display_label = f"假助记词 · {source_label}"
             button_data.append(ButtonOption(display_label))
 
         if not button_data:
@@ -3189,7 +3499,7 @@ class ToolsTpSeedkeeperLoadSteelCipherView(View):
                 WarningScreen,
                 title="没有可加载内容",
                 status_headline=None,
-                text="SeedKeeper 里没有已保存的二次加密助记词。",
+                text="SeedKeeper 里没有已保存的假助记词。",
                 show_back_button=False,
                 button_data=[ButtonOption("继续")],
             )
@@ -3197,7 +3507,7 @@ class ToolsTpSeedkeeperLoadSteelCipherView(View):
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title="选择二次加密助记词",
+            title="选择假助记词",
             is_button_text_centered=False,
             button_data=button_data,
         )
@@ -3211,14 +3521,14 @@ class ToolsTpSeedkeeperLoadSteelCipherView(View):
         try:
             secret_dict = connector.seedkeeper_export_secret(selected_entry["id"], None)
             secret_text = _decode_seedkeeper_text_payload(secret_dict["secret"])
-            words = _parse_seedkeeper_steel_words(secret_text)
+            words, loaded_indices = _parse_seedkeeper_steel_payload(secret_text)
         except Exception as exc:
             loading.stop()
             self.run_screen(
                 WarningScreen,
                 title="加载失败",
                 status_headline=None,
-                text=str(exc) or "无法从 SeedKeeper 读取二次加密助记词。",
+                text=str(exc) or "无法从 SeedKeeper 读取假助记词。",
                 show_back_button=False,
                 button_data=[ButtonOption("继续")],
             )
@@ -3228,18 +3538,29 @@ class ToolsTpSeedkeeperLoadSteelCipherView(View):
 
         label = selected_entry.get("label", "")
         source_label = label[len(TP_STEEL_SECRET_PREFIX):] if label.startswith(TP_STEEL_SECRET_PREFIX) else label
-        self.controller.storage.set_steel_encrypted_mnemonic(words, source_fingerprint=f"SeedKeeper:{source_label}")
-        self.controller.storage.set_steel_plate_groups(words_to_plate_groups(words))
+        self.controller.storage.set_steel_encrypted_mnemonic(
+            words,
+            bip39_indices=loaded_indices,
+            source_fingerprint=f"SeedKeeper:{source_label}",
+        )
+        if loaded_indices is not None:
+            self.controller.storage.set_steel_plate_groups(indices_to_plate_groups(loaded_indices))
+        else:
+            self.controller.storage.set_steel_plate_groups([])
+        self.controller.storage.set_pending_seed(
+            TransientWordSeed(words, bip39_word_indices=loaded_indices)
+        )
+        seed_num = self.controller.storage.finalize_pending_seed()
 
         self.run_screen(
             LargeIconStatusScreen,
             title="加载完成",
             status_headline=None,
-            text="已从 SeedKeeper 加载二次加密助记词，可以继续查看、核对或二次还原。",
+            text="已从 SeedKeeper 加载假助记词，并保存到当前助记词列表，可继续查看、核对或二次还原。",
             show_back_button=False,
             button_data=[ButtonOption("继续")],
         )
-        return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
+        return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=seed_num), clear_history=True)
 
 
 class ToolsTpSeedkeeperToolsView(View):
@@ -3299,6 +3620,7 @@ class ToolsTpSeedkeeperToolsView(View):
                 SaveToSeedkeeperView,
                 view_args=dict(
                     words_override=self.controller.storage.get_steel_encrypted_mnemonic(),
+                    bip39_indices_override=self.controller.storage.get_steel_bip39_indices(),
                     label_prefix=TP_STEEL_SECRET_PREFIX,
                     success_text="二次加密助记词已保存到 SeedKeeper",
                     return_destination=Destination(ToolsTpSeedkeeperToolsView, clear_history=True),

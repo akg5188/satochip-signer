@@ -676,8 +676,11 @@ linux-rebuild-with-initramfs: $(LINUX_DIR)/.stamp_images_installed
 linux-rebuild-with-initramfs: rootfs-cpio
 linux-rebuild-with-initramfs:
 	@$(call MESSAGE,"Rebuilding kernel with initramfs")
-	# Build the kernel.
-	$(LINUX_MAKE_ENV) $(BR2_MAKE) $(LINUX_MAKE_FLAGS) -C $(LINUX_DIR) $(LINUX_TARGET_NAME)
+	# Rebuilding the kernel with the embedded initramfs is the most memory-hungry
+	# tail step of this image build. Keep it single-threaded so low-RAM hosts do
+	# not trip random cc1 internal compiler errors late in the build.
+	$(LINUX_MAKE_ENV) TP_SKIP_MISSING_SYSCALLS_CHECK=1 \
+		$(BR2_MAKE1) $(LINUX_MAKE_FLAGS) -C $(LINUX_DIR) $(LINUX_TARGET_NAME)
 	$(LINUX_APPEND_DTB)
 	# Copy the kernel image(s) to its(their) final destination
 	$(call LINUX_INSTALL_IMAGE,$(BINARIES_DIR))

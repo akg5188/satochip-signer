@@ -20,6 +20,13 @@ from .screen import RET_CODE__BACK_BUTTON, BaseScreen, BaseTopNavScreen, ButtonL
 logger = logging.getLogger(__name__)
 
 
+def _normalize_review_mnemonic_id(mnemonic_id: str | None) -> str:
+    value = "" if mnemonic_id is None else str(mnemonic_id)
+    if value and (value != value.strip() or "  " in value):
+        value = value.replace(" ", "\u2589")
+    return value if value else "（空）"
+
+
 
 @dataclass
 class SeedMnemonicEntryScreen(BaseTopNavScreen):
@@ -468,6 +475,7 @@ class SeedBackupScreen(ButtonListScreen):
                 # TRANSLATOR_NOTE: Additional explainer for the two seed backup options (mnemonic phrase and SeedQR).
                 text=_("Backups do not include your passphrase."),
                 screen_y=self.top_nav.height + GUIConstants.COMPONENT_PADDING,
+                height=self.get_body_height(self.top_nav.height + GUIConstants.COMPONENT_PADDING),
             ))
 
 
@@ -489,64 +497,142 @@ class SeedWordsScreen(WarningEdgesMixin, ButtonListScreen):
         words_per_page = len(self.words)
 
         self.body_x = 0
-        self.body_y = self.top_nav.height - int(GUIConstants.COMPONENT_PADDING / 2)
-        self.body_height = self.buttons[0].screen_y - self.body_y
+        self.body_y = self.top_nav.height + max(1, int(GUIConstants.COMPONENT_PADDING / 2))
+        self.body_height = self.get_body_height(self.body_y)
 
         # Have to supersample the whole body since it's all at the small font size
         supersampling_factor = 1
-        font = Fonts.get_font(GUIConstants.get_body_font_name(), (GUIConstants.get_top_nav_title_font_size() + 2) * supersampling_factor)
+        content_width = self.canvas_width * supersampling_factor
+        content_height = max(1, self.body_height * supersampling_factor)
+        side_padding = GUIConstants.COMPONENT_PADDING * supersampling_factor
+        gap_padding = max(4, int(GUIConstants.COMPONENT_PADDING * 0.75 * supersampling_factor))
+        max_word_font_size = GUIConstants.get_top_nav_title_font_size() + 2
+        min_word_font_size = GUIConstants.BODY_FONT_MIN_SIZE
 
-        # Calc horizontal center based on longest word
-        max_word_width = 0
-        for word in self.words:
-            (left, top, right, bottom) = font.getbbox(word, anchor="ls")
-            if right > max_word_width:
-                max_word_width = right
+        chosen_layout = None
+        for word_font_size in range(max_word_font_size, min_word_font_size - 1, -1):
+            font = Fonts.get_font(
+                GUIConstants.get_body_font_name(),
+                word_font_size * supersampling_factor,
+            )
+            number_font_size = max(
+                GUIConstants.BODY_FONT_MIN_SIZE - 1,
+                min(word_font_size - 2, GUIConstants.get_button_font_size()),
+            )
+            number_font = Fonts.get_font(
+                GUIConstants.get_body_font_name(),
+                number_font_size * supersampling_factor,
+            )
 
-        # Measure the max digit height for the numbering boxes, from baseline
-        number_font = Fonts.get_font(GUIConstants.get_body_font_name(), GUIConstants.get_button_font_size() * supersampling_factor)
-        (left, top, right, bottom) = number_font.getbbox("24", anchor="ls")
-        number_height = -1 * top
-        number_width = right
-        number_box_width = number_width + int(GUIConstants.COMPONENT_PADDING/2 * supersampling_factor)
-        number_box_height = number_box_width
+            max_word_width = 0
+            for word in self.words:
+                left, top, right, bottom = font.getbbox(word)
+                max_word_width = max(max_word_width, right - left)
 
-        number_box_x = int((self.canvas_width * supersampling_factor - number_box_width - GUIConstants.COMPONENT_PADDING*supersampling_factor - max_word_width))/2
-        number_box_y = GUIConstants.COMPONENT_PADDING * supersampling_factor
+            left, top, right, bottom = number_font.getbbox("24")
+            number_text_width = right - left
+            number_text_height = bottom - top
+            left, top, right, bottom = font.getbbox("Agjpqy")
+            word_text_height = bottom - top
+
+            number_box_size = max(number_text_width, number_text_height) + 2 * gap_padding
+            row_height = max(number_box_size, word_text_height)
+            row_gap = max(2, int(GUIConstants.COMPONENT_PADDING * 0.6 * supersampling_factor))
+            total_text_height = words_per_page * row_height + max(0, words_per_page - 1) * row_gap
+            content_total_width = number_box_size + gap_padding + max_word_width + side_padding * 2
+
+            if (
+                total_text_height <= max(1, content_height - 2 * side_padding)
+                and content_total_width <= content_width
+            ):
+                chosen_layout = {
+                    "font": font,
+                    "number_font": number_font,
+                    "number_box_size": number_box_size,
+                    "row_height": row_height,
+                    "row_gap": row_gap,
+                    "total_text_height": total_text_height,
+                    "max_word_width": max_word_width,
+                }
+                break
+
+        if chosen_layout is None:
+            font = Fonts.get_font(
+                GUIConstants.get_body_font_name(),
+                min_word_font_size * supersampling_factor,
+            )
+            number_font = Fonts.get_font(
+                GUIConstants.get_body_font_name(),
+                max(GUIConstants.BODY_FONT_MIN_SIZE - 1, min_word_font_size - 2) * supersampling_factor,
+            )
+            max_word_width = 0
+            for word in self.words:
+                left, top, right, bottom = font.getbbox(word)
+                max_word_width = max(max_word_width, right - left)
+            left, top, right, bottom = number_font.getbbox("24")
+            number_box_size = max(right - left, bottom - top) + 2 * gap_padding
+            row_height = max(number_box_size, font.getbbox("Agjpqy")[3] - font.getbbox("Agjpqy")[1])
+            row_gap = 2
+            total_text_height = words_per_page * row_height + max(0, words_per_page - 1) * row_gap
+            chosen_layout = {
+                "font": font,
+                "number_font": number_font,
+                "number_box_size": number_box_size,
+                "row_height": row_height,
+                "row_gap": row_gap,
+                "total_text_height": total_text_height,
+                "max_word_width": max_word_width,
+            }
+
+        font = chosen_layout["font"]
+        number_font = chosen_layout["number_font"]
+        number_box_size = chosen_layout["number_box_size"]
+        row_height = chosen_layout["row_height"]
+        row_gap = chosen_layout["row_gap"]
+        total_text_height = chosen_layout["total_text_height"]
+        max_word_width = chosen_layout["max_word_width"]
+        content_total_width = number_box_size + gap_padding + max_word_width
+        number_box_x = max(0, int((content_width - content_total_width) / 2))
+        number_box_y = max(side_padding, int((content_height - total_text_height) / 2))
+        word_x = number_box_x + number_box_size + gap_padding
 
         # Set up our temp supersampled rendering surface
         self.body_img = Image.new(
             "RGB",
-            (self.canvas_width * supersampling_factor, self.body_height * supersampling_factor),
+            (max(1, self.canvas_width * supersampling_factor), content_height),
             GUIConstants.BACKGROUND_COLOR
         )
         draw = ImageDraw.Draw(self.body_img)
 
         for index, word in enumerate(self.words):
+            row_top = number_box_y + index * (row_height + row_gap)
+            row_center_y = row_top + int(row_height / 2)
             draw.rounded_rectangle(
-                (number_box_x, number_box_y, number_box_x + number_box_width, number_box_y + number_box_height),
+                (
+                    number_box_x,
+                    row_center_y - int(number_box_size / 2),
+                    number_box_x + number_box_size,
+                    row_center_y + int(number_box_size / 2),
+                ),
                 fill=GUIConstants.BUTTON_BACKGROUND_COLOR,
-                radius=5 * supersampling_factor
+                radius=max(4, int(5 * supersampling_factor)),
             )
-            baseline_y = number_box_y + number_box_height - int((number_box_height - number_height)/2)
             draw.text(
-                (number_box_x + int(number_box_width/2), baseline_y),
+                (number_box_x + int(number_box_size / 2), row_center_y),
                 font=number_font,
                 text=str(self.page_index * words_per_page + index + 1),
                 fill=GUIConstants.INFO_COLOR,
-                anchor="ms"  # Middle (centered), baSeline
+                anchor="mm",
             )
 
             # Now draw the word
             draw.text(
-                (number_box_x + number_box_width + (GUIConstants.COMPONENT_PADDING * supersampling_factor), baseline_y),
+                (word_x, row_center_y),
                 font=font,
                 text=word,
                 fill=GUIConstants.BODY_FONT_COLOR,
-                anchor="ls",  # Left, baSeline
+                anchor="lm",
             )
-
-            number_box_y += number_box_height + (int(1.5*GUIConstants.COMPONENT_PADDING) * supersampling_factor)
 
         # Resize to target and sharpen final image
         self.body_img = self.body_img.resize((self.canvas_width, self.body_height), Image.Resampling.LANCZOS)
@@ -584,6 +670,7 @@ class SeedWordsBackupTestPromptScreen(ButtonListScreen):
             text="建议验证一次，确认助记词备份无误。",
             screen_y=self.top_nav.height,
             is_text_centered=True,
+            height=self.get_body_height(self.top_nav.height),
         ))
 
 
@@ -1212,7 +1299,7 @@ class SeedReviewPassphraseScreen(ButtonListScreen):
                 font_color="orange",
                 is_text_centered=True,
                 screen_y=screen_y,
-                allow_text_overflow=True
+                allow_text_overflow=False
             ))
             screen_y += char_height + 2
 
@@ -1521,6 +1608,7 @@ class AddressVerificationSigTypeScreen(ButtonListScreen):
         self.components.append(TextArea(
             text=self.text,
             screen_y=self.top_nav.height,
+            height=self.get_body_height(self.top_nav.height),
         ))
 
 
@@ -1536,6 +1624,7 @@ class SeedSelectSeedScreen(ButtonListScreen):
         self.components.append(TextArea(
             text=self.text,
             screen_y=self.top_nav.height,
+            height=self.get_body_height(self.top_nav.height),
         ))
 
 
@@ -1808,8 +1897,9 @@ class SeedSignMessageConfirmMessageScreen(ButtonListScreen):
         message_display = TextArea(
             text=self.sign_message_data["paged_message"][self.page_num],
             is_text_centered=False,
-            allow_text_overflow=True,
+            allow_text_overflow=False,
             screen_y=start_y,
+            height=message_height,
         )
         self.components.append(message_display)
 
@@ -2288,16 +2378,17 @@ class SeedEncryptedQRReviewMnemonicIDScreen(ButtonListScreen):
 
         time.sleep(0.1)
 
-        if self.mnemonic_id != self.mnemonic_id.strip() or "  " in self.mnemonic_id:
-            self.mnemonic_id = self.mnemonic_id.replace(" ", "\u2589")
+        display_mnemonic_id = _normalize_review_mnemonic_id(self.mnemonic_id)
         available_height = self.buttons[0].screen_y - self.top_nav.height + GUIConstants.COMPONENT_PADDING
         max_font_size = GUIConstants.get_top_nav_title_font_size() + 8
         min_font_size = GUIConstants.get_top_nav_title_font_size() - 4
         font_size = max_font_size
         max_lines = 3
-        mnemonic_id = [self.mnemonic_id]
+        mnemonic_id = [display_mnemonic_id]
+        num_lines = 1
+        char_height = Fonts.get_font(font_name=GUIConstants.FIXED_WIDTH_FONT_NAME, size=font_size).getbbox("X")[3]
         found_solution = False
-        for font_size in range(max_font_size, min_font_size, -2):
+        for font_size in range(max_font_size, min_font_size - 1, -2):
             if found_solution:
                 break
             font = Fonts.get_font(font_name=GUIConstants.FIXED_WIDTH_FONT_NAME, size=font_size)
@@ -2305,10 +2396,11 @@ class SeedEncryptedQRReviewMnemonicIDScreen(ButtonListScreen):
             char_width, char_height = right - left, bottom
             for num_lines in range(1, max_lines+1):
                 # Break the mnemonic id into n lines
-                chars_per_line = math.ceil(len(self.mnemonic_id) / num_lines)
-                mnemonic_id = []
-                for i in range(0, len(self.mnemonic_id), chars_per_line):
-                    mnemonic_id.append(self.mnemonic_id[i:i+chars_per_line])
+                chars_per_line = max(1, math.ceil(len(display_mnemonic_id) / num_lines))
+                mnemonic_id = [
+                    display_mnemonic_id[i:i + chars_per_line]
+                    for i in range(0, len(display_mnemonic_id), chars_per_line)
+                ] or [display_mnemonic_id]
 
                 # See if it fits in this configuration
                 if char_width * len(mnemonic_id[0]) <= self.canvas_width - 2*GUIConstants.EDGE_PADDING:
@@ -2327,7 +2419,7 @@ class SeedEncryptedQRReviewMnemonicIDScreen(ButtonListScreen):
                 font_size=font_size,
                 is_text_centered=True,
                 screen_y=screen_y,
-                allow_text_overflow=True
+                allow_text_overflow=False
             ))
             screen_y += char_height + 2
 

@@ -330,6 +330,7 @@ class GUIConstants:
     }
     BODY_FONT_MAX_SIZE = TOP_NAV_TITLE_FONT_SIZE["default"]
     BODY_FONT_MIN_SIZE = 15
+    BODY_FONT_TIGHT_MIN_SIZE = 10
     BODY_FONT_COLOR = "#FCFCFC"
     BODY_LINE_SPACING = COMPONENT_PADDING
 
@@ -657,6 +658,40 @@ class TextArea(BaseComponent):
     height_ignores_below_baseline: bool = False  # If True, characters that render below the baseline (e.g. "pqgy") will not affect the final height calculation
 
 
+    @staticmethod
+    def _lines_per_page(height: int, font_name: str, font_size: int, line_spacing: int) -> int:
+        font = Fonts.get_font(font_name=font_name, size=font_size)
+        (left, top, right, bottom) = font.getbbox("Agjpqy", anchor="ls")
+        font_height_above_baseline = -1 * top
+        font_height_below_baseline = bottom
+
+        lines_per_page = 0
+        for i in range(1, max(2, height)):
+            if height > font_height_above_baseline * i + line_spacing * (i - 1) + font_height_below_baseline:
+                lines_per_page = i
+            else:
+                break
+        return max(1, lines_per_page)
+
+
+    @staticmethod
+    def _trim_line_to_width(text: str, width: int, font_name: str, font_size: int) -> str:
+        if not text:
+            return text
+        font = Fonts.get_font(font_name=font_name, size=font_size)
+        ellipsis = "\u2026"
+        candidate = text
+        while candidate:
+            (left, top, right, bottom) = font.getbbox(candidate + ellipsis, anchor="ls")
+            line_width = right - left
+            if not ImageFont.core.HAVE_RAQM:
+                line_width = int(line_width * 1.05)
+            if line_width <= width:
+                return candidate + ellipsis
+            candidate = candidate[:-1]
+        return ellipsis
+
+
     def __post_init__(self):
         if self.is_horizontal_scrolling_enabled and self.auto_line_break:
             raise Exception("TextArea: Cannot have auto_line_break and horizontal scrolling enabled at the same time")
@@ -681,6 +716,56 @@ class TextArea(BaseComponent):
             self.width = self.canvas_width - self.screen_x
 
         self.line_spacing = GUIConstants.BODY_LINE_SPACING
+        self.visible_width = self.width - max(self.edge_padding, self.min_text_x) - self.edge_padding
+
+        if (
+            self.height is not None
+            and not self.allow_text_overflow
+            and self.auto_line_break
+            and not self.is_horizontal_scrolling_enabled
+        ):
+            fitted_single_page = False
+            min_font_size = min(self.font_size, GUIConstants.BODY_FONT_TIGHT_MIN_SIZE)
+            for candidate_size in range(self.font_size, min_font_size - 1, -1):
+                pages = reflow_text_into_pages(
+                    text=self.text,
+                    width=self.visible_width,
+                    height=self.height,
+                    font_name=self.font_name,
+                    font_size=candidate_size,
+                    line_spacer=self.line_spacing,
+                    allow_text_overflow=False,
+                )
+                if len(pages) <= 1:
+                    self.font_size = candidate_size
+                    if pages:
+                        self.text = pages[0]
+                    fitted_single_page = True
+                    break
+
+            if not fitted_single_page:
+                lines = reflow_text_for_width(
+                    text=self.text,
+                    width=self.visible_width,
+                    font_name=self.font_name,
+                    font_size=self.font_size,
+                    allow_text_overflow=False,
+                )
+                lines_per_page = self._lines_per_page(
+                    height=self.height,
+                    font_name=self.font_name,
+                    font_size=self.font_size,
+                    line_spacing=self.line_spacing,
+                )
+                visible_lines = [line["text"] for line in lines[:lines_per_page]]
+                if len(lines) > lines_per_page and visible_lines:
+                    visible_lines[-1] = self._trim_line_to_width(
+                        text=visible_lines[-1].rstrip(),
+                        width=self.visible_width,
+                        font_name=self.font_name,
+                        font_size=self.font_size,
+                    )
+                self.text = "\n".join(visible_lines)
 
         # Calculate the actual font height from the "baseline" anchor ("_s")
         font = Fonts.get_font(self.font_name, self.font_size)
@@ -695,7 +780,6 @@ class TextArea(BaseComponent):
         # Initialize the text rendering relative to the baseline
         self.text_y = self.text_height_above_baseline
 
-        self.visible_width = self.width - max(self.edge_padding, self.min_text_x) - self.edge_padding
         if not ImageFont.core.HAVE_RAQM:
             # Fudge factor for imprecise width calcs w/out libraqm
             full_text_width = int(full_text_width * 1.05)
@@ -2341,6 +2425,8 @@ def reflow_text_into_pages(text: str,
             lines_per_page = i
         else:
             break
+
+    lines_per_page = max(1, lines_per_page)
 
     pages = []
     for i in range(0, len(lines), lines_per_page):

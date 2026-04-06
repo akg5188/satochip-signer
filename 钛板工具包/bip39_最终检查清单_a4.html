@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BIP39 最终检查清单</title>
+    <style>
+      @page {
+        size: A4 portrait;
+        margin: 0;
+      }
+
+      :root {
+        --page-w: 210mm;
+        --page-h: 297mm;
+        --ink: #1f1f1f;
+        --subtle: #666;
+        --line: #d6d6d6;
+        --panel: #fafafa;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #efefef;
+        color: var(--ink);
+        font-family: "Liberation Sans", "Noto Sans CJK SC", "DejaVu Sans", sans-serif;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      body {
+        padding: 4mm 0;
+      }
+
+      .page {
+        width: var(--page-w);
+        min-height: var(--page-h);
+        margin: 0 auto;
+        padding: 8mm 9mm 8mm;
+        background: #fff;
+        border: 0.25mm solid #ececec;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.08);
+      }
+
+      .header {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 6mm;
+        border-bottom: 0.3mm solid var(--ink);
+        padding-bottom: 2mm;
+        margin-bottom: 3mm;
+      }
+
+      .title {
+        margin: 0;
+        font-size: 16pt;
+        line-height: 1;
+        letter-spacing: 0.03em;
+        font-weight: 700;
+      }
+
+      .stamp {
+        font-size: 7.5pt;
+        color: var(--subtle);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .intro {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4mm;
+        margin-bottom: 4mm;
+        font-size: 9pt;
+        line-height: 1.35;
+        color: #333;
+      }
+
+      .intro p {
+        margin: 0;
+      }
+
+      .content {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4mm;
+        align-items: start;
+      }
+
+      .section {
+        break-inside: avoid;
+        border: 0.18mm solid var(--line);
+        background: var(--panel);
+        padding: 2.4mm 2.8mm 2.1mm;
+        margin-bottom: 3mm;
+      }
+
+      .section-title {
+        margin: 0 0 1.8mm;
+        font-size: 10pt;
+        line-height: 1.1;
+        font-weight: 700;
+      }
+
+      .check-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      .check-item {
+        display: grid;
+        grid-template-columns: 3.6mm 1fr;
+        gap: 1.4mm;
+        align-items: start;
+        font-size: 8.4pt;
+        line-height: 1.25;
+        padding: 0.9mm 0;
+        border-top: 0.14mm solid rgba(0, 0, 0, 0.07);
+      }
+
+      .check-item:first-child {
+        border-top: none;
+        padding-top: 0;
+      }
+
+      .box {
+        width: 2.8mm;
+        height: 2.8mm;
+        border: 0.25mm solid #222;
+        margin-top: 0.15mm;
+      }
+
+      .footer {
+        margin-top: 3mm;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4mm;
+      }
+
+      .notes,
+      .signoff {
+        border: 0.18mm solid var(--line);
+        min-height: 24mm;
+        padding: 2.5mm 3mm;
+        background: #fff;
+      }
+
+      .footer-title {
+        margin: 0 0 1.8mm;
+        font-size: 9pt;
+        font-weight: 700;
+      }
+
+      .rule {
+        height: 6mm;
+        border-bottom: 0.14mm solid #bdbdbd;
+      }
+
+      .sign-row {
+        display: grid;
+        grid-template-columns: 12mm 1fr;
+        gap: 2mm;
+        align-items: center;
+        font-size: 8.4pt;
+        margin-top: 2.5mm;
+      }
+
+      .line {
+        border-bottom: 0.18mm solid #888;
+        height: 5mm;
+      }
+
+      @media print {
+        html,
+        body {
+          background: #fff;
+          padding: 0;
+        }
+
+        .page {
+          border: none;
+          box-shadow: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="header">
+        <h1 class="title">BIP39 最终检查清单</h1>
+        <div class="stamp">BIP39 titanium plate checklist</div>
+      </header>
+      <section class="intro">
+        <p>这张清单用于钛板打孔前、打孔后、正式入金前的最终确认。</p><p>建议每做完一项就在纸上打勾，不要只靠脑子记。</p>
+      </section>
+      <section class="content">
+        <div>
+          <section class="section"><h2 class="section-title">一、文件真伪检查</h2><ul class="check-list"><li class="check-item"><span class="box" aria-hidden="true"></span><span>使用的词表来自官方地址或固定提交地址</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>已核对 SHA-256</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>已核对总行数是 `2048`</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>已核对前 4 个词是 `abandon ability able about`</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>已核对后 4 个词是 `zebra zero zone zoo`</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>已确认打印表位序是左到右 `1 2 4 8 16 32 64 128 256 512 1024`</span></li></ul></section><section class="section"><h2 class="section-title">三、打孔过程检查</h2><ul class="check-list"><li class="check-item"><span class="box" aria-hidden="true"></span><span>每打一词前，先核对“序号”和“单词”都一致</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>每打一词后，立刻按 `1,2,4,8...` 重新求和一次</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>求和结果回查后的单词，与原单词完全一致</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>每一词都做了复核，没有跳过</span></li></ul></section><section class="section"><h2 class="section-title">五、钱包恢复检查</h2><ul class="check-list"><li class="check-item"><span class="box" aria-hidden="true"></span><span>已在干净设备或临时环境中恢复一次</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>恢复时使用了正确的 passphrase（如果有）</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>恢复后钱包标识与预期一致</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>最好已核对首个收款地址或账户指纹</span></li></ul></section><section class="section"><h2 class="section-title">七、最后原则</h2><ul class="check-list"><li class="check-item"><span class="box" aria-hidden="true"></span><span>任何一步有疑问，先停下，不入金</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>任何一个词不一致，先查错重做</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>没有完整演练成功前，不放正式资产</span></li></ul></section>
+        </div>
+        <div>
+          <section class="section"><h2 class="section-title">二、打孔前检查</h2><ul class="check-list"><li class="check-item"><span class="box" aria-hidden="true"></span><span>已确认助记词顺序正确</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>已确认是否使用 BIP39 passphrase</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>如果使用了 passphrase，已单独安全保存</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>已准备测试助记词，不直接拿正式资产上手</span></li></ul></section><section class="section"><h2 class="section-title">四、打孔完成后检查</h2><ul class="check-list"><li class="check-item"><span class="box" aria-hidden="true"></span><span>已把原始助记词遮住或收走</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>已只靠钛板完整反推整组助记词</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>反推结果与原始助记词逐词逐位置完全一致</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>如果使用了 passphrase，也已一起核对无误</span></li></ul></section><section class="section"><h2 class="section-title">六、真实资金前检查</h2><ul class="check-list"><li class="check-item"><span class="box" aria-hidden="true"></span><span>已先做过一轮小额实测</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>已确认只靠钛板就能成功恢复</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>已确认恢复后的钱包可以正确看到并控制测试资金</span></li><li class="check-item"><span class="box" aria-hidden="true"></span><span>到这一步仍然没有任何一项不确定</span></li></ul></section>
+        </div>
+      </section>
+      <footer class="footer">
+        <div class="notes">
+          <div class="footer-title">备注 / Notes</div>
+          <div class="rule"></div>
+          <div class="rule"></div>
+          <div class="rule"></div>
+        </div>
+        <div class="signoff">
+          <div class="footer-title">最终确认 / Sign-off</div>
+          <div class="sign-row"><span>日期</span><span class="line"></span></div>
+          <div class="sign-row"><span>复核人</span><span class="line"></span></div>
+          <div class="sign-row"><span>备注</span><span class="line"></span></div>
+        </div>
+      </footer>
+    </main>
+  </body>
+</html>

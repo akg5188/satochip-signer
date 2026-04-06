@@ -1,0 +1,327 @@
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+
+PAGE_WIDTH_MM = 210
+PAGE_HEIGHT_MM = 297
+
+
+def build_html() -> str:
+    sections = [
+        (
+            "先拿哪些文件",
+            [
+                "`钛板工具包总说明.md` 看全流程",
+                "`bip39_a4_binary_print.pdf` 查单词和序号",
+                "`a4_5cm_grid_sheet.pdf` 打印 5cm 定位贴纸",
+                "`bip39_最终检查清单_a4.pdf` 做最终验收",
+            ],
+        ),
+        (
+            "正式开工前",
+            [
+                "跑 `python3 verify_bip39_wordlist.py bip39_english.txt`",
+                "跑 `python3 verify_titanium_backup_kit.py`",
+                "贴纸必须按 `100%` 打印，实测方格边长必须是 `50mm`",
+                "正式上板前先用同材质废片试打",
+            ],
+        ),
+        (
+            "推荐工具",
+            [
+                "点冲：打浅定位点",
+                "中心冲：打最终识读点",
+                "可调自动中心冲：可选，用来打均匀浅点",
+                "小号锤、稳固钢底座、夹具、异丙醇、无尘布、手套",
+            ],
+        ),
+        (
+            "固定规则",
+            [
+                "位序从左到右：`1 2 4 8 16 32 64 128 256 512 1024`",
+                "有凹点是 `1`，没凹点是 `0`",
+                "`12` 词用一块板的 `1-12` 行，`13` 行留空",
+                "`24` 词用两块板，各用 `1-12` 行，`13` 行留空",
+            ],
+        ),
+        (
+            "制作顺序",
+            [
+                "查词时同时核对“序号”和“单词”",
+                "先打浅定位点，再打最终凹点",
+                "每打一词，立刻按 `1 2 4 8 ... 1024` 求和",
+                "回查表格，确认还原出来还是原单词",
+                "正式板打错时，最稳就是重做",
+            ],
+        ),
+        (
+            "还原顺序",
+            [
+                "逐行读取，不要跳位",
+                "左到右按 `1 2 4 8 ... 1024` 求和",
+                "得到 `0-2047` 序号后回表查词",
+                "按原顺序还原整组助记词",
+                "如果用了 passphrase，它不在钛板里，必须单独保存",
+            ],
+        ),
+        (
+            "长期防腐保存",
+            [
+                "打完后去贴纸、去胶痕、擦净、彻底干燥",
+                "板与板之间用无酸无缓冲纸隔开",
+                "装进聚乙烯或聚丙烯密封盒，盒内放干燥剂和湿度卡",
+                "远离窗、热源、外墙冷面、潮湿环境、酸碱和清洁剂",
+                "至少每年检查一次湿度卡和干燥剂",
+            ],
+        ),
+        (
+            "正式放钱前",
+            [
+                "先用测试助记词完整演练一次",
+                "再做正式板盲恢复",
+                "再做钱包恢复核对",
+                "最后做小额实测",
+                "没有完整演练成功前，不放正式资产",
+            ],
+        ),
+    ]
+
+    section_html = []
+    for title, items in sections:
+        bullets = "".join(
+            f"<li><span class='bullet'></span><span>{item}</span></li>" for item in items
+        )
+        section_html.append(
+            f"<section class='card'><h2>{title}</h2><ul>{bullets}</ul></section>"
+        )
+
+    return f"""<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>钛板工具包速查版</title>
+    <style>
+      @page {{
+        size: A4 portrait;
+        margin: 0;
+      }}
+
+      :root {{
+        --page-w: {PAGE_WIDTH_MM}mm;
+        --page-h: {PAGE_HEIGHT_MM}mm;
+        --ink: #171717;
+        --muted: #676767;
+        --line: #d9d9d9;
+        --panel: #fafafa;
+      }}
+
+      * {{
+        box-sizing: border-box;
+      }}
+
+      html,
+      body {{
+        margin: 0;
+        padding: 0;
+        background: #ededed;
+        color: var(--ink);
+        font-family: "Noto Sans CJK SC", "Liberation Sans", "DejaVu Sans", sans-serif;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }}
+
+      body {{
+        padding: 4mm 0;
+      }}
+
+      .page {{
+        width: var(--page-w);
+        min-height: var(--page-h);
+        margin: 0 auto;
+        padding: 8mm 8.5mm 7.5mm;
+        background: #fff;
+        border: 0.25mm solid #ebebeb;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.08);
+      }}
+
+      .header {{
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
+        gap: 5mm;
+        border-bottom: 0.3mm solid var(--ink);
+        padding-bottom: 2.2mm;
+        margin-bottom: 3mm;
+      }}
+
+      h1 {{
+        margin: 0;
+        font-size: 17pt;
+        line-height: 1;
+        letter-spacing: 0.03em;
+      }}
+
+      .meta {{
+        font-size: 7.4pt;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        text-align: right;
+      }}
+
+      .intro {{
+        margin: 0 0 3.2mm;
+        font-size: 9pt;
+        line-height: 1.4;
+        color: #2b2b2b;
+      }}
+
+      .content {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 3.2mm;
+        align-items: start;
+      }}
+
+      .card {{
+        break-inside: avoid;
+        border: 0.18mm solid var(--line);
+        background: var(--panel);
+        padding: 2.3mm 2.6mm 2.1mm;
+        margin-bottom: 3mm;
+      }}
+
+      h2 {{
+        margin: 0 0 1.6mm;
+        font-size: 10pt;
+        line-height: 1.1;
+      }}
+
+      ul {{
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }}
+
+      li {{
+        display: grid;
+        grid-template-columns: 2.3mm 1fr;
+        gap: 1.3mm;
+        align-items: start;
+        font-size: 8.25pt;
+        line-height: 1.28;
+        padding: 0.85mm 0;
+        border-top: 0.14mm solid rgba(0, 0, 0, 0.07);
+      }}
+
+      li:first-child {{
+        border-top: none;
+        padding-top: 0;
+      }}
+
+      .bullet {{
+        width: 1.7mm;
+        height: 1.7mm;
+        border-radius: 50%;
+        background: #202020;
+        margin-top: 0.55mm;
+      }}
+
+      code {{
+        font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+        font-size: 0.96em;
+      }}
+
+      .footer {{
+        margin-top: 2mm;
+        border-top: 0.18mm solid var(--line);
+        padding-top: 1.8mm;
+        font-size: 7.4pt;
+        line-height: 1.3;
+        color: var(--muted);
+      }}
+
+      @media print {{
+        html,
+        body {{
+          background: #fff;
+          padding: 0;
+        }}
+
+        .page {{
+          border: none;
+          box-shadow: none;
+        }}
+      }}
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="header">
+        <div>
+          <h1>钛板工具包速查版</h1>
+        </div>
+        <div class="meta">5cm titanium plate | bip39 | long-term titanium storage</div>
+      </header>
+      <p class="intro">
+        这张 A4 速查页是给以后隔很久重新上手时用的。默认记录方式是“冲凹点”，不是打透孔。正式资产只在完整演练、盲恢复和小额实测都成功后再上。
+      </p>
+      <section class="content">
+        <div>{''.join(section_html[0::2])}</div>
+        <div>{''.join(section_html[1::2])}</div>
+      </section>
+      <footer class="footer">
+        外部资料最近核对日期：2026-04-06。每次重新使用前，先跑 `python3 verify_titanium_backup_kit.py` 和 `python3 verify_bip39_wordlist.py bip39_english.txt`。如果任何校验失败，先停下，不继续制作、还原或入金。
+      </footer>
+    </main>
+  </body>
+</html>
+"""
+
+
+def render_outputs(html_path: Path, pdf_path: Path, preview_path: Path) -> None:
+    chrome = subprocess.run(
+        ["which", "google-chrome"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    uri = html_path.resolve().as_uri()
+    base_args = [chrome, "--headless=new", "--disable-gpu", "--no-sandbox"]
+
+    subprocess.run(
+        base_args + ["--print-to-pdf-no-header", f"--print-to-pdf={pdf_path}", uri],
+        check=True,
+    )
+    subprocess.run(
+        base_args
+        + [
+            "--window-size=1240,1754",
+            "--force-device-scale-factor=2",
+            f"--screenshot={preview_path}",
+            uri,
+        ],
+        check=True,
+    )
+
+
+def main() -> None:
+    base = Path(__file__).resolve().parent
+    html_path = base / "钛板工具包_速查版_a4.html"
+    pdf_path = base / "钛板工具包_速查版_a4.pdf"
+    preview_path = base / "钛板工具包_速查版_a4_preview.png"
+
+    html_path.write_text(build_html(), encoding="utf-8")
+    render_outputs(html_path, pdf_path, preview_path)
+
+    print(f"Generated: {html_path}")
+    print(f"Generated: {pdf_path}")
+    print(f"Generated: {preview_path}")
+
+
+if __name__ == "__main__":
+    main()

@@ -4,6 +4,7 @@ import time
 import hashlib
 import os
 import binascii
+import re
 from pathlib import Path
 
 from binascii import hexlify
@@ -49,9 +50,70 @@ from pysatochip.JCconstants import SEEDKEEPER_DIC_TYPE, SEEDKEEPER_DIC_ORIGIN, S
 from pysatochip.util import dict_swap_keys_values
 from seedsigner.helpers import seedkeeper_utils
 from binascii import unhexlify
-from seedsigner.models.mnemonic_steel import words_to_indices
+from seedsigner.models.mnemonic_steel import get_word_at_index, lookup_word_index, words_to_indices
 
 logger = logging.getLogger(__name__)
+
+SEEDKEEPER_STEEL_SECRET_PREFIX = "TP-STEEL:"
+
+
+def _canonicalize_bip39_words(words: list[str], context: str = "助记词") -> list[str]:
+    canonical_words = []
+    for position, word in enumerate(list(words or []), 1):
+        raw_word = str(word or "").strip()
+        try:
+            canonical_words.append(get_word_at_index(lookup_word_index(raw_word)))
+        except Exception as exc:
+            display_word = raw_word or "（空）"
+            raise ValueError(f"{context}第 {position} 个单词不是官方 BIP39 英文词：{display_word}") from exc
+    return canonical_words
+
+
+def _format_bip39_word_index_lines(words: list[str], indices: list[int], start_position: int) -> str:
+    max_word_len = max((len(word) for word in words), default=0)
+    lines = []
+    for offset, (word, index) in enumerate(zip(words, indices), start=0):
+        lines.append(f"{start_position + offset:02d}. {word:<{max_word_len}}  {index:04d}")
+    return "\n".join(lines)
+
+
+def _resolve_optional_bip39_indices(words: list[str]) -> list[int] | None:
+    resolved_indices = []
+    for word in list(words or []):
+        raw_word = str(word or "").strip()
+        if not raw_word:
+            return None
+        try:
+            resolved_indices.append(lookup_word_index(raw_word))
+        except Exception:
+            return None
+    return resolved_indices
+
+
+def _clean_display_words(words: list[str]) -> list[str]:
+    return [str(word or "").strip() or "（空）" for word in list(words or [])]
+
+
+def _format_word_position_lines(
+    words: list[str],
+    start_position: int,
+    indices: list[int | None] | None = None,
+    show_index_placeholders: bool = False,
+) -> str:
+    cleaned_words = _clean_display_words(words)
+    max_word_len = max((len(word) for word in cleaned_words), default=0)
+    lines = []
+    for offset, display_word in enumerate(cleaned_words, start=0):
+        suffix = ""
+        if indices is not None:
+            if offset < len(indices) and indices[offset] is not None:
+                suffix = f"  {int(indices[offset]):04d}"
+            elif show_index_placeholders:
+                suffix = "  ----"
+        elif show_index_placeholders:
+            suffix = "  ----"
+        lines.append(f"{start_position + offset:02d}. {display_word:<{max_word_len}}{suffix}")
+    return "\n".join(lines)
 
 
 class SeedsMenuView(View):
@@ -69,7 +131,7 @@ class SeedsMenuView(View):
     @staticmethod
     def get_seed_type_label(seed: Seed) -> str:
         if isinstance(seed, TransientWordSeed):
-            return "RAW"
+            return "假助记词"
         if isinstance(seed, Slip39Seed):
             return "SLIP39"
         if isinstance(seed, XprvSeed):
@@ -287,6 +349,7 @@ class LoadSeedView(View):
     TYPE_21WORD = ButtonOption("输入 21 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=21)
     TYPE_24WORD = ButtonOption("输入 24 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=24)
     TYPE_BIP39_INDICES = ButtonOption("按编号导入 BIP39 助记词", FontAwesomeIconConstants.KEYBOARD)
+    TYPE_STEEL_RESTORE = ButtonOption("从钢板数字恢复二次助记词", FontAwesomeIconConstants.KEYBOARD)
     TYPE_ELECTRUM = ButtonOption("输入 Electrum 助记词", FontAwesomeIconConstants.KEYBOARD)
     TYPE_AEZEED = ButtonOption("输入 Aezeed 助记词", FontAwesomeIconConstants.KEYBOARD)
     TYPE_SLIP39 = ButtonOption("输入 SLIP-39 分片", FontAwesomeIconConstants.KEYBOARD)
@@ -310,6 +373,8 @@ class LoadSeedView(View):
         button_data = [self.SEED_QR]
         button_data.extend([options[l] for l in seed_lengths])
         button_data.append(self.TYPE_BIP39_INDICES)
+        if os.environ.get("TP_ONLY_MODE") == "1":
+            button_data.append(self.TYPE_STEEL_RESTORE)
 
         if self.settings.get_value(SettingsConstants.SETTING__SMARTCARD_SUPPORT) == SettingsConstants.OPTION__ENABLED:
             button_data.append(self.IMPORT_SEEDKEEPER)
@@ -354,6 +419,13 @@ class LoadSeedView(View):
 
         elif button_data[selected_menu_num] == self.TYPE_BIP39_INDICES:
             return Destination(SeedMnemonicIndexLengthView)
+
+        elif button_data[selected_menu_num] == self.TYPE_STEEL_RESTORE:
+            from seedsigner.views.tp_views import ToolsTpSteelPlateEntryView
+            return Destination(
+                ToolsTpSteelPlateEntryView,
+                view_args=dict(launched_from_load_seed=True),
+            )
 
         elif button_data[selected_menu_num] == self.IMPORT_SEEDKEEPER:
             return Destination(SeedKeeperSelectView)
@@ -462,14 +534,82 @@ class SeedKeeperSelectView(View):
 
         raise ValueError("Unsupported Masterseed subtype 0 payload")
 
+    @staticmethod
+    def _extract_label_fingerprint(label: str) -> str | None:
+        value = str(label or "").strip().lower()
+        if not value:
+            return None
+        match = re.search(r"([0-9a-f]{8})$", value)
+        if match:
+            return match.group(1)
+        return None
+
+    def _build_seedkeeper_display_label(
+        self,
+        *,
+        sid: int,
+        label: str,
+        stype: str,
+        subtype: int,
+        secret_dict: dict | None = None,
+    ) -> str:
+        network = self.settings.get_value(SettingsConstants.SETTING__NETWORK)
+        label_fingerprint = self._extract_label_fingerprint(
+            label[len(SEEDKEEPER_STEEL_SECRET_PREFIX):] if label.startswith(SEEDKEEPER_STEEL_SECRET_PREFIX) else label
+        )
+        seed_fingerprint = label_fingerprint
+
+        if seed_fingerprint is None and secret_dict is not None:
+            try:
+                if label.startswith(SEEDKEEPER_STEEL_SECRET_PREFIX):
+                    secret_text = self._decode_seedkeeper_text(secret_dict["secret"]).strip()
+                    secret_words, secret_indices = seedkeeper_utils.decode_seedkeeper_tp_steel_payload(secret_text)
+                    seed_fingerprint = TransientWordSeed(
+                        secret_words,
+                        bip39_word_indices=secret_indices,
+                    ).get_fingerprint(network)
+                elif stype == "BIP39 mnemonic" or (stype == "Masterseed" and subtype == 0x01):
+                    if stype == "BIP39 mnemonic":
+                        bip39_secret = unhexlify(secret_dict["secret"])[1:].decode().rstrip("\x00")
+                        secret_size = secret_dict["secret_list"][0]
+                        secret_mnemonic = bip39_secret[:secret_size].strip()
+                    else:
+                        secret_raw_bytes = bytes.fromhex(secret_dict["secret"])
+                        offset = 0
+                        masterseed_size = secret_raw_bytes[offset]
+                        offset += 1 + masterseed_size
+                        wordlist_byte = secret_raw_bytes[offset]
+                        offset += 1
+                        wordlist = BIP39_WORDLIST_DIC.get(wordlist_byte)
+                        entropy_size = secret_raw_bytes[offset]
+                        offset += 1
+                        entropy_bytes = secret_raw_bytes[offset:offset + entropy_size]
+                        secret_mnemonic = self.entropy_to_mnemonic(entropy_bytes, wordlist or "english")
+                    seed_fingerprint = Seed(secret_mnemonic.split()).get_fingerprint(network)
+            except Exception:
+                seed_fingerprint = None
+
+        if label.startswith(SEEDKEEPER_STEEL_SECRET_PREFIX):
+            return f"假助记词 · {seed_fingerprint or sid}"
+        if label.startswith("BIP39-RNG-"):
+            return f"真随机 · {seed_fingerprint or sid}"
+        if stype in ("BIP39 mnemonic", "Masterseed"):
+            return f"助记词 · {seed_fingerprint or sid}"
+        if stype == "Electrum mnemonic":
+            return f"Electrum · {seed_fingerprint or sid}"
+        if stype == "Password" and label.startswith("aezeed:"):
+            return f"Aezeed · {seed_fingerprint or sid}"
+        return label or "Unnamed Secret"
+
 
     def run(self):
         from seedsigner.gui.screens.screen import LoadingScreenThread
         try:
+            current_seed = getattr(self, "seed", None)
             Satochip_Connector = seedkeeper_utils.init_satochip(self, init_card_filter=["seedkeeper"])
 
             if not Satochip_Connector:
-                if isinstance(self.seed, AezeedSeed):
+                if isinstance(current_seed, AezeedSeed):
                     return Destination(SeedAezeedPassphraseModeView)
                 return Destination(BackStackView)
 
@@ -494,18 +634,38 @@ class SeedKeeperSelectView(View):
                         (stype == 'Masterseed' and subtype == 0x00) or
                         (stype == 'Data' and label.startswith('XPRV:') and export_rights == 'Plaintext export allowed') or
                         (stype == 'Electrum mnemonic' and export_rights == 'Plaintext export allowed') or
-                        (stype == 'Password' and label.startswith('aezeed:') and export_rights == 'Plaintext export allowed')):
+                        (stype == 'Password' and label.startswith('aezeed:') and export_rights == 'Plaintext export allowed') or
+                        (label.startswith(SEEDKEEPER_STEEL_SECRET_PREFIX) and export_rights == 'Plaintext export allowed')):
 
                     if not label:
                         label = "Unnamed Secret"
 
+                    secret_dict_for_label = None
+                    if (
+                        stype == "BIP39 mnemonic"
+                        or (stype == "Masterseed" and subtype == 0x01)
+                        or label.startswith(SEEDKEEPER_STEEL_SECRET_PREFIX)
+                    ):
+                        try:
+                            secret_dict_for_label = Satochip_Connector.seedkeeper_export_secret(sid, None)
+                        except Exception:
+                            secret_dict_for_label = None
+                    display_label = self._build_seedkeeper_display_label(
+                        sid=sid,
+                        label=label,
+                        stype=stype,
+                        subtype=subtype,
+                        secret_dict=secret_dict_for_label,
+                    )
+
                     headers_parsed.append({
                         "sid": sid,
                         "label": label,
+                        "display_label": display_label,
                         "stype": stype,
                         "subtype": subtype
                     })
-                    button_data.append(ButtonOption(label))
+                    button_data.append(ButtonOption(display_label))
 
             if len(headers_parsed) < 1:
                 self.run_screen(
@@ -514,7 +674,7 @@ class SeedKeeperSelectView(View):
                     text="No BIP39 Secrets to Load from Seedkeeper",
                     show_back_button=False,
                 )
-                if isinstance(self.seed, AezeedSeed):
+                if isinstance(current_seed, AezeedSeed):
                     return Destination(SeedAezeedPassphraseModeView)
                 return Destination(BackStackView)
 
@@ -527,7 +687,7 @@ class SeedKeeperSelectView(View):
             )
 
             if selected_menu_num == RET_CODE__BACK_BUTTON:
-                if isinstance(self.seed, AezeedSeed):
+                if isinstance(current_seed, AezeedSeed):
                     return Destination(SeedAezeedPassphraseModeView)
                 return Destination(BackStackView)
 
@@ -544,6 +704,16 @@ class SeedKeeperSelectView(View):
             self.loading_screen.stop()
 
             assert stype == SEEDKEEPER_DIC_TYPE.get(secret_dict['type'], hex(secret_dict['type']))
+
+            if label.startswith(SEEDKEEPER_STEEL_SECRET_PREFIX):
+                secret_text = self._decode_seedkeeper_text(secret_dict['secret']).strip()
+                secret_words, secret_indices = seedkeeper_utils.decode_seedkeeper_tp_steel_payload(secret_text)
+                if len(secret_words) != 12:
+                    raise ValueError("当前假助记词记录只支持 12 词。")
+                self.controller.storage.set_pending_seed(
+                    TransientWordSeed(secret_words, bip39_word_indices=secret_indices)
+                )
+                return Destination(SeedFinalizeView)
 
             if stype == 'BIP39 mnemonic' or stype == 'Electrum mnemonic':
                 secret_dict['secret'] = unhexlify(secret_dict['secret'])[1:].decode().rstrip("\x00")
@@ -1169,8 +1339,8 @@ class SeedMnemonicIndexEntryView(View):
         if not self.cur_word:
             return ""
         try:
-            return str(self.wordlist.index(self.cur_word))
-        except ValueError:
+            return str(lookup_word_index(self.cur_word))
+        except Exception:
             return ""
 
     @staticmethod
@@ -1220,7 +1390,7 @@ class SeedMnemonicIndexEntryView(View):
                 clear_history=True,
             )
 
-        self.controller.storage.update_pending_mnemonic(self.wordlist[index], self.cur_word_index)
+        self.controller.storage.update_pending_mnemonic(get_word_at_index(index), self.cur_word_index)
 
         if self.cur_word_index < self.controller.storage.pending_mnemonic_length - 1:
             return Destination(
@@ -1299,18 +1469,31 @@ class SeedMnemonicRawReviewView(View):
         if not mnemonic:
             return Destination(LoadSeedView, clear_history=True)
 
+        show_index_layout = self.entry_mode == "index"
         words_per_page = 4
         num_pages = max(1, (len(mnemonic) + words_per_page - 1) // words_per_page)
-        words = mnemonic[self.page_index * words_per_page:(self.page_index + 1) * words_per_page]
-        button_data = [self.VIEW_INDICES, self.NEXT] if self.page_index < num_pages - 1 else [self.VIEW_INDICES, self.REENTER, self.IMPORT_RAW]
+        start = self.page_index * words_per_page
+        words = mnemonic[start:start + words_per_page]
+        indices = _resolve_optional_bip39_indices(mnemonic)
+        if show_index_layout:
+            button_data = [self.NEXT] if self.page_index < num_pages - 1 else [self.REENTER, self.IMPORT_RAW]
+            title = f"检查 BIP39 序号：{self.page_index + 1}/{num_pages}"
+        else:
+            button_data = [self.VIEW_INDICES, self.NEXT] if self.page_index < num_pages - 1 else [self.VIEW_INDICES, self.REENTER, self.IMPORT_RAW]
+            title = f"检查加密助记词：{self.page_index + 1}/{num_pages}"
 
-        selected_menu_num = seed_screens.SeedWordsScreen(
-            title=f"检查加密助记词：{self.page_index + 1}/{num_pages}",
-            words=words,
-            page_index=self.page_index,
-            num_pages=num_pages,
+        selected_menu_num = self.run_screen(
+            ToolsFormattedTextScreen,
+            title=title,
+            text=_format_word_position_lines(
+                words,
+                start + 1,
+                indices[start:start + words_per_page] if indices else None,
+                show_index_placeholders=bool(indices) or show_index_layout,
+            ),
+            text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
             button_data=button_data,
-        ).display()
+        )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             if self.page_index > 0:
@@ -1355,7 +1538,11 @@ class SeedMnemonicRawReviewView(View):
                 clear_history=True,
             )
 
-        self.controller.storage.set_pending_seed(TransientWordSeed(mnemonic))
+        raw_mnemonic = [str(word or "").strip() for word in mnemonic]
+        raw_indices = _resolve_optional_bip39_indices(raw_mnemonic)
+        self.controller.storage.set_pending_seed(
+            TransientWordSeed(raw_mnemonic, bip39_word_indices=raw_indices)
+        )
         self.controller.storage.discard_pending_mnemonic()
         seed_num = self.controller.storage.finalize_pending_seed()
 
@@ -2390,7 +2577,7 @@ class SeedOptionsView(View):
 
 
 class SeedBackupView(View):
-    VIEW_WORDS = ButtonOption("查看助记词")
+    VIEW_WORDS = ButtonOption("查看 BIP39 序号")
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     EXPORT_SEEDQR = ButtonOption("导出为 SeedQR")
     EXPORT_PLAINTEXTQR = ButtonOption("导出为明文二维码")
@@ -2406,8 +2593,6 @@ class SeedBackupView(View):
     def run(self):
 
         button_data = [self.VIEW_WORDS]
-        if self.seed.bip39_word_indices_supported:
-            button_data.append(self.VIEW_INDICES)
         if self.settings.get_value(SettingsConstants.SETTING__SMARTCARD_SUPPORT) == SettingsConstants.OPTION__ENABLED:
             button_data.append(self.TO_SEEDKEEPER)
         if isinstance(self.seed, Slip39Seed):
@@ -2434,20 +2619,6 @@ class SeedBackupView(View):
             if isinstance(self.seed, Slip39Seed):
                 return Destination(SeedSlip39SelectShareView, view_args={"seed_num": self.seed_num, "next_view": SeedWordsWarningView})
             return Destination(SeedWordsWarningView, view_args={"seed_num": self.seed_num})
-
-        elif button_data[selected_menu_num] == self.VIEW_INDICES:
-            return Destination(
-                SeedWordIndexView,
-                view_args=dict(
-                    seed_num=self.seed_num,
-                    title="BIP39 序号",
-                    return_destination=Destination(
-                        SeedBackupView,
-                        view_args=dict(seed_num=self.seed_num),
-                        skip_current_view=True,
-                    ),
-                ),
-            )
 
         elif button_data[selected_menu_num] == self.EXPORT_PLAINTEXTQR:
             if isinstance(self.seed, Slip39Seed):
@@ -2967,7 +3138,6 @@ class SeedWordsWarningView(View):
 
 class SeedWordsView(View):
     NEXT = ButtonOption("下一页")
-    VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     DONE = ButtonOption("完成")
 
     def __init__(self, seed_num: int, bip85_data: dict = None, page_index: int = 0, share_index: int | None = None):
@@ -2983,13 +3153,9 @@ class SeedWordsView(View):
 
 
     def run(self):
-        # Slice the mnemonic to our current 4-word section
-        words_per_page = 4  # TODO: eventually make this configurable for bigger screens?
-
         if self.bip85_data is not None:
             mnemonic = self.seed.get_bip85_child_mnemonic(self.bip85_data["child_index"], self.bip85_data["num_words"]).split()
-            # TRANSLATOR_NOTE: Inserts the child index (e.g. "Child #0")
-            title = _("Child #{}").format(self.bip85_data["child_index"])
+            title = _("Child #{} BIP39").format(self.bip85_data["child_index"])
         else:
             if isinstance(self.seed, Slip39Seed) and self.share_index is not None:
                 mnemonic = self.seed.mnemonic_list[self.share_index].split()
@@ -3006,50 +3172,42 @@ class SeedWordsView(View):
                         button_data=[ButtonOption(_("OK"))],
                     )
                     return Destination(BackStackView)
-            title = "助记词"
-        words = mnemonic[self.page_index*words_per_page:(self.page_index + 1)*words_per_page]
-        can_view_indices = bool(self.bip85_data is not None or getattr(self.seed, "bip39_word_indices_supported", False))
-
-        button_data = []
-        num_pages = max(1, (len(mnemonic) + words_per_page - 1) // words_per_page)
-        if can_view_indices:
-            button_data.append(self.VIEW_INDICES)
-        if self.page_index < num_pages - 1 or self.seed_num is None:
-            button_data.append(self.NEXT)
-        else:
-            button_data.append(self.DONE)
-
-        selected_menu_num = seed_screens.SeedWordsScreen(
-            title=f"{title}: {self.page_index+1}/{num_pages}",
-            words=words,
-            page_index=self.page_index,
-            num_pages=num_pages,
+            title = "BIP39 序号"
+        entries_per_page = 4
+        num_pages = max(1, (len(mnemonic) + entries_per_page - 1) // entries_per_page)
+        start = self.page_index * entries_per_page
+        words = _clean_display_words(mnemonic[start:start + entries_per_page])
+        indices = None
+        if self.bip85_data is not None:
+            indices = _resolve_optional_bip39_indices(mnemonic)
+        elif getattr(self.seed, "bip39_word_indices_supported", False):
+            try:
+                indices = self.seed.get_bip39_word_indices()
+            except Exception:
+                indices = None
+        if indices is None or len(indices) != len(mnemonic):
+            resolved_indices = _resolve_optional_bip39_indices(mnemonic)
+            if resolved_indices is not None and len(resolved_indices) == len(mnemonic):
+                indices = resolved_indices
+        page_indices = indices[start:start + entries_per_page] if indices is not None else None
+        formatted_text = _format_word_position_lines(
+            words,
+            start + 1,
+            page_indices,
+            show_index_placeholders=True,
+        )
+        button_data = [self.NEXT] if self.page_index < num_pages - 1 or self.seed_num is None else [self.DONE]
+        selected_menu_num = self.run_screen(
+            ToolsFormattedTextScreen,
+            title=f"{title}：{self.page_index + 1}/{num_pages}",
+            text=formatted_text,
             button_data=button_data,
-        ).display()
+        )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(BackStackView)
 
         selected = button_data[selected_menu_num]
-        if selected == self.VIEW_INDICES:
-            return Destination(
-                SeedWordIndexView,
-                view_args=dict(
-                    words=mnemonic,
-                    title="BIP39 序号",
-                    return_destination=Destination(
-                        SeedWordsView,
-                        view_args=dict(
-                            seed_num=self.seed_num,
-                            page_index=self.page_index,
-                            bip85_data=self.bip85_data,
-                            share_index=self.share_index,
-                        ),
-                        skip_current_view=True,
-                    ),
-                ),
-            )
-
         if selected == self.NEXT:
             if self.seed_num is None and self.page_index == num_pages - 1:
                 return Destination(
@@ -3078,6 +3236,7 @@ class SeedWordIndexView(View):
         self,
         seed_num: int | None = None,
         words: list[str] | None = None,
+        indices: list[int | None] | None = None,
         page_index: int = 0,
         title: str = "BIP39 序号",
         use_steel_cache: bool = False,
@@ -3085,29 +3244,57 @@ class SeedWordIndexView(View):
     ):
         super().__init__()
         self.seed_num = seed_num
-        self.words = list(words) if words else None
+        self.words = list(words) if words is not None else None
+        self.indices = list(indices) if indices is not None else None
         self.page_index = page_index
         self.title = title
         self.use_steel_cache = use_steel_cache
         self.return_destination = return_destination
 
-    def _resolve_words_and_indices(self) -> tuple[list[str], list[int]]:
+    def _resolve_words_and_indices(self) -> tuple[list[str], list[int | None] | None]:
+        if self.indices is not None and self.words is None:
+            cleaned_words = []
+            cleaned_indices = []
+            for raw_index in self.indices:
+                try:
+                    resolved_index = int(raw_index)
+                    cleaned_words.append(get_word_at_index(resolved_index))
+                    cleaned_indices.append(resolved_index)
+                except Exception:
+                    cleaned_words.append("（空）")
+                    cleaned_indices.append(None)
+            return cleaned_words, cleaned_indices
+
         if self.words is not None:
-            normalized_words = list(self.words)
-            return normalized_words, words_to_indices(normalized_words)
+            cleaned_words = _clean_display_words(self.words)
+            if self.indices is not None and len(self.indices) == len(cleaned_words):
+                return cleaned_words, list(self.indices)
+            return cleaned_words, _resolve_optional_bip39_indices(cleaned_words)
 
         if self.use_steel_cache:
-            normalized_words = self.controller.storage.get_steel_encrypted_mnemonic()
-            if not normalized_words:
+            cleaned_words = _clean_display_words(self.controller.storage.get_steel_encrypted_mnemonic())
+            if not cleaned_words:
                 raise SeedWordsUnavailableException("当前没有可显示的钢板二次加密助记词。")
-            return normalized_words, words_to_indices(normalized_words)
+            stored_indices = self.controller.storage.get_steel_bip39_indices()
+            if len(stored_indices) == len(cleaned_words):
+                return cleaned_words, stored_indices
+            return cleaned_words, _resolve_optional_bip39_indices(cleaned_words)
 
         seed = self.controller.get_seed(self.seed_num) if self.seed_num is not None else self.controller.storage.get_pending_seed()
         if seed is None:
             raise SeedWordsUnavailableException("当前没有可显示的助记词。")
 
         seed.ensure_seed_words_available()
-        return seed.mnemonic_display_list, seed.get_bip39_word_indices()
+        cleaned_words = _clean_display_words(seed.mnemonic_display_list)
+        indices = None
+        if getattr(seed, "bip39_word_indices_supported", False):
+            try:
+                indices = seed.get_bip39_word_indices()
+            except Exception:
+                indices = None
+        if indices is None or len(indices) != len(cleaned_words):
+            indices = _resolve_optional_bip39_indices(cleaned_words)
+        return cleaned_words, indices
 
     def _return(self) -> Destination:
         if self.return_destination is not None:
@@ -3127,34 +3314,23 @@ class SeedWordIndexView(View):
                 button_data=[ButtonOption("继续")],
             )
             return self._return()
-        except Exception:
-            self.run_screen(
-                WarningScreen,
-                title="无法显示序号",
-                status_headline=None,
-                text="当前助记词不是标准 BIP39 英文词表，无法显示 0-2047 官方序号。",
-                show_back_button=False,
-                button_data=[ButtonOption("继续")],
-            )
-            return self._return()
 
-        entries_per_page = 6
+        entries_per_page = 4
         total_pages = max(1, (len(words) + entries_per_page - 1) // entries_per_page)
         start = self.page_index * entries_per_page
         end = start + entries_per_page
         page_words = words[start:end]
-        page_indices = indices[start:end]
-        max_word_len = max((len(word) for word in page_words), default=0)
-        lines = []
-        for offset, (word, index) in enumerate(zip(page_words, page_indices), start=1):
-            position = start + offset
-            lines.append(f"{position:02d}. {word:<{max_word_len}}  {index:04d}")
-
+        page_indices = indices[start:end] if indices is not None else None
         button_data = [self.NEXT] if self.page_index < total_pages - 1 else [self.DONE]
         selected_menu_num = self.run_screen(
             ToolsFormattedTextScreen,
             title=f"{self.title}：{self.page_index + 1}/{total_pages}",
-            text="\n".join(lines),
+            text=_format_word_position_lines(
+                page_words,
+                start + 1,
+                page_indices,
+                show_index_placeholders=True,
+            ),
             button_data=button_data,
         )
 
@@ -3165,6 +3341,7 @@ class SeedWordIndexView(View):
                     view_args=dict(
                         seed_num=self.seed_num,
                         words=self.words,
+                        indices=self.indices,
                         page_index=self.page_index - 1,
                         title=self.title,
                         use_steel_cache=self.use_steel_cache,
@@ -3180,6 +3357,7 @@ class SeedWordIndexView(View):
                 view_args=dict(
                     seed_num=self.seed_num,
                     words=self.words,
+                    indices=self.indices,
                     page_index=self.page_index + 1,
                     title=self.title,
                     use_steel_cache=self.use_steel_cache,
@@ -3592,7 +3770,7 @@ class SeedWordsBackupTestView(View):
 
 
 class SeedWordsBackupTestMistakeView(View):
-    REVIEW = ButtonOption("查看助记词")
+    REVIEW = ButtonOption("查看 BIP39 序号")
     RETRY = ButtonOption("再试一次")
 
     def __init__(self, seed_num: int, bip85_data: dict = None, cur_index: int = None, wrong_word: str = None, confirmed_list: list[bool] = None, share_index: int | None = None):
@@ -5657,6 +5835,8 @@ class SeedExportPlaintextQRView(View):
     Save to SeedKeeper Workflow
 ****************************************************************************"""
 class SaveToSeedkeeperView(View):
+    STEEL_CACHE_LABEL_PREFIX = "TP-STEEL:"
+
     def mnemonic_to_entropy(self, bip39_mnemonic, wordlist):
         from mnemonic import Mnemonic
         print(f"Worldlist: {wordlist}")
@@ -5672,6 +5852,7 @@ class SaveToSeedkeeperView(View):
         share_index: int | None = None,
         return_destination: Destination | None = None,
         words_override: list[str] | None = None,
+        bip39_indices_override: list[int] | None = None,
         label_prefix: str = "",
         success_text: str | None = None,
     ):
@@ -5681,6 +5862,7 @@ class SaveToSeedkeeperView(View):
         self.share_index = share_index
         self.return_destination = return_destination
         self.words_override = list(words_override) if words_override else None
+        self.bip39_indices_override = list(bip39_indices_override) if bip39_indices_override else None
         self.label_prefix = label_prefix or ""
         self.success_text = success_text
 
@@ -5708,6 +5890,42 @@ class SaveToSeedkeeperView(View):
         header = connector.make_header(secret_type, export_rights, label)
         return {'header': header, 'secret_list': secret_list}
 
+    def _build_auto_label(self, fingerprint: str | None = None) -> str:
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        return self._finalize_label(timestamp, fingerprint, prefix=self.label_prefix)
+
+    def _label_fingerprint(self, seed) -> str | None:
+        network = self.settings.get_value(SettingsConstants.SETTING__NETWORK)
+
+        if self.words_override is not None:
+            try:
+                indices = self.bip39_indices_override or _resolve_optional_bip39_indices(self.words_override)
+                transient_seed = TransientWordSeed(self.words_override, bip39_word_indices=indices)
+                return transient_seed.get_fingerprint(network=network)
+            except Exception:
+                return None
+
+        if seed is None:
+            return None
+
+        try:
+            return seed.get_fingerprint(network=network)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _finalize_label(label_body: str, fingerprint: str | None, prefix: str = "") -> str:
+        body = str(label_body or "").strip()
+        normalized_fingerprint = str(fingerprint or "").strip()
+
+        if not body:
+            body = normalized_fingerprint or "Unnamed Secret"
+
+        if normalized_fingerprint and normalized_fingerprint not in body:
+            body = f"{body}-{normalized_fingerprint}"
+
+        return f"{prefix}{body}"
+
     def run(self):
         from seedsigner.gui.screens.screen import LoadingScreenThread
         try:
@@ -5717,42 +5935,73 @@ class SaveToSeedkeeperView(View):
                 return Destination(BackStackView)
 
             seed = self.controller.get_seed(self.seed_num) if self.seed_num is not None else None
+            label_fingerprint = self._label_fingerprint(seed)
 
             if self.words_override is not None:
-                ret = seed_screens.SeedAddPassphraseScreen(
-                    title="Secret Label",
-                    passphrase="",
-                ).display()
-                if "is_back_button" in ret:
-                    return Destination(BackStackView)
+                if self.label_prefix == self.STEEL_CACHE_LABEL_PREFIX:
+                    label = self._build_auto_label(label_fingerprint)
+                else:
+                    ret = seed_screens.SeedAddPassphraseScreen(
+                        title="Secret Label",
+                        passphrase="",
+                    ).display()
+                    if "is_back_button" in ret:
+                        return Destination(BackStackView)
 
-                entered_label = ret['passphrase'].strip()
-                if not entered_label:
-                    raise ValueError("标签不能为空。")
+                    entered_label = ret['passphrase'].strip()
+                    if not entered_label:
+                        raise ValueError("标签不能为空。")
 
-                label = f"{self.label_prefix}{entered_label}"
+                    label = self._finalize_label(entered_label, label_fingerprint, prefix=self.label_prefix)
+                text_value = " ".join(self.words_override)
+                if self.label_prefix == self.STEEL_CACHE_LABEL_PREFIX:
+                    steel_indices = self.bip39_indices_override
+                    if steel_indices is None:
+                        steel_indices = _resolve_optional_bip39_indices(self.words_override)
+                    text_value = seedkeeper_utils.encode_seedkeeper_tp_steel_payload(
+                        self.words_override,
+                        steel_indices,
+                    )
                 secret_dic = self._build_text_secret_dic(
                     Satochip_Connector,
-                    " ".join(self.words_override),
+                    text_value,
                     label,
                 )
 
             elif isinstance(seed, TransientWordSeed):
-                ret = seed_screens.SeedAddPassphraseScreen(
-                    title="Secret Label",
-                    passphrase=seed.get_fingerprint(network=self.settings.get_value(SettingsConstants.SETTING__NETWORK)),
-                ).display()
-                if "is_back_button" in ret:
-                    return Destination(BackStackView)
+                if not self.label_prefix:
+                    self.label_prefix = self.STEEL_CACHE_LABEL_PREFIX
 
-                entered_label = ret['passphrase'].strip()
-                if not entered_label:
-                    raise ValueError("标签不能为空。")
+                if self.label_prefix == self.STEEL_CACHE_LABEL_PREFIX:
+                    label = self._build_auto_label(label_fingerprint)
+                else:
+                    ret = seed_screens.SeedAddPassphraseScreen(
+                        title="Secret Label",
+                        passphrase=label_fingerprint or "",
+                    ).display()
+                    if "is_back_button" in ret:
+                        return Destination(BackStackView)
 
-                label = f"{self.label_prefix}{entered_label}"
+                    entered_label = ret['passphrase'].strip()
+                    if not entered_label:
+                        raise ValueError("标签不能为空。")
+
+                    label = self._finalize_label(entered_label, label_fingerprint, prefix=self.label_prefix)
+                text_value = seed.mnemonic_str
+                if self.label_prefix == self.STEEL_CACHE_LABEL_PREFIX:
+                    steel_indices = self.bip39_indices_override or seed.bip39_word_indices
+                    if steel_indices is None:
+                        try:
+                            steel_indices = seed.get_bip39_word_indices()
+                        except Exception:
+                            steel_indices = None
+                    text_value = seedkeeper_utils.encode_seedkeeper_tp_steel_payload(
+                        seed.mnemonic_list,
+                        steel_indices,
+                    )
                 secret_dic = self._build_text_secret_dic(
                     Satochip_Connector,
-                    seed.mnemonic_str,
+                    text_value,
                     label,
                 )
 
@@ -5780,7 +6029,7 @@ class SaveToSeedkeeperView(View):
                 if "is_back_button" in ret:
                     return Destination(BackStackView)
 
-                label = "SLIP39:" + ret['passphrase']
+                label = self._finalize_label(ret['passphrase'], fingerprint, prefix="SLIP39:")
                 export_rights = "Plaintext export allowed"
                 header = Satochip_Connector.make_header("Password", export_rights, label)
                 share_list = list(bytes(share, 'utf-8'))
@@ -5799,7 +6048,7 @@ class SaveToSeedkeeperView(View):
                 print(status)
                 if isinstance(seed, ElectrumSeed):
                     print("Saving Electrum seed")
-                    label = ret['passphrase']
+                    label = self._finalize_label(ret['passphrase'], fingerprint)
                     export_rights = "Plaintext export allowed"
                     type = "Electrum mnemonic"
                     subtype = 0
@@ -5810,7 +6059,7 @@ class SaveToSeedkeeperView(View):
                     secret_dic = {'header': header, 'secret_list': secret_list}
                 elif isinstance(seed, AezeedSeed):
                     print("Saving Aezeed seed")
-                    label = f"aezeed:{ret['passphrase']}"
+                    label = self._finalize_label(ret['passphrase'], fingerprint, prefix="aezeed:")
                     export_rights = "Plaintext export allowed"
                     type = "Password"
                     aezeed_secret = f"aezeed:{seed.mnemonic_str}"
@@ -5833,7 +6082,7 @@ class SaveToSeedkeeperView(View):
 
                     if status['protocol_minor_version'] == 1:  # Seedkeeper v1
                         print("Saving to SeedKeeper V1")
-                        label = ret['passphrase']
+                        label = self._finalize_label(ret['passphrase'], fingerprint)
                         export_rights = "Plaintext export allowed"
                         type = "BIP39 mnemonic"
                         subtype = 0
@@ -5844,11 +6093,11 @@ class SaveToSeedkeeperView(View):
                         secret_list = [len(bip39_mnemonic_list)] + bip39_mnemonic_list + [len(bip39_passphrase_list)] + bip39_passphrase_list
                     else:
                         print("Saving to SeedKeeper V2")
-                        label = ret['passphrase']
+                        label = self._finalize_label(ret['passphrase'], fingerprint)
                         export_rights = "Plaintext export allowed"
                         if isinstance(seed, XprvSeed):
                             type = "Data"
-                            label = f"XPRV:{label}"
+                            label = self._finalize_label(label, fingerprint, prefix="XPRV:")
                             xprv_list = list(bytes(seed.get_root().to_base58(), 'utf-8'))
                             secret_list = list(len(xprv_list).to_bytes(2, "big")) + xprv_list
                         else:
@@ -5904,6 +6153,11 @@ class SaveToSeedkeeperView(View):
             print("Imported - SID:", sid, " Fingerprint:", fingerprint)
 
             self.loading_screen.stop()
+
+            headers = Satochip_Connector.seedkeeper_list_secret_headers()
+            if not any(header.get("id") == sid for header in headers):
+                raise ValueError("SeedKeeper 没有返回刚写入的记录，请重试。")
+
             time.sleep(0.1) # Sleep for 100ms
             self.run_screen(
                 LargeIconStatusScreen,
@@ -5916,7 +6170,9 @@ class SaveToSeedkeeperView(View):
 
         except Exception as e:
             print(e)
-            self.loading_screen.stop()
+            loading_screen = getattr(self, "loading_screen", None)
+            if loading_screen:
+                loading_screen.stop()
             time.sleep(0.1) # Sleep for 100ms
             self.run_screen(
                 WarningScreen,

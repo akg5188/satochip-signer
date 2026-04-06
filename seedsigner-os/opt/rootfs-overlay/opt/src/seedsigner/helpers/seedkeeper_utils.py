@@ -1,3 +1,5 @@
+import json
+
 from pysatochip.CardConnector import CardConnector
 from pysatochip.JCconstants import (
     JCconstants,
@@ -25,6 +27,59 @@ import platform
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+TP_STEEL_PAYLOAD_KIND = "tp_steel"
+TP_STEEL_PAYLOAD_VERSION = 2
+
+
+def encode_seedkeeper_tp_steel_payload(
+    words: list[str],
+    bip39_indices: list[int] | None = None,
+) -> str:
+    normalized_words = [str(word or "").strip().lower() for word in list(words or [])]
+    if not normalized_words or any(not word for word in normalized_words):
+        raise ValueError("假助记词存在空项，不能保存到 SeedKeeper。")
+
+    payload: dict[str, object] = {
+        "kind": TP_STEEL_PAYLOAD_KIND,
+        "version": TP_STEEL_PAYLOAD_VERSION,
+        "words": normalized_words,
+    }
+    if bip39_indices is not None and len(bip39_indices) == len(normalized_words):
+        payload["indices"] = [int(index) for index in bip39_indices]
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+
+
+def decode_seedkeeper_tp_steel_payload(secret_text: str) -> tuple[list[str], list[int] | None]:
+    text_value = str(secret_text or "").strip()
+    if not text_value:
+        return [], None
+
+    try:
+        payload = json.loads(text_value)
+    except Exception:
+        payload = None
+
+    if isinstance(payload, dict) and payload.get("kind") == TP_STEEL_PAYLOAD_KIND:
+        raw_words = payload.get("words")
+        if not isinstance(raw_words, list):
+            raise ValueError("SeedKeeper 里的假助记词记录缺少单词列表。")
+
+        words = [str(word or "").strip().lower() for word in raw_words]
+        if not words or any(not word for word in words):
+            raise ValueError("SeedKeeper 里的假助记词记录包含空单词。")
+
+        raw_indices = payload.get("indices")
+        if isinstance(raw_indices, list) and len(raw_indices) == len(words):
+            try:
+                return words, [int(index) for index in raw_indices]
+            except Exception:
+                return words, None
+        return words, None
+
+    words = [word.strip().lower() for word in text_value.replace("\n", " ").split() if word.strip()]
+    return words, None
 
 
 def calculate_seedkeeper_secret_size(secret_dic: dict) -> int:

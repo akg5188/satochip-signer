@@ -438,7 +438,7 @@ class UnhandledExceptionView(View):
             title=title,
             status_headline=status_headline,
             text=text,
-            allow_text_overflow=True,  # Fit what we can, let the rest go off the edges
+            allow_text_overflow=False,
             show_back_button=False,
         )
         
@@ -471,7 +471,7 @@ class OptionDisabledView(View):
             text=self.error_msg,
             button_data=button_data,
             show_back_button=False,
-            allow_text_overflow=True,  # Fit what we can, let the rest go off the edges
+            allow_text_overflow=False,
         )
 
         if button_data[selected_menu_num] == self.UPDATE_SETTING:

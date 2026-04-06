@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 6 Apr 2026 00:51:00 +0800
+Subject: [PATCH] kbuild: allow skipping missing-syscalls check
+
+The missing-syscalls target is a sanity check only. On this low-memory
+Buildroot host, the cross-compiler intermittently crashes in that
+preprocessing-only step during the initramfs rebuild tail phase, even
+after forcing the kernel rebuild itself to run single-threaded.
+
+Allow the build to opt out of that check via
+TP_SKIP_MISSING_SYSCALLS_CHECK=1 so the image build can complete without
+changing the actual kernel or rootfs contents.
+---
+ Kbuild | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/Kbuild b/Kbuild
+index 4ea65f1a53..de9cfe4129 100644
+--- a/Kbuild
++++ b/Kbuild
+@@ -38,7 +38,11 @@ $(offsets-file): arch/$(SRCARCH)/kernel/asm-offsets.s FORCE
+ #####
+ # Check for missing system calls
+ 
+-always-y += missing-syscalls
++# This is a sanity check only. Allow low-memory rebuild flows to skip it when
++# the cross-compiler trips an internal error in this preprocessing-only step.
++ifneq ($(TP_SKIP_MISSING_SYSCALLS_CHECK),1)
++always-y += missing-syscalls
++endif
+ 
+ quiet_cmd_syscalls = CALL    $<
+       cmd_syscalls = $(CONFIG_SHELL) $< $(CC) $(c_flags) $(missing_syscalls_flags)
+-- 
+2.43.0

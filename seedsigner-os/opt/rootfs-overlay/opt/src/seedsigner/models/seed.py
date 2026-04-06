@@ -245,6 +245,20 @@ class TransientWordSeed(Seed):
     material, so users can continue chaining custom arithmetic transforms.
     """
 
+    def __init__(
+        self,
+        mnemonic: List[str] = None,
+        passphrase: str = "",
+        wordlist_language_code: str = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH,
+        bip39_word_indices: List[int] | None = None,
+    ) -> None:
+        self._bip39_word_indices = list(bip39_word_indices) if bip39_word_indices is not None else None
+        super().__init__(
+            mnemonic=mnemonic,
+            passphrase=passphrase,
+            wordlist_language_code=wordlist_language_code,
+        )
+
     def _generate_seed(self):
         self.seed_bytes = None
         self.master_secret = None
@@ -268,6 +282,17 @@ class TransientWordSeed(Seed):
     def bip39_word_indices_supported(self) -> bool:
         return True
 
+    def get_bip39_word_indices(self) -> List[int]:
+        if self._bip39_word_indices is not None and len(self._bip39_word_indices) == len(self.mnemonic_list):
+            return list(self._bip39_word_indices)
+        return super().get_bip39_word_indices()
+
+    @property
+    def bip39_word_indices(self) -> List[int] | None:
+        if self._bip39_word_indices is None:
+            return None
+        return list(self._bip39_word_indices)
+
     def get_root(self, network: str = SettingsConstants.MAINNET):
         raise InvalidSeedException("TransientWordSeed")
 
@@ -281,6 +306,11 @@ class TransientWordSeed(Seed):
         if isinstance(other, TransientWordSeed):
             return self.mnemonic_list == other.mnemonic_list
         return False
+
+    def wipe(self):
+        wipe_list(self._bip39_word_indices)
+        self._bip39_word_indices = None
+        super().wipe()
 
 
 

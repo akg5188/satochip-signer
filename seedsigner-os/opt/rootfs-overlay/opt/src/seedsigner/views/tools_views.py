@@ -44,6 +44,7 @@ from seedsigner.models.decode_qr import DecodeQR
 from seedsigner.models.encode_qr import GenericStaticQrEncoder
 from seedsigner.gui.screens.screen import ButtonOption
 from seedsigner.models.seed import Seed
+from seedsigner.models.seed import TransientWordSeed
 from seedsigner.models.seed import XprvSeed
 from seedsigner.models.settings_definition import SettingsConstants
 from seedsigner.views.seed_views import (
@@ -84,6 +85,7 @@ from pysatochip.JCconstants import SEEDKEEPER_DIC_TYPE, SEEDKEEPER_DIC_ORIGIN, S
 from pysatochip.CardConnector import CardConnector, UnexpectedSW12Error
 from pysatochip.util import dict_swap_keys_values
 from binascii import unhexlify, hexlify
+from seedsigner.models.mnemonic_steel import words_to_indices
 
 PASSWORD_TYPE_RANDOM = "random"
 PASSWORD_TYPE_DICEWARE_EFF_SHORT = "diceware_eff_short"
@@ -152,6 +154,30 @@ def _load_pending_bip39_seed(controller, mnemonic_words: list[str], wordlist_lan
         )
     except InvalidSeedException as exc:
         raise ValueError("智能卡生成的助记词未通过本地 BIP39 校验。") from exc
+
+
+def _format_seedkeeper_generation_complete_text(
+    *,
+    word_count: int,
+    label: str,
+    seed_fingerprint: str | None,
+    record_fingerprint: str | None,
+) -> str:
+    lines = [
+        f"已用 SeedKeeper 真随机生成 {word_count} 词助记词。",
+        f"卡内标签：{label}",
+    ]
+    if seed_fingerprint:
+        lines.append(f"助记词指纹：{seed_fingerprint}")
+    if record_fingerprint:
+        lines.append(f"卡内记录指纹：{record_fingerprint}")
+    lines.extend(
+        [
+            "",
+            "继续后会直接加载到助记词菜单，可查看助记词、BIP39 序号和原始熵二维码。",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _cache_password_entropy(
@@ -580,7 +606,7 @@ class ToolsNetworkInfoView(View):
             height=info_height,
             font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
             font_size=GUIConstants.get_body_font_size(),
-            allow_text_overflow=True,
+            allow_text_overflow=False,
         )
 
 
@@ -1557,6 +1583,8 @@ class ToolsSeedkeeperGenerateMnemonicView(View):
 
         connector = None
         loading = None
+        seed_fingerprint = None
+        record_fingerprint = None
         try:
             connector = seedkeeper_utils.init_satochip(self, init_card_filter=["seedkeeper"])
             if not connector:
@@ -1591,6 +1619,12 @@ class ToolsSeedkeeperGenerateMnemonicView(View):
                 mnemonic_words,
                 self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
             )
+            pending_seed = self.controller.storage.get_pending_seed()
+            if pending_seed is not None:
+                seed_fingerprint = pending_seed.get_fingerprint(
+                    self.settings.get_value(SettingsConstants.SETTING__NETWORK)
+                )
+            record_fingerprint = generation.get("fingerprint")
         except Exception as exc:
             if loading is not None:
                 loading.stop()
@@ -1611,11 +1645,11 @@ class ToolsSeedkeeperGenerateMnemonicView(View):
             LargeIconStatusScreen,
             title="生成完成",
             status_headline=None,
-            text=(
-                f"已用 SeedKeeper 真随机生成 {word_count} 词助记词。\n"
-                f"卡内标签：{label}\n"
-                f"卡内指纹：{generation.get('fingerprint', '未知')}\n\n"
-                "继续后会直接加载到助记词菜单，可查看助记词、BIP39 序号和原始熵二维码。"
+            text=_format_seedkeeper_generation_complete_text(
+                word_count=word_count,
+                label=label,
+                seed_fingerprint=seed_fingerprint,
+                record_fingerprint=record_fingerprint,
             ),
             show_back_button=False,
             button_data=[ButtonOption("继续")],
@@ -1647,6 +1681,16 @@ def _seedkeeper_shorten_label(label: str, max_len: int = 18) -> str:
     return value[: max_len - 1] + "…"
 
 
+def _seedkeeper_extract_label_fingerprint(label: str) -> str | None:
+    value = str(label or "").strip().lower()
+    if not value:
+        return None
+    match = re.search(r"([0-9a-f]{8})$", value)
+    if match:
+        return match.group(1)
+    return None
+
+
 def _seedkeeper_format_words(words: list[str]) -> str:
     if not words:
         return ""
@@ -1675,7 +1719,44 @@ def _seedkeeper_entry_kind(secret_type: str, subtype: int, label: str) -> str:
     return "generic"
 
 
-def _seedkeeper_build_entries(headers: list[dict], mnemonic_only: bool = False) -> list[dict]:
+def _seedkeeper_compute_seed_fingerprint(
+    header: dict,
+    kind: str,
+    secret_dict: dict | None,
+    network: str = SettingsConstants.MAINNET,
+) -> str | None:
+    label = str(header.get("label", "") or "").strip()
+    label_fingerprint = _seedkeeper_extract_label_fingerprint(
+        label[len(SEEDKEEPER_STEEL_SECRET_PREFIX):] if label.startswith(SEEDKEEPER_STEEL_SECRET_PREFIX) else label
+    )
+    if label_fingerprint:
+        return label_fingerprint
+
+    if secret_dict is None:
+        return None
+
+    try:
+        if kind in ("mnemonic", "rng_mnemonic"):
+            mnemonic, _ = _decode_seedkeeper_mnemonic_payload(secret_dict)
+            return Seed(mnemonic.split()).get_fingerprint(network)
+
+        if kind == "steel_cipher":
+            text_value = _seedkeeper_decode_text_payload(secret_dict["secret"]).strip()
+            words, bip39_indices = seedkeeper_utils.decode_seedkeeper_tp_steel_payload(text_value)
+            return TransientWordSeed(words, bip39_word_indices=bip39_indices).get_fingerprint(network)
+    except Exception:
+        logger.exception("Failed to derive SeedKeeper seed fingerprint for header id=%s", header.get("id"))
+        return None
+
+    return None
+
+
+def _seedkeeper_build_entries(
+    headers: list[dict],
+    mnemonic_only: bool = False,
+    connector=None,
+    network: str = SettingsConstants.MAINNET,
+) -> list[dict]:
     entries = []
     for header in headers:
         secret_type = SEEDKEEPER_DIC_TYPE.get(header["type"], hex(header["type"]))
@@ -1686,17 +1767,33 @@ def _seedkeeper_build_entries(headers: list[dict], mnemonic_only: bool = False) 
             continue
 
         kind = _seedkeeper_entry_kind(secret_type, subtype, label)
-        if mnemonic_only and kind not in ("rng_mnemonic", "mnemonic"):
+        if mnemonic_only and kind not in ("rng_mnemonic", "mnemonic", "steel_cipher"):
             continue
+        secret_dict = None
+        if connector is not None and kind in ("rng_mnemonic", "mnemonic", "steel_cipher"):
+            try:
+                secret_dict = connector.seedkeeper_export_secret(header["id"], None)
+            except Exception:
+                logger.exception("Failed to export SeedKeeper secret for display id=%s", header.get("id"))
+        seed_fingerprint = _seedkeeper_compute_seed_fingerprint(
+            header,
+            kind,
+            secret_dict,
+            network=network,
+        )
         if kind == "rng_mnemonic":
-            suffix = _seedkeeper_shorten_label(label[len(SEEDKEEPER_RANDOM_LABEL_PREFIX):] or label)
-            display_label = f"真随机助记词 · {suffix}"
+            suffix = seed_fingerprint or _seedkeeper_shorten_label(
+                label[len(SEEDKEEPER_RANDOM_LABEL_PREFIX):] or label
+            )
+            display_label = f"真随机 · {suffix}"
         elif kind == "mnemonic":
-            suffix = _seedkeeper_shorten_label(label or str(header.get("fingerprint") or header["id"]))
+            suffix = seed_fingerprint or _seedkeeper_shorten_label(label or str(header["id"]))
             display_label = f"助记词 · {suffix}"
         elif kind == "steel_cipher":
-            suffix = _seedkeeper_shorten_label(label[len(SEEDKEEPER_STEEL_SECRET_PREFIX):] or "未命名缓存")
-            display_label = f"假助记词缓存 · {suffix}"
+            suffix = seed_fingerprint or _seedkeeper_shorten_label(
+                label[len(SEEDKEEPER_STEEL_SECRET_PREFIX):] or label or str(header["id"])
+            )
+            display_label = f"假助记词 · {suffix}"
         elif kind == "password":
             suffix = _seedkeeper_shorten_label(label or str(header["id"]))
             display_label = f"密码 · {suffix}"
@@ -1720,6 +1817,7 @@ def _seedkeeper_build_entries(headers: list[dict], mnemonic_only: bool = False) 
                 "secret_type": secret_type,
                 "subtype": subtype,
                 "fingerprint": header.get("fingerprint"),
+                "seed_fingerprint": seed_fingerprint,
                 "kind": kind,
             }
         )
@@ -1773,24 +1871,27 @@ def _seedkeeper_decode_secret_detail(entry: dict, secret_dict: dict) -> dict:
         title = "真随机助记词" if kind == "rng_mnemonic" else "助记词"
         if passphrase:
             title = f"{title}（另有密码短语）"
-        font_size = GUIConstants.get_body_font_size() + (2 if len(words) <= 12 else 1 if len(words) <= 18 else 0)
+        font_size = GUIConstants.get_body_font_size()
         return {
             "title": title,
             "text": _seedkeeper_format_words(words),
             "qr_text": mnemonic,
             "text_font_name": GUIConstants.get_body_font_name(),
             "text_font_size": font_size,
+            "words": words,
         }
 
     if kind == "steel_cipher":
         text_value = _seedkeeper_decode_text_payload(secret_dict["secret"]).strip()
-        words = [word.strip() for word in text_value.replace("\n", " ").split() if word.strip()]
+        words, bip39_indices = seedkeeper_utils.decode_seedkeeper_tp_steel_payload(text_value)
         return {
-            "title": "假助记词缓存",
+            "title": "假助记词",
             "text": _seedkeeper_format_words(words) if words else text_value,
             "qr_text": text_value,
             "text_font_name": GUIConstants.get_body_font_name(),
             "text_font_size": GUIConstants.get_body_font_size() + 1,
+            "words": words,
+            "bip39_indices": bip39_indices,
         }
 
     if kind == "password":
@@ -2173,6 +2274,7 @@ class ToolsSatochipFactoryResetView(View):
 
     def run(self):
         resetStatus = False
+        self._reset_notice_shown = False
 
         ret = self.run_screen(
                 DireWarningScreen,
@@ -2213,6 +2315,20 @@ class ToolsSatochipFactoryResetView(View):
             (response, sw1, sw2, d) = Satochip_Connector.card_get_status()
             version = d["protocol_version"]
             if (version >= 2):
+                ret = self.run_screen(
+                    WarningScreen,
+                    title="选择重置方式",
+                    status_headline=None,
+                    text=(
+                        "普通更换 SeedKeeper 里的助记词，优先用“拔插卡恢复出厂（推荐）”。\n\n"
+                        "“锁死 PIN/PUK 恢复出厂”只在前一种不成功时再用，而且必须故意连续输入错误 PIN/PUK；"
+                        "输入正确 PIN/PUK 会中止本次重置。"
+                    ),
+                    show_back_button=True,
+                    button_data=[ButtonOption("继续")],
+                )
+                if ret == RET_CODE__BACK_BUTTON:
+                    return self._return_destination()
                 selected_menu_num = self.run_screen(
                     ButtonListScreen,
                     title="选择重置方式",
@@ -2275,7 +2391,7 @@ class ToolsSatochipFactoryResetView(View):
                 text=f"{self.card_label} 已恢复出厂设置。",
                 show_back_button=False,
             )
-        else:
+        elif not self._reset_notice_shown:
             ret = self.run_screen(
                 WarningScreen,
                 title="已取消",
@@ -2523,6 +2639,7 @@ class ToolsSatochipFactoryResetView(View):
                         text="你输入的是正确 PIN。出于安全考虑，恢复出厂已经中止；如果你真的要重置，请重新进入后故意连续输入错误 PIN。",
                         show_back_button=True,
                     )
+                    self._reset_notice_shown = True
                     doReset = False
                     pinRemaining = -1
                     break
@@ -2577,6 +2694,7 @@ class ToolsSatochipFactoryResetView(View):
                         text="你输入的是正确 PUK。出于安全考虑，恢复出厂已经中止；如果你真的要重置，请重新进入后故意连续输入错误 PUK。",
                         show_back_button=True,
                     )
+                    self._reset_notice_shown = True
                     doReset = False
                     pinRemaining = -1
                     pukRemaining = -1
@@ -3076,6 +3194,98 @@ class ToolsSeedkeeperViewSecretsView(View):
     DELETE = ButtonOption("删除助记词")
     DONE = ButtonOption("完成")
 
+    def _delete_selected_entry(self, connector, entry_id: int) -> None:
+        from seedsigner.gui.screens.screen import LoadingScreenThread
+
+        warning_screen_num = DireWarningScreen(
+            status_headline="删除确认",
+            text="这会永久删除卡内这条助记词，不能撤销。",
+        ).display()
+        if warning_screen_num == RET_CODE__BACK_BUTTON:
+            return
+
+        loading = LoadingScreenThread(text="删除 SeedKeeper 助记词\n\n\n\n\n\n")
+        loading.start()
+        try:
+            connector.seedkeeper_reset_secret(entry_id)
+        finally:
+            loading.stop()
+
+        self.run_screen(
+            LargeIconStatusScreen,
+            title="删除完成",
+            status_headline=None,
+            text="这条助记词已经从 SeedKeeper 删除。",
+            show_back_button=False,
+            button_data=[ButtonOption("继续")],
+        )
+
+    def _run_word_detail(self, detail: dict, connector, entry_id: int, allow_delete: bool) -> str:
+        from seedsigner.gui.screens.screen import QRDisplayScreen
+        from seedsigner.views.seed_views import _format_word_position_lines, _resolve_optional_bip39_indices
+
+        words = list(detail.get("words") or [])
+        if not words:
+            return "done"
+
+        entries_per_page = 4
+        total_pages = max(1, (len(words) + entries_per_page - 1) // entries_per_page)
+        page_index = 0
+        next_button = ButtonOption("下一页")
+
+        while True:
+            is_last_page = page_index >= total_pages - 1
+            start = page_index * entries_per_page
+            page_words = words[start:start + entries_per_page]
+            all_indices = detail.get("bip39_indices")
+            if not isinstance(all_indices, list) or len(all_indices) != len(words):
+                all_indices = _resolve_optional_bip39_indices(words)
+            page_indices = all_indices[start:start + entries_per_page] if all_indices is not None else None
+            page_text = _format_word_position_lines(
+                page_words,
+                start + 1,
+                page_indices,
+                show_index_placeholders=True,
+            )
+            button_data = [self.SHOW_QR]
+            if not is_last_page:
+                button_data.append(next_button)
+            else:
+                if allow_delete:
+                    button_data.append(self.DELETE)
+                button_data.append(self.DONE)
+
+            selected_menu_num = self.run_screen(
+                ToolsFormattedTextScreen,
+                title=f"{detail['title']}：{page_index + 1}/{total_pages}",
+                text=page_text,
+                button_data=button_data,
+            )
+
+            if selected_menu_num == RET_CODE__BACK_BUTTON:
+                if page_index > 0:
+                    page_index -= 1
+                    continue
+                return "back"
+
+            selected_button = button_data[selected_menu_num]
+            if selected_button == self.SHOW_QR:
+                self.run_screen(
+                    QRDisplayScreen,
+                    qr_encoder=GenericStaticQrEncoder(data=detail["qr_text"]),
+                )
+                continue
+
+            if selected_button == next_button:
+                page_index += 1
+                continue
+
+            if selected_button == self.DELETE:
+                self._delete_selected_entry(connector, entry_id)
+                return "deleted"
+
+            return "done"
+
     def run(self):
         from seedsigner.gui.screens.screen import LoadingScreenThread, QRDisplayScreen
         connector = None
@@ -3097,13 +3307,18 @@ class ToolsSeedkeeperViewSecretsView(View):
                     loading.stop()
                     loading = None
 
-                entries = _seedkeeper_build_entries(headers, mnemonic_only=True)
+                entries = _seedkeeper_build_entries(
+                    headers,
+                    mnemonic_only=True,
+                    connector=connector,
+                    network=self.settings.get_value(SettingsConstants.SETTING__NETWORK),
+                )
                 if not entries:
                     self.run_screen(
                         WarningScreen,
                         title="没有可查看助记词",
                         status_headline=None,
-                        text="SeedKeeper 里没有允许明文导出的助记词。",
+                        text="SeedKeeper 里没有允许明文导出的助记词或假助记词。",
                         show_back_button=False,
                     )
                     return Destination(BackStackView)
@@ -3129,6 +3344,16 @@ class ToolsSeedkeeperViewSecretsView(View):
                     loading = None
 
                 detail = _seedkeeper_decode_secret_detail(selected_entry, secret_dict)
+                if detail.get("words"):
+                    detail_result = self._run_word_detail(
+                        detail,
+                        connector=connector,
+                        entry_id=selected_entry["id"],
+                        allow_delete=allow_delete,
+                    )
+                    if detail_result in ("back", "done", "deleted"):
+                        continue
+
                 action_buttons = [self.SHOW_QR]
                 if allow_delete:
                     action_buttons.append(self.DELETE)
@@ -3141,7 +3366,7 @@ class ToolsSeedkeeperViewSecretsView(View):
                     text_font_name=detail["text_font_name"],
                     text_font_size=detail["text_font_size"],
                     text_is_centered=False,
-                    allow_text_overflow=True,
+                    allow_text_overflow=False,
                     button_data=action_buttons,
                 )
 
@@ -3157,29 +3382,7 @@ class ToolsSeedkeeperViewSecretsView(View):
                     continue
 
                 if selected_button == self.DELETE:
-                    warning_screen_num = DireWarningScreen(
-                        status_headline="删除确认",
-                        text="这会永久删除卡内这条助记词，不能撤销。",
-                    ).display()
-                    if warning_screen_num == RET_CODE__BACK_BUTTON:
-                        continue
-
-                    loading = LoadingScreenThread(text="删除 SeedKeeper 助记词\n\n\n\n\n\n")
-                    loading.start()
-                    try:
-                        connector.seedkeeper_reset_secret(selected_entry["id"])
-                    finally:
-                        loading.stop()
-                        loading = None
-
-                    self.run_screen(
-                        LargeIconStatusScreen,
-                        title="删除完成",
-                        status_headline=None,
-                        text="这条助记词已经从 SeedKeeper 删除。",
-                        show_back_button=False,
-                        button_data=[ButtonOption("继续")],
-                    )
+                    self._delete_selected_entry(connector, selected_entry["id"])
                     continue
 
                 continue

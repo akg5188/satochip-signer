@@ -2,6 +2,7 @@ from typing import List
 from seedsigner.helpers.secure_delete import wipe_bytes, wipe_list
 from seedsigner.models.seed import Seed, ElectrumSeed, AezeedSeed, Slip39Seed, InvalidSeedException
 from seedsigner.models.settings_definition import SettingsConstants
+from seedsigner.models.mnemonic_steel import get_word_at_index, lookup_word_index
 
 
 
@@ -18,6 +19,7 @@ class SeedStorage:
         self._slip39_share_length: int | None = None
         self._slip39_first_share = None
         self._steel_encrypted_mnemonic: List[str] = []
+        self._steel_bip39_indices: List[int] = []
         self._steel_shift_values: List[int] = []
         self._steel_shift_operators: List[str] = []
         self._steel_shift_operator: str | None = None
@@ -110,10 +112,17 @@ class SeedStorage:
                 if seed.seed_bytes is None:
                     return None
             else:
-                seed = Seed(self._pending_mnemonic, wordlist_language_code=wordlist_language_code)
+                seed = Seed(self._canonicalize_bip39_mnemonic(self._pending_mnemonic), wordlist_language_code=wordlist_language_code)
             return seed.get_fingerprint(network)
         except InvalidSeedException:
             return None
+
+    @staticmethod
+    def _canonicalize_bip39_mnemonic(words: List[str]) -> List[str]:
+        canonical_words = []
+        for word in list(words or []):
+            canonical_words.append(get_word_at_index(lookup_word_index(word)))
+        return canonical_words
 
 
     def convert_pending_mnemonic_to_pending_seed(
@@ -125,7 +134,11 @@ class SeedStorage:
         elif self._pending_is_aezeed:
             self.pending_seed = AezeedSeed(self._pending_mnemonic)
         else:
-            self.pending_seed = Seed(self._pending_mnemonic, wordlist_language_code=wordlist_language_code)
+            try:
+                canonical_words = self._canonicalize_bip39_mnemonic(self._pending_mnemonic)
+            except Exception as exc:
+                raise InvalidSeedException("InvalidMnemonicWord") from exc
+            self.pending_seed = Seed(canonical_words, wordlist_language_code=wordlist_language_code)
         self.discard_pending_mnemonic()
     
 
@@ -229,6 +242,7 @@ class SeedStorage:
     def set_steel_encrypted_mnemonic(
         self,
         words: List[str],
+        bip39_indices: List[int] | None = None,
         shift_values: List[int] | None = None,
         shift_operators: List[str] | None = None,
         shift_operator: str | None = None,
@@ -236,6 +250,7 @@ class SeedStorage:
     ):
         self.clear_steel_cache()
         self._steel_encrypted_mnemonic = list(words)
+        self._steel_bip39_indices = list(bip39_indices or [])
         self._steel_shift_values = list(shift_values or [])
         self._steel_shift_operators = list(shift_operators or [])
         self._steel_shift_operator = shift_operator
@@ -243,6 +258,9 @@ class SeedStorage:
 
     def get_steel_encrypted_mnemonic(self) -> List[str]:
         return list(self._steel_encrypted_mnemonic)
+
+    def get_steel_bip39_indices(self) -> List[int]:
+        return list(self._steel_bip39_indices)
 
     def set_steel_plate_groups(self, groups: List[str]):
         wipe_list(self._steel_plate_groups)
@@ -269,8 +287,10 @@ class SeedStorage:
 
     def clear_steel_cache(self):
         wipe_list(self._steel_encrypted_mnemonic)
+        wipe_list(self._steel_bip39_indices)
         wipe_list(self._steel_plate_groups)
         self._steel_encrypted_mnemonic = []
+        self._steel_bip39_indices = []
         self._steel_plate_groups = []
         self._steel_shift_values = []
         self._steel_shift_operators = []

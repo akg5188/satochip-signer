@@ -249,6 +249,47 @@ def shift_mnemonic(
     return result
 
 
+def shift_indices(
+    indices: list[int],
+    shift_values: list[int | None],
+    encrypt: bool = True,
+    operator: str = DEFAULT_SHIFT_OPERATOR,
+    operators: list[str | None] | None = None,
+) -> list[int]:
+    normalized_indices = [int(index) for index in list(indices or [])]
+    if len(normalized_indices) != len(shift_values):
+        raise ValueError("助记词数量和移动数字数量不一致。")
+
+    if operators is None:
+        normalized_operators = [normalize_operator(operator)] * len(shift_values)
+    else:
+        if len(operators) != len(shift_values):
+            raise ValueError("助记词数量、运算方式数量和移动数字数量不一致。")
+        normalized_operators = [
+            None if value in (None, "") else normalize_operator(value)
+            for value in operators
+        ]
+
+    result = []
+    for index, word_index in enumerate(normalized_indices):
+        if word_index < 0 or word_index >= len(WORDLIST):
+            raise ValueError(f"第 {index + 1} 个编号超出范围：{word_index}")
+        operator_value = normalized_operators[index]
+        operand_value = shift_values[index]
+        if operator_value in (None, "") or operand_value in (None, ""):
+            result.append(word_index)
+            continue
+        result.append(
+            _transform_index(
+                word_index,
+                operator=operator_value,
+                operand=int(operand_value),
+                encrypt=encrypt,
+            )
+        )
+    return result
+
+
 def solve_weights(index: int) -> list[int]:
     if index < 0 or index >= len(WORDLIST):
         raise ValueError("索引超出范围。")

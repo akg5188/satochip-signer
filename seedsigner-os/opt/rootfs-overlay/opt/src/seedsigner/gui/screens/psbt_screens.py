@@ -722,9 +722,9 @@ class PSBTOpReturnScreen(ButtonListScreen):
                 text=self.op_return_data.decode(errors="strict"),  # "strict" is a good enough heuristic to decide if it's human readable
                 font_size=GUIConstants.get_top_nav_title_font_size(),
                 is_text_centered=True,
-                allow_text_overflow=True,
+                allow_text_overflow=False,
                 screen_y=self.top_nav.height + GUIConstants.COMPONENT_PADDING,
-                height=self.buttons[0].screen_y - self.top_nav.height - 2*GUIConstants.COMPONENT_PADDING,
+                height=self.get_body_height(self.top_nav.height + GUIConstants.COMPONENT_PADDING),
             ))
             return
         except UnicodeDecodeError:
@@ -755,6 +755,7 @@ class PSBTOpReturnScreen(ButtonListScreen):
                 font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
                 font_size=GUIConstants.get_body_font_size(),
                 screen_y=label.screen_y + label.height + GUIConstants.COMPONENT_PADDING,
+                height=self.get_body_height(label.screen_y + label.height + GUIConstants.COMPONENT_PADDING),
             ))
 
 
@@ -778,5 +779,6 @@ class PSBTFinalizeScreen(ButtonListScreen):
 
         self.components.append(TextArea(
             text=_("Click to approve this transaction"),
-            screen_y=icon.screen_y + icon.height + 2*GUIConstants.COMPONENT_PADDING
+            screen_y=icon.screen_y + icon.height + 2*GUIConstants.COMPONENT_PADDING,
+            height=self.get_body_height(icon.screen_y + icon.height + 2*GUIConstants.COMPONENT_PADDING),
         ))
