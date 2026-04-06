@@ -115,7 +115,7 @@ bash scripts/rebuild_official_release.sh wallet-release
   - 如果同一张卡还装了另一个 applet，不要在固件里做恢复出厂
   - build info 在：
     `dist/system-update-steel-restore-fix-test.build-info.txt`
-  - `sha256 = 10d9aa45998feba5317837db16c4aeffb7e9b1a548096ec46d52d01e54d162e2`
+  - `sha256 = b72be80ddd80484710092a46723a30c59b9e5298796d7fdc81b8b369cb080141`
 
 - `dist/system-update-latest.img.xz`
   这是保留的 clean 正式基线。
