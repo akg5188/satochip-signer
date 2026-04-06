@@ -255,6 +255,7 @@ def main() -> int:
             decode_seedkeeper_tp_steel_payload,
             encode_seedkeeper_tp_steel_payload,
         )
+        from seedsigner.helpers import mnemonic_generation
         from seedsigner.models.mnemonic_steel import (
             indices_to_words,
             indices_to_plate_groups,
@@ -267,6 +268,11 @@ def main() -> int:
         from seedsigner.models.seed_storage import SeedStorage
         from seedsigner.gui.screens.seed_screens import _normalize_review_mnemonic_id
         from seedsigner.views.tools_views import (
+            ToolsMenuView,
+            ToolsCardEntropyEntryView,
+            ToolsCardEntropyReviewView,
+            ToolsHexEntropyEntryView,
+            ToolsHexEntropyReviewView,
             ToolsSeedkeeperView,
             ToolsSeedkeeperViewSecretsView,
             ToolsSmartcardMenuView,
@@ -278,6 +284,7 @@ def main() -> int:
         )
         from seedsigner.gui.components import reflow_text_into_pages
         import seedsigner.views.seed_views as seed_views_mod
+        import seedsigner.views.tools_views as tools_views_mod
         import seedsigner.views.tp_views as tp_views_mod
 
         tp_views_mod.LoadingScreenThread = _FakeLoadingScreenThread
@@ -292,9 +299,13 @@ def main() -> int:
         assert ToolsTpSeedkeeperToolsView.LOAD_STEEL_CIPHER.button_label == "从 SeedKeeper 加载二次加密助记词"
         assert not hasattr(ToolsTpSeedToolsView, "STEEL_RESTORE")
         assert not hasattr(ToolsTpSeedToolsView, "STEEL_SCAN")
+        assert ToolsTpSeedToolsView.CARD_CREATE.button_label == "使用扑克牌创建助记词"
+        assert ToolsTpSeedToolsView.HEX_CREATE.button_label == "使用16进制创建助记词"
         assert LoadSeedView.TYPE_STEEL_RESTORE.button_label == "从钢板数字恢复二次助记词"
         assert ToolsTpUiLockView.SETUP.button_label == "设置登录密码"
         assert ToolsTpUiLockView.UNLOCK.button_label == "输入登录密码"
+        assert ToolsMenuView.CARDS.button_label == "使用扑克牌创建助记词"
+        assert ToolsMenuView.HEX.button_label == "使用16进制创建助记词"
         assert ToolsSeedkeeperView.VIEW_SECRETS.button_label == "查看和管理卡内助记词"
         assert ToolsSeedkeeperView.FACTORY_RESET.button_label == "高风险：重置 SeedKeeper"
         assert not hasattr(ToolsSmartcardMenuView, "Satochip_DIY")
@@ -309,6 +320,65 @@ def main() -> int:
         assert _normalize_review_mnemonic_id("  ab  cd  ") == "\u2589\u2589ab\u2589\u2589cd\u2589\u2589"
         assert reflow_text_into_pages("abc", width=40, height=1, font_name="Inconsolata-SemiBold", font_size=18) == ["abc"]
         assert _canonicalize_bip39_words([" Enjoy ", "ABILITY"]) == ["enjoy", "ability"]
+        assert mnemonic_generation.parse_card_entropy_events("ah qs 9dtc") == ["AH", "QS", "9D", "TC"]
+        assert mnemonic_generation.normalize_cards_for_iancoleman("ahqs9dtc") == "AH QS 9D TC"
+        assert mnemonic_generation.format_cards_for_iancoleman_hash("ah qs 9dtc") == "A\u2665 Q\u2660 9\u2666 T\u2663"
+        assert mnemonic_generation.normalize_hex_for_iancoleman("60 55 17 82 11 46 41 6f") == "605517821146416F"
+        assert mnemonic_generation.hex_entropy_bit_length("605517821146416F") == 64
+        assert mnemonic_generation.hex_entropy_matches_word_length("00000000000000000000000000000000", 12)
+        assert mnemonic_generation.generate_mnemonic_from_hex("00000000000000000000000000000000", 12) == (
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".split()
+        )
+        full_deck = " ".join(f"{value}{suit}" for suit in "CDHS" for value in "A23456789TJQK")
+        assert mnemonic_generation.card_entropy_bit_length(full_deck) == 232
+        assert not mnemonic_generation.card_entropy_is_sufficient("AH QS 9D TC", 12)
+        assert mnemonic_generation.card_entropy_is_sufficient(full_deck, 21)
+        expected_card_mnemonic = (
+            "frost feature cover nurse robust exhibit metal earth link bless shallow "
+            "chase trigger second improve main gown message prison column manual"
+        ).split()
+        assert mnemonic_generation.generate_mnemonic_from_cards(full_deck, 21) == expected_card_mnemonic
+
+        tool_menu_view = ToolsMenuView(include_password_generator=False)
+        tool_menu_view.run_screen = lambda *args, **kwargs: next(
+            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "使用扑克牌创建助记词"
+        )
+        dest = tool_menu_view.run()
+        assert dest.View_cls.__name__ == "ToolsCardEntropyMnemonicLengthView"
+
+        tool_menu_hex_view = ToolsMenuView(include_password_generator=False)
+        tool_menu_hex_view.run_screen = lambda *args, **kwargs: next(
+            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "使用16进制创建助记词"
+        )
+        dest = tool_menu_hex_view.run()
+        assert dest.View_cls.__name__ == "ToolsHexEntropyMnemonicLengthView"
+
+        tp_seed_tools_view = ToolsTpSeedToolsView()
+        tp_seed_tools_view.run_screen = lambda *args, **kwargs: next(
+            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "使用扑克牌创建助记词"
+        )
+        dest = tp_seed_tools_view.run()
+        assert dest.View_cls.__name__ == "ToolsCardEntropyMnemonicLengthView"
+
+        tp_seed_tools_hex_view = ToolsTpSeedToolsView()
+        tp_seed_tools_hex_view.run_screen = lambda *args, **kwargs: next(
+            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "使用16进制创建助记词"
+        )
+        dest = tp_seed_tools_hex_view.run()
+        assert dest.View_cls.__name__ == "ToolsHexEntropyMnemonicLengthView"
+
+        load_seed_view = LoadSeedView()
+        load_seed_capture = {}
+
+        def _load_seed_run_screen(*args, **kwargs):
+            load_seed_capture["labels"] = [button.button_label for button in kwargs["button_data"]]
+            return RET_CODE__BACK_BUTTON
+
+        load_seed_view.run_screen = _load_seed_run_screen
+        dest = load_seed_view.run()
+        assert "创建助记词" not in load_seed_capture["labels"]
+        assert dest.View_cls.__name__ == "BackStackView"
+
         pending_storage = SeedStorage()
         canonical_source_words = [
             "ABANDON",
@@ -739,6 +809,98 @@ def main() -> int:
         expected_rng_fingerprint = Seed(
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".split()
         ).get_fingerprint()
+
+        orig_card_entry_screen = tools_views_mod.ToolsTextQRTextEntryScreen
+
+        class _FakeCardEntryScreen:
+            KEYBOARD__UPPERCASE_BUTTON_TEXT = object()
+
+            def __init__(self, *args, **kwargs):
+                self.kwargs = kwargs
+                _FakeCardEntryScreen.last_kwargs = kwargs
+
+            def display(self):
+                return {"textToEncode": full_deck.replace(" ", "")}
+
+        tools_views_mod.ToolsTextQRTextEntryScreen = _FakeCardEntryScreen
+        try:
+            card_view = ToolsCardEntropyEntryView(word_length=21, initial_value=full_deck)
+            dest = card_view.run()
+            assert dest.View_cls.__name__ == "ToolsCardEntropyReviewView"
+            assert dest.view_args["card_text"] == full_deck
+            assert _FakeCardEntryScreen.last_kwargs["initial_keyboard"] == _FakeCardEntryScreen.KEYBOARD__UPPERCASE_BUTTON_TEXT
+            assert not _FakeCardEntryScreen.last_kwargs.get("quick_space_backspace", False)
+
+            review_view = ToolsCardEntropyReviewView(
+                word_length=21,
+                card_text=dest.view_args["card_text"],
+                page_num=99,
+            )
+            expected_review_text = review_view._prepare_pages()[-1]
+            review_capture = {}
+
+            def _review_run_screen(*args, **kwargs):
+                review_capture["title"] = kwargs["title"]
+                review_capture["text"] = kwargs["text"]
+                review_capture["labels"] = [button.button_label for button in kwargs["button_data"]]
+                return next(i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "确认生成")
+
+            review_view.run_screen = _review_run_screen
+            dest = review_view.run()
+            assert review_capture["title"].startswith("核对扑克牌 ")
+            assert review_capture["text"] == expected_review_text
+            assert "确认生成" in review_capture["labels"]
+            assert "继续编辑" in review_capture["labels"]
+            assert dest.View_cls.__name__ == "SeedWordsWarningView"
+            assert review_view.controller.storage.pending_seed.mnemonic_display_list == expected_card_mnemonic
+        finally:
+            tools_views_mod.ToolsTextQRTextEntryScreen = orig_card_entry_screen
+
+        class _FakeHexEntryScreen:
+            KEYBOARD__DIGITS_BUTTON_TEXT = object()
+
+            def __init__(self, *args, **kwargs):
+                self.kwargs = kwargs
+                _FakeHexEntryScreen.last_kwargs = kwargs
+
+            def display(self):
+                return {"textToEncode": "00000000000000000000000000000000"}
+
+        tools_views_mod.ToolsTextQRTextEntryScreen = _FakeHexEntryScreen
+        try:
+            hex_view = ToolsHexEntropyEntryView(word_length=12, initial_value="")
+            hex_view.run_screen = lambda *args, **kwargs: 0
+            dest = hex_view.run()
+            assert dest.View_cls.__name__ == "ToolsHexEntropyReviewView"
+            assert dest.view_args["hex_text"] == "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+            assert _FakeHexEntryScreen.last_kwargs["initial_keyboard"] == _FakeHexEntryScreen.KEYBOARD__DIGITS_BUTTON_TEXT
+
+            hex_review_view = ToolsHexEntropyReviewView(
+                word_length=12,
+                hex_text=dest.view_args["hex_text"],
+                page_num=99,
+            )
+            expected_hex_review_text = hex_review_view._prepare_pages()[-1]
+            review_capture = {}
+
+            def _hex_review_run_screen(*args, **kwargs):
+                review_capture["title"] = kwargs["title"]
+                review_capture["text"] = kwargs["text"]
+                review_capture["labels"] = [button.button_label for button in kwargs["button_data"]]
+                return next(i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "确认生成")
+
+            hex_review_view.run_screen = _hex_review_run_screen
+            dest = hex_review_view.run()
+            assert review_capture["title"].startswith("核对16进制 ")
+            assert review_capture["text"] == expected_hex_review_text
+            assert "确认生成" in review_capture["labels"]
+            assert "继续编辑" in review_capture["labels"]
+            assert dest.View_cls.__name__ == "SeedWordsWarningView"
+            assert hex_review_view.controller.storage.pending_seed.mnemonic_display_list == (
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".split()
+            )
+        finally:
+            tools_views_mod.ToolsTextQRTextEntryScreen = orig_card_entry_screen
 
         orig_init_satochip = tp_views_mod.seedkeeper_utils.init_satochip
         orig_ui_lock_path = tp_views_mod._tp_ui_lock_path

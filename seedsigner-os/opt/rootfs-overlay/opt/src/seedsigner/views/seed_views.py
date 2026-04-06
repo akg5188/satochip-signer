@@ -357,7 +357,6 @@ class LoadSeedView(View):
     BITBOX_BACKUP = ButtonOption("导入 BitBox02 备份", SeedSignerIconConstants.MICROSD)
     PASSPORT_BACKUP = ButtonOption("导入 Passport 备份", SeedSignerIconConstants.MICROSD)
     TAPSIGNER_BACKUP = ButtonOption("导入 TAPSIGNER 备份", SeedSignerIconConstants.MICROSD)
-    CREATE = ButtonOption("创建助记词", SeedSignerIconConstants.PLUS)
 
     def run(self):
         seed_lengths = self.settings.get_value(SettingsConstants.SETTING__SEED_WORD_LENGTHS)
@@ -393,8 +392,6 @@ class LoadSeedView(View):
 
         if self.settings.get_value(SettingsConstants.SETTING__TAPSIGNER_BACKUP) == SettingsConstants.OPTION__ENABLED:
             button_data.append(self.TAPSIGNER_BACKUP)
-
-        button_data.append(self.CREATE)
 
         if self.settings.get_value(SettingsConstants.SETTING__ELECTRUM_SEEDS) == SettingsConstants.OPTION__ENABLED:
             button_data.append(self.TYPE_ELECTRUM)
@@ -448,9 +445,6 @@ class LoadSeedView(View):
         elif button_data[selected_menu_num] == self.TAPSIGNER_BACKUP:
             return Destination(SeedTapsignerBackupSelectView)
 
-        elif button_data[selected_menu_num] == self.CREATE:
-            from .tools_views import ToolsMenuView
-            return Destination(ToolsMenuView, view_args={"include_password_generator": False})
 
 
 class SeedMnemonicIndexLengthView(View):

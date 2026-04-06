@@ -403,6 +403,8 @@ def _format_word_password(words: list[str], separator: str) -> str:
 class ToolsMenuView(View):
     IMAGE = ButtonOption(" New seed", FontAwesomeIconConstants.CAMERA)
     DICE = ButtonOption("New seed", FontAwesomeIconConstants.DICE)
+    CARDS = ButtonOption("使用扑克牌创建助记词")
+    HEX = ButtonOption("使用16进制创建助记词")
     SLIP39_IMAGE = ButtonOption("SLIP39 seed", FontAwesomeIconConstants.CAMERA)
     SLIP39_DICE = ButtonOption("SLIP39 seed", FontAwesomeIconConstants.DICE)
     KEYBOARD = ButtonOption("Calc 12th/24th word", FontAwesomeIconConstants.KEYBOARD)
@@ -423,7 +425,7 @@ class ToolsMenuView(View):
         self.include_password_generator = include_password_generator
 
     def run(self):
-        button_data = [self.IMAGE, self.DICE]
+        button_data = [self.IMAGE, self.DICE, self.CARDS, self.HEX]
 
         if getattr(self, "include_password_generator", True):
             button_data.append(self.PASSWORD_GENERATOR)
@@ -466,6 +468,12 @@ class ToolsMenuView(View):
 
         elif button_data[selected_menu_num] == self.DICE:
             return Destination(ToolsDiceEntropyMnemonicLengthView)
+
+        elif button_data[selected_menu_num] == self.CARDS:
+            return Destination(ToolsCardEntropyMnemonicLengthView)
+
+        elif button_data[selected_menu_num] == self.HEX:
+            return Destination(ToolsHexEntropyMnemonicLengthView)
 
         elif button_data[selected_menu_num] == self.SLIP39_IMAGE:
             self.controller.create_slip39 = True
@@ -907,6 +915,452 @@ class ToolsDiceEntropyEntryView(View):
             self.controller.storage.set_pending_seed(seed)
             loading_screen.stop()
             return Destination(SeedWordsWarningView, view_args={"seed_num": None}, clear_history=True)
+
+
+class ToolsCardEntropyMnemonicLengthView(View):
+    TWELVE = ButtonOption("12 个单词", return_data=12)
+    FIFTEEN = ButtonOption("15 个单词", return_data=15)
+    EIGHTEEN = ButtonOption("18 个单词", return_data=18)
+    TWENTY_ONE = ButtonOption("21 个单词", return_data=21)
+    TWENTY_FOUR = ButtonOption("24 个单词", return_data=24)
+
+    def run(self):
+        allowed = self.settings.get_value(SettingsConstants.SETTING__SEED_WORD_LENGTHS)
+        options = {
+            12: self.TWELVE,
+            15: self.FIFTEEN,
+            18: self.EIGHTEEN,
+            21: self.TWENTY_ONE,
+            24: self.TWENTY_FOUR,
+        }
+        button_data = [options[length] for length in allowed]
+
+        selected_menu_num = ButtonListScreen(
+            title="助记词长度",
+            is_bottom_list=True,
+            is_button_text_centered=True,
+            button_data=button_data,
+        ).display()
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
+
+        return Destination(
+            ToolsCardEntropyEntryView,
+            view_args=dict(word_length=button_data[selected_menu_num].return_data),
+        )
+
+
+class ToolsHexEntropyMnemonicLengthView(View):
+    TWELVE = ButtonOption("12 个单词", return_data=12)
+    FIFTEEN = ButtonOption("15 个单词", return_data=15)
+    EIGHTEEN = ButtonOption("18 个单词", return_data=18)
+    TWENTY_ONE = ButtonOption("21 个单词", return_data=21)
+    TWENTY_FOUR = ButtonOption("24 个单词", return_data=24)
+
+    def run(self):
+        allowed = self.settings.get_value(SettingsConstants.SETTING__SEED_WORD_LENGTHS)
+        options = {
+            12: self.TWELVE,
+            15: self.FIFTEEN,
+            18: self.EIGHTEEN,
+            21: self.TWENTY_ONE,
+            24: self.TWENTY_FOUR,
+        }
+        button_data = [options[length] for length in allowed]
+
+        selected_menu_num = ButtonListScreen(
+            title="助记词长度",
+            is_bottom_list=True,
+            is_button_text_centered=True,
+            button_data=button_data,
+        ).display()
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
+
+        return Destination(
+            ToolsHexEntropyEntryView,
+            view_args=dict(word_length=button_data[selected_menu_num].return_data),
+        )
+
+
+class ToolsCardEntropyEntryView(View):
+    def __init__(self, word_length: int, initial_value: str = ""):
+        super().__init__()
+        self.word_length = word_length
+        self.initial_value = initial_value
+
+    @staticmethod
+    def _normalized_or_original(text: str) -> str:
+        normalized = mnemonic_generation.normalize_cards_for_iancoleman(text)
+        return normalized or text
+
+    def _retry_with_error(self, text: str) -> Destination:
+        required_bits = mnemonic_generation.ENTROPY_BYTES_REQUIRED[self.word_length] * 8
+        card_count = len(mnemonic_generation.parse_card_entropy_events(text))
+        actual_bits = mnemonic_generation.card_entropy_bit_length(text)
+        message = (
+            "输入格式示例：AH QS 9D TC\n"
+            "规则与 iancoleman.io/bip39 的 Card 熵一致。\n"
+            "建议保留空格，便于人工核对。\n"
+            f"当前识别到 {card_count} 张牌，约 {actual_bits} bits。\n"
+            f"{self.word_length} 词至少需要 {required_bits} bits。"
+        )
+        self.run_screen(
+            ErrorScreen,
+            title="扑克牌熵不足",
+            status_headline=None,
+            text=message,
+            button_data=[ButtonOption("继续编辑")],
+        )
+        return Destination(
+            ToolsCardEntropyEntryView,
+            view_args=dict(
+                word_length=self.word_length,
+                initial_value=self._normalized_or_original(text),
+            ),
+            skip_current_view=True,
+        )
+
+    def run(self):
+        if not self.initial_value:
+            ret = self.run_screen(
+                ToolsFormattedTextScreen,
+                title="使用扑克牌创建助记词",
+                text=(
+                    "输入格式：AH QS 9D TC\n"
+                    "也支持连续输入：AHQS9DTC\n"
+                    "仅识别 A23456789TJQK + CDHS\n"
+                    "结果与 iancoleman.io/bip39 的 Card 熵规则一致，可直接核验。"
+                ),
+                button_data=[ButtonOption("开始输入")],
+            )
+            if ret == RET_CODE__BACK_BUTTON:
+                return Destination(BackStackView)
+
+        ret_dict = ToolsTextQRTextEntryScreen(
+            textToEncode=self.initial_value,
+            title="扑克牌熵",
+            initial_keyboard=ToolsTextQRTextEntryScreen.KEYBOARD__UPPERCASE_BUTTON_TEXT,
+        ).display()
+
+        card_text = ret_dict["textToEncode"]
+        if "is_back_button" in ret_dict:
+            return Destination(BackStackView)
+
+        if not mnemonic_generation.parse_card_entropy_events(card_text):
+            return self._retry_with_error(card_text)
+
+        if not mnemonic_generation.card_entropy_is_sufficient(card_text, self.word_length):
+            return self._retry_with_error(card_text)
+
+        return Destination(
+            ToolsCardEntropyReviewView,
+            view_args=dict(
+                word_length=self.word_length,
+                card_text=self._normalized_or_original(card_text),
+            ),
+        )
+
+
+class ToolsCardEntropyReviewView(View):
+    PREV = ButtonOption("上一页")
+    NEXT = ButtonOption("下一页")
+    EDIT = ButtonOption("继续编辑")
+    CONFIRM = ButtonOption("确认生成")
+
+    def __init__(self, word_length: int, card_text: str, page_num: int = 0):
+        super().__init__()
+        self.word_length = word_length
+        self.card_text = mnemonic_generation.normalize_cards_for_iancoleman(card_text)
+        self.page_num = page_num
+
+    def _prepare_pages(self) -> list[str]:
+        cards = mnemonic_generation.parse_card_entropy_events(self.card_text)
+        card_count = len(cards)
+        actual_bits = mnemonic_generation.card_entropy_bit_length(self.card_text)
+        required_bits = mnemonic_generation.ENTROPY_BYTES_REQUIRED[self.word_length] * 8
+        cards_per_page = 16
+        pages = []
+
+        for start in range(0, len(cards), cards_per_page):
+            chunk = cards[start:start + cards_per_page]
+            card_lines = [" ".join(chunk[i:i + 4]) for i in range(0, len(chunk), 4)]
+            pages.append(
+                "\n".join(
+                    [
+                        f"{card_count} 张牌  {actual_bits}/{required_bits} bits",
+                        *card_lines,
+                    ]
+                )
+            )
+
+        return pages or ["未识别到扑克牌"]
+
+    def _generate_pending_seed(self) -> Destination:
+        from seedsigner.gui.screens.screen import LoadingScreenThread
+        loading_screen = LoadingScreenThread(text=_("Processing..."))
+        loading_screen.start()
+        card_seed_phrase = mnemonic_generation.generate_mnemonic_from_cards(
+            self.card_text,
+            self.word_length,
+            wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
+        )
+        seed = Seed(
+            card_seed_phrase,
+            wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
+        )
+        self.controller.storage.set_pending_seed(seed)
+        loading_screen.stop()
+        return Destination(SeedWordsWarningView, view_args={"seed_num": None}, clear_history=True)
+
+    def run(self):
+        paged_info = self._prepare_pages()
+        page_num = min(self.page_num, len(paged_info) - 1)
+        button_data = []
+
+        if page_num > 0:
+            button_data.append(self.PREV)
+        if page_num < len(paged_info) - 1:
+            button_data.append(self.NEXT)
+        else:
+            button_data.append(self.CONFIRM)
+        button_data.append(self.EDIT)
+
+        selected_menu_num = self.run_screen(
+            ToolsFormattedTextScreen,
+            title=f"核对扑克牌 {page_num + 1}/{len(paged_info)}",
+            text=paged_info[page_num],
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(
+                ToolsCardEntropyEntryView,
+                view_args=dict(word_length=self.word_length, initial_value=self.card_text),
+                skip_current_view=True,
+            )
+
+        selected_button = button_data[selected_menu_num]
+
+        if selected_button == self.PREV:
+            return Destination(
+                ToolsCardEntropyReviewView,
+                view_args=dict(word_length=self.word_length, card_text=self.card_text, page_num=page_num - 1),
+                skip_current_view=True,
+            )
+
+        if selected_button == self.NEXT:
+            return Destination(
+                ToolsCardEntropyReviewView,
+                view_args=dict(word_length=self.word_length, card_text=self.card_text, page_num=page_num + 1),
+                skip_current_view=True,
+            )
+
+        if selected_button == self.EDIT:
+            return Destination(
+                ToolsCardEntropyEntryView,
+                view_args=dict(word_length=self.word_length, initial_value=self.card_text),
+                skip_current_view=True,
+            )
+
+        return self._generate_pending_seed()
+
+
+class ToolsHexEntropyEntryView(View):
+    def __init__(self, word_length: int, initial_value: str = ""):
+        super().__init__()
+        self.word_length = word_length
+        self.initial_value = initial_value
+
+    @staticmethod
+    def _normalized_or_original(text: str) -> str:
+        normalized = mnemonic_generation.normalize_hex_for_iancoleman(text)
+        if not normalized:
+            return text
+        return " ".join(normalized[i:i + 2] for i in range(0, len(normalized), 2))
+
+    def _retry_with_error(self, text: str, extra_line: str | None = None) -> Destination:
+        actual_chars = len(mnemonic_generation.normalize_hex_for_iancoleman(text))
+        actual_bits = mnemonic_generation.hex_entropy_bit_length(text)
+        required_chars = mnemonic_generation.hex_entropy_required_chars(self.word_length)
+        required_bits = mnemonic_generation.ENTROPY_BYTES_REQUIRED[self.word_length] * 8
+        lines = [
+            "输入格式示例：60 55 17 82 11 46 41 6F",
+            "也支持连续输入：605517821146416F",
+            "规则与 iancoleman.io/bip39 的 Hex 熵一致。",
+            "建议保留空格，便于人工核对。",
+        ]
+        if extra_line:
+            lines.append(extra_line)
+        lines.extend(
+            [
+                f"当前识别到 {actual_chars} 个 hex 字符，约 {actual_bits} bits。",
+                f"{self.word_length} 词需要 {required_chars} 个 hex 字符，共 {required_bits} bits。",
+            ]
+        )
+        self.run_screen(
+            ErrorScreen,
+            title="16进制熵不符合要求",
+            status_headline=None,
+            text="\n".join(lines),
+            button_data=[ButtonOption("继续编辑")],
+        )
+        return Destination(
+            ToolsHexEntropyEntryView,
+            view_args=dict(
+                word_length=self.word_length,
+                initial_value=self._normalized_or_original(text),
+            ),
+            skip_current_view=True,
+        )
+
+    def run(self):
+        if not self.initial_value:
+            ret = self.run_screen(
+                ToolsFormattedTextScreen,
+                title="使用16进制创建助记词",
+                text=(
+                    "输入格式：60 55 17 82 11 46 41 6F\n"
+                    "也支持连续输入：605517821146416F\n"
+                    "仅识别 0-9 和 A-F\n"
+                    "结果与 iancoleman.io/bip39 的 Hex 熵规则一致，可直接核验。"
+                ),
+                button_data=[ButtonOption("开始输入")],
+            )
+            if ret == RET_CODE__BACK_BUTTON:
+                return Destination(BackStackView)
+
+        ret_dict = ToolsTextQRTextEntryScreen(
+            textToEncode=self.initial_value,
+            title="16进制熵",
+            initial_keyboard=ToolsTextQRTextEntryScreen.KEYBOARD__DIGITS_BUTTON_TEXT,
+        ).display()
+
+        hex_text = ret_dict["textToEncode"]
+        if "is_back_button" in ret_dict:
+            return Destination(BackStackView)
+
+        clean_hex = mnemonic_generation.normalize_hex_for_iancoleman(hex_text)
+        if not clean_hex:
+            return self._retry_with_error(hex_text)
+        if not mnemonic_generation.hex_entropy_has_even_digits(hex_text):
+            return self._retry_with_error(hex_text, extra_line="十六进制必须两位一组，当前位数不是偶数。")
+        if not mnemonic_generation.hex_entropy_matches_word_length(hex_text, self.word_length):
+            return self._retry_with_error(hex_text)
+
+        return Destination(
+            ToolsHexEntropyReviewView,
+            view_args=dict(
+                word_length=self.word_length,
+                hex_text=self._normalized_or_original(clean_hex),
+            ),
+        )
+
+
+class ToolsHexEntropyReviewView(View):
+    PREV = ButtonOption("上一页")
+    NEXT = ButtonOption("下一页")
+    EDIT = ButtonOption("继续编辑")
+    CONFIRM = ButtonOption("确认生成")
+
+    def __init__(self, word_length: int, hex_text: str, page_num: int = 0):
+        super().__init__()
+        self.word_length = word_length
+        self.hex_text = mnemonic_generation.normalize_hex_for_iancoleman(hex_text)
+        self.page_num = page_num
+
+    def _prepare_pages(self) -> list[str]:
+        byte_groups = [self.hex_text[i:i + 2] for i in range(0, len(self.hex_text), 2)]
+        actual_chars = len(self.hex_text)
+        actual_bits = actual_chars * 4
+        required_bits = mnemonic_generation.ENTROPY_BYTES_REQUIRED[self.word_length] * 8
+        bytes_per_page = 16
+        pages = []
+
+        for start in range(0, len(byte_groups), bytes_per_page):
+            chunk = byte_groups[start:start + bytes_per_page]
+            hex_lines = [" ".join(chunk[i:i + 8]) for i in range(0, len(chunk), 8)]
+            pages.append(
+                "\n".join(
+                    [
+                        f"{actual_chars} 个 hex  {actual_bits}/{required_bits} bits",
+                        *hex_lines,
+                    ]
+                )
+            )
+
+        return pages or ["未识别到16进制数据"]
+
+    def _generate_pending_seed(self) -> Destination:
+        from seedsigner.gui.screens.screen import LoadingScreenThread
+        loading_screen = LoadingScreenThread(text=_("Processing..."))
+        loading_screen.start()
+        hex_seed_phrase = mnemonic_generation.generate_mnemonic_from_hex(
+            self.hex_text,
+            self.word_length,
+            wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
+        )
+        seed = Seed(
+            hex_seed_phrase,
+            wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
+        )
+        self.controller.storage.set_pending_seed(seed)
+        loading_screen.stop()
+        return Destination(SeedWordsWarningView, view_args={"seed_num": None}, clear_history=True)
+
+    def run(self):
+        paged_info = self._prepare_pages()
+        page_num = min(self.page_num, len(paged_info) - 1)
+        button_data = []
+
+        if page_num > 0:
+            button_data.append(self.PREV)
+        if page_num < len(paged_info) - 1:
+            button_data.append(self.NEXT)
+        else:
+            button_data.append(self.CONFIRM)
+        button_data.append(self.EDIT)
+
+        selected_menu_num = self.run_screen(
+            ToolsFormattedTextScreen,
+            title=f"核对16进制 {page_num + 1}/{len(paged_info)}",
+            text=paged_info[page_num],
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(
+                ToolsHexEntropyEntryView,
+                view_args=dict(word_length=self.word_length, initial_value=" ".join(self.hex_text[i:i + 2] for i in range(0, len(self.hex_text), 2))),
+                skip_current_view=True,
+            )
+
+        selected_button = button_data[selected_menu_num]
+
+        if selected_button == self.PREV:
+            return Destination(
+                ToolsHexEntropyReviewView,
+                view_args=dict(word_length=self.word_length, hex_text=self.hex_text, page_num=page_num - 1),
+                skip_current_view=True,
+            )
+
+        if selected_button == self.NEXT:
+            return Destination(
+                ToolsHexEntropyReviewView,
+                view_args=dict(word_length=self.word_length, hex_text=self.hex_text, page_num=page_num + 1),
+                skip_current_view=True,
+            )
+
+        if selected_button == self.EDIT:
+            return Destination(
+                ToolsHexEntropyEntryView,
+                view_args=dict(word_length=self.word_length, initial_value=" ".join(self.hex_text[i:i + 2] for i in range(0, len(self.hex_text), 2))),
+                skip_current_view=True,
+            )
+
+        return self._generate_pending_seed()
 
 
 

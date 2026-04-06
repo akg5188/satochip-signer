@@ -2,6 +2,7 @@ import hashlib
 import unicodedata
 from collections import Counter
 import math
+import re
 
 from embit import bip39
 from seedsigner.models.settings_definition import SettingsConstants
@@ -48,6 +49,69 @@ ROLL_COUNT_TO_LENGTH = {v: k for k, v in DICE_ROLLS_REQUIRED.items()}
 DICE__NUM_ROLLS__12WORD = DICE_ROLLS_REQUIRED[12]
 DICE__NUM_ROLLS__24WORD = DICE_ROLLS_REQUIRED[24]
 
+CARD_EVENT_BITS = {
+    "ac": "00000",
+    "2c": "00001",
+    "3c": "00010",
+    "4c": "00011",
+    "5c": "00100",
+    "6c": "00101",
+    "7c": "00110",
+    "8c": "00111",
+    "9c": "01000",
+    "tc": "01001",
+    "jc": "01010",
+    "qc": "01011",
+    "kc": "01100",
+    "ad": "01101",
+    "2d": "01110",
+    "3d": "01111",
+    "4d": "10000",
+    "5d": "10001",
+    "6d": "10010",
+    "7d": "10011",
+    "8d": "10100",
+    "9d": "10101",
+    "td": "10110",
+    "jd": "10111",
+    "qd": "11000",
+    "kd": "11001",
+    "ah": "11010",
+    "2h": "11011",
+    "3h": "11100",
+    "4h": "11101",
+    "5h": "11110",
+    "6h": "11111",
+    "7h": "0000",
+    "8h": "0001",
+    "9h": "0010",
+    "th": "0011",
+    "jh": "0100",
+    "qh": "0101",
+    "kh": "0110",
+    "as": "0111",
+    "2s": "1000",
+    "3s": "1001",
+    "4s": "1010",
+    "5s": "1011",
+    "6s": "1100",
+    "7s": "1101",
+    "8s": "1110",
+    "9s": "1111",
+    "ts": "00",
+    "js": "01",
+    "qs": "10",
+    "ks": "11",
+}
+CARD_MATCHER = re.compile(r"([A2-9TJQK][CDHS])", re.IGNORECASE)
+HEX_MATCHER = re.compile(r"[0-9A-F]", re.IGNORECASE)
+CARD_SUIT_SYMBOLS = {
+    "C": "\u2663",
+    "D": "\u2666",
+    "H": "\u2665",
+    "S": "\u2660",
+}
+
 
 
 def calculate_checksum(mnemonic: list | str, wordlist_language_code: str = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH) -> list[str]:
@@ -91,6 +155,85 @@ def calculate_checksum(mnemonic: list | str, wordlist_language_code: str = Setti
 
 
 def generate_mnemonic_from_bytes(entropy_bytes, wordlist_language_code: str = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH) -> list[str]:
+    return bip39.mnemonic_from_bytes(entropy_bytes, wordlist=Seed.get_wordlist(wordlist_language_code)).split()
+
+
+def normalize_hex_for_iancoleman(hex_data: str) -> str:
+    return "".join(HEX_MATCHER.findall(str(hex_data))).upper()
+
+
+def hex_entropy_bit_length(hex_data: str) -> int:
+    return len(normalize_hex_for_iancoleman(hex_data)) * 4
+
+
+def hex_entropy_has_even_digits(hex_data: str) -> bool:
+    return len(normalize_hex_for_iancoleman(hex_data)) % 2 == 0
+
+
+def hex_entropy_required_chars(word_length: int) -> int:
+    return ENTROPY_BYTES_REQUIRED[word_length] * 2
+
+
+def hex_entropy_matches_word_length(hex_data: str, word_length: int) -> bool:
+    return len(normalize_hex_for_iancoleman(hex_data)) == hex_entropy_required_chars(word_length)
+
+
+def generate_mnemonic_from_hex(
+    hex_data: str,
+    word_length: int,
+    wordlist_language_code: str = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH,
+) -> list[str]:
+    if word_length not in ENTROPY_BYTES_REQUIRED:
+        raise Exception("Unsupported mnemonic length")
+
+    clean_hex = normalize_hex_for_iancoleman(hex_data)
+    required_chars = hex_entropy_required_chars(word_length)
+    if len(clean_hex) != required_chars:
+        raise Exception("Hex entropy length does not match requested mnemonic length")
+
+    entropy_bytes = bytes.fromhex(clean_hex)
+    return bip39.mnemonic_from_bytes(entropy_bytes, wordlist=Seed.get_wordlist(wordlist_language_code)).split()
+
+
+def parse_card_entropy_events(card_data: str) -> list[str]:
+    return [event.upper() for event in CARD_MATCHER.findall(str(card_data))]
+
+
+def normalize_cards_for_iancoleman(card_data: str) -> str:
+    return " ".join(parse_card_entropy_events(card_data))
+
+
+def format_cards_for_iancoleman_hash(card_data: str) -> str:
+    clean_cards = normalize_cards_for_iancoleman(card_data)
+    for suit, symbol in CARD_SUIT_SYMBOLS.items():
+        clean_cards = clean_cards.replace(suit, symbol)
+    return clean_cards
+
+
+def card_entropy_binary_str(card_data: str) -> str:
+    return "".join(CARD_EVENT_BITS[event.lower()] for event in parse_card_entropy_events(card_data))
+
+
+def card_entropy_bit_length(card_data: str) -> int:
+    return len(card_entropy_binary_str(card_data))
+
+
+def card_entropy_is_sufficient(card_data: str, word_length: int) -> bool:
+    required_bits = ENTROPY_BYTES_REQUIRED[word_length] * 8
+    return card_entropy_bit_length(card_data) >= required_bits
+
+
+def generate_mnemonic_from_cards(
+    card_data: str,
+    word_length: int,
+    wordlist_language_code: str = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH,
+) -> list[str]:
+    if word_length not in ENTROPY_BYTES_REQUIRED:
+        raise Exception("Unsupported mnemonic length")
+
+    clean_cards = format_cards_for_iancoleman_hash(card_data)
+    entropy_bytes = hashlib.sha256(clean_cards.encode("utf-8")).digest()
+    entropy_bytes = entropy_bytes[:ENTROPY_BYTES_REQUIRED[word_length]]
     return bip39.mnemonic_from_bytes(entropy_bytes, wordlist=Seed.get_wordlist(wordlist_language_code)).split()
 
 

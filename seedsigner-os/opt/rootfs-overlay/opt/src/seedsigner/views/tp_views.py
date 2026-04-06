@@ -1803,6 +1803,8 @@ class ToolsTpSeedToolsView(View):
     SEEDKEEPER_CREATE = ButtonOption("智能卡真随机创建助记词")
     CAMERA_CREATE = ButtonOption("拍照创建助记词")
     DICE_CREATE = ButtonOption("摇骰子创建助记词")
+    CARD_CREATE = ButtonOption("使用扑克牌创建助记词")
+    HEX_CREATE = ButtonOption("使用16进制创建助记词")
     IMPORT_SEED = ButtonOption("导入助记词")
     BIP39_CHECK = ButtonOption("BIP39 单词自检")
     MANAGE_SEEDS = ButtonOption("已加载助记词")
@@ -1812,6 +1814,8 @@ class ToolsTpSeedToolsView(View):
             self.SEEDKEEPER_CREATE,
             self.CAMERA_CREATE,
             self.DICE_CREATE,
+            self.CARD_CREATE,
+            self.HEX_CREATE,
             self.IMPORT_SEED,
             self.BIP39_CHECK,
             self.MANAGE_SEEDS,
@@ -1851,6 +1855,16 @@ class ToolsTpSeedToolsView(View):
             from seedsigner.views.tools_views import ToolsDiceEntropyMnemonicLengthView
 
             return Destination(ToolsDiceEntropyMnemonicLengthView)
+
+        if selected == self.CARD_CREATE:
+            from seedsigner.views.tools_views import ToolsCardEntropyMnemonicLengthView
+
+            return Destination(ToolsCardEntropyMnemonicLengthView)
+
+        if selected == self.HEX_CREATE:
+            from seedsigner.views.tools_views import ToolsHexEntropyMnemonicLengthView
+
+            return Destination(ToolsHexEntropyMnemonicLengthView)
 
         if selected == self.IMPORT_SEED:
             from seedsigner.views.seed_views import LoadSeedView

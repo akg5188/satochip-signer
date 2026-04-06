@@ -177,9 +177,13 @@ check_optional_artifact() {
   warn_if_optional_artifact_stale "$label" "$info_file" "$expected_build_script" "$manifest_profile"
 }
 
-require_file "$ROOT_DIR/card-applet/prebuilt/SatoChip-3.0.4.cap"
-require_file "$ROOT_DIR/card-applet/prebuilt/SHA256SUMS.txt"
-( cd "$ROOT_DIR/card-applet/prebuilt" && sha256sum -c SHA256SUMS.txt >/dev/null )
+if [[ -d "$ROOT_DIR/card-applet/prebuilt" ]]; then
+  require_file "$ROOT_DIR/card-applet/prebuilt/SatoChip-3.0.4.cap"
+  require_file "$ROOT_DIR/card-applet/prebuilt/SHA256SUMS.txt"
+  ( cd "$ROOT_DIR/card-applet/prebuilt" && sha256sum -c SHA256SUMS.txt >/dev/null )
+else
+  warn "Skipping bundled card applet checks; this repo now tracks official upstream card firmware instead."
+fi
 
 bash "$ROOT_DIR/scripts/check_named_release.sh" firmware-clean >/dev/null
 
