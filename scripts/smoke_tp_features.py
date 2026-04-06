@@ -646,6 +646,7 @@ def main() -> int:
         class _FakeSeedWordsBackupTestPromptScreen:
             def __init__(self, *args, **kwargs):
                 self.button_data = kwargs["button_data"]
+                _FakeSeedWordsBackupTestPromptScreen.labels = [button.button_label for button in self.button_data]
 
             def display(self):
                 return 3
@@ -656,6 +657,7 @@ def main() -> int:
             prompt_view = SeedWordsBackupTestPromptView(seed_num=0, bip85_data=dict(child_index=0, num_words=12))
             prompt_view.controller.storage.seeds = [bip85_parent]
             dest = prompt_view.run()
+            assert "导入到树莓派" in _FakeSeedWordsBackupTestPromptScreen.labels
             assert dest.View_cls.__name__ == "SeedFinalizeView"
             assert prompt_view.controller.storage.pending_seed.mnemonic_display_str.split()[0] in bip85_parent.wordlist
         finally:
@@ -1002,14 +1004,26 @@ def main() -> int:
 
         steel_plate_words_view.run_screen = _steel_plate_run_screen
         dest = steel_plate_words_view.run()
-        assert steel_plate_capture["title"] == "钢板打孔数字：1/12"
+        assert steel_plate_capture["title"] == "打孔位：1/12"
         assert "序号 0000" in steel_plate_capture["text"]
-        assert "  1   2   4   8  16  32" in steel_plate_capture["text"]
-        assert "○ ○ ○ ○ ○ ○" in steel_plate_capture["text"]
-        assert " 64 128 256 512 1024" in steel_plate_capture["text"]
-        assert "○ ○ ○ ○ ○" in steel_plate_capture["text"]
+        assert "无需打孔" in steel_plate_capture["text"]
+        assert "○" not in steel_plate_capture["text"]
+        assert "1 2 4 8 16 32" not in steel_plate_capture["text"]
         assert dest.View_cls.__name__ == "ToolsTpSteelPlateWordsView"
         assert dest.view_args["page_index"] == 1
+
+        plate_title, plate_text = tp_views_mod._format_plate_word_page(
+            ["demo"],
+            ["8 32 256"],
+            0,
+            indices=[296],
+        )
+        assert plate_title == "第 01 词"
+        assert "序号 0296" in plate_text
+        assert "8 32" in plate_text
+        assert "256" in plate_text
+        assert "○" not in plate_text
+        assert "1 2 4 8 16 32" not in plate_text
 
         class _FakeShiftEntryScreen:
             KEYBOARD__DIGITS_BUTTON_TEXT = object()

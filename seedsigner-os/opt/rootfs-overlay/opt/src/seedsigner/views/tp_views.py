@@ -1510,9 +1510,20 @@ def _resolve_plate_selected_weights(group: str) -> list[int]:
     return list(selected_weights)
 
 
-def _format_plate_pattern(selected_weights: list[int], section_weights: list[int]) -> str:
+def _format_plate_selected_weight_lines(selected_weights: list[int]) -> list[str]:
+    if not selected_weights:
+        return ["无需打孔"]
+
     selected_set = set(selected_weights)
-    return " ".join("●" if weight in selected_set else "○" for weight in section_weights)
+    first_half = [weight for weight in WEIGHTS[:6] if weight in selected_set]
+    second_half = [weight for weight in WEIGHTS[6:] if weight in selected_set]
+
+    lines = []
+    if first_half:
+        lines.append(" ".join(str(weight) for weight in first_half))
+    if second_half:
+        lines.append(" ".join(str(weight) for weight in second_half))
+    return lines
 
 
 def _format_plate_word_page(
@@ -1531,18 +1542,8 @@ def _format_plate_word_page(
         except Exception:
             index_text = "----"
     selected_weights = _resolve_plate_selected_weights(groups[page_index])
-    first_half = WEIGHTS[:6]
-    second_half = WEIGHTS[6:]
     title = f"第 {page_index + 1:02d} 词"
-    text = "\n".join(
-        [
-            f"序号 {index_text}",
-            " ".join(f"{weight:>3d}" for weight in first_half),
-            _format_plate_pattern(selected_weights, first_half),
-            " ".join(f"{weight:>3d}" for weight in second_half),
-            _format_plate_pattern(selected_weights, second_half),
-        ]
-    )
+    text = "\n".join([f"序号 {index_text}", *_format_plate_selected_weight_lines(selected_weights)])
     return title, text
 
 
@@ -3278,10 +3279,11 @@ class ToolsTpSteelPlateWordsView(View):
         button_data = [self.VIEW_INDICES, self.NEXT] if self.page_index < num_pages - 1 else [self.VIEW_INDICES, self.DONE]
         selected_menu_num = self.run_screen(
             ToolsFormattedTextScreen,
-            title=f"钢板打孔数字：{self.page_index + 1}/{num_pages}",
+            title=f"打孔位：{self.page_index + 1}/{num_pages}",
             text=page_text,
             text_font_name=GUIConstants.FIXED_WIDTH_EMPHASIS_FONT_NAME,
-            text_font_size=GUIConstants.get_body_font_size() + 13,
+            text_font_size=GUIConstants.get_body_font_size() + 16,
+            text_is_centered=True,
             button_data=button_data,
         )
 

@@ -3574,7 +3574,7 @@ class SeedWordsBackupTestPromptView(View):
     VERIFY = ButtonOption("验证备份")
     REVIEW = ButtonOption("重新查看")
     SKIP = ButtonOption("跳过")
-    FINALIZE = ButtonOption("完成子助记词")
+    FINALIZE = ButtonOption("导入到树莓派")
     IMPORT_TO_SMARTCARD = ButtonOption("子助记词写入智能卡")
     SAVE_TO_SEEDKEEPER = ButtonOption("子助记词写入 SeedKeeper")
 
