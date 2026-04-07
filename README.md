@@ -69,6 +69,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 - [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
 - [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md)
 - [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md)
+- [离线熵创建助记词教程](docs/离线熵创建助记词教程.zh-CN.md)
 - [BIP85子助记词使用教程](docs/BIP85子助记词使用教程.zh-CN.md)
 - [钛板打孔备份助记词教程](docs/钛板打孔备份助记词教程.zh-CN.md)
 - [长期维护总入口](docs/长期维护总入口.zh-CN.md)
@@ -80,6 +81,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 | --- | --- | --- |
 | 给 `TokenPocket` 做手机端扫码与智能卡签名 | `app/` | `bash scripts/build_tp_relay_apk.sh` |
 | 用自己的安卓观察钱包发起 EVM / BTC 冷签 | `wallet/` | `bash scripts/build_wallet_release.sh` |
+| 想用骰子 / 扑克牌 / 16进制自己离线创建助记词 | 树莓派离线签名器 | [离线熵创建助记词教程](docs/离线熵创建助记词教程.zh-CN.md) |
 | 给 `BlueWallet` 做 `BTC PSBT` 冷签 | 树莓派离线签名器 | [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md) |
 | 想系统搞懂 `BIP85` 子助记词 | 树莓派离线签名器 | [BIP85子助记词使用教程](docs/BIP85子助记词使用教程.zh-CN.md) |
 | 想把助记词做成钛板/钢板备份 | 树莓派离线签名器 | [钛板打孔备份助记词教程](docs/钛板打孔备份助记词教程.zh-CN.md) |

@@ -813,8 +813,6 @@ def main() -> int:
         orig_card_entry_screen = tools_views_mod.ToolsTextQRTextEntryScreen
 
         class _FakeCardEntryScreen:
-            KEYBOARD__UPPERCASE_BUTTON_TEXT = object()
-
             def __init__(self, *args, **kwargs):
                 self.kwargs = kwargs
                 _FakeCardEntryScreen.last_kwargs = kwargs
@@ -828,8 +826,9 @@ def main() -> int:
             dest = card_view.run()
             assert dest.View_cls.__name__ == "ToolsCardEntropyReviewView"
             assert dest.view_args["card_text"] == full_deck
-            assert _FakeCardEntryScreen.last_kwargs["initial_keyboard"] == _FakeCardEntryScreen.KEYBOARD__UPPERCASE_BUTTON_TEXT
-            assert not _FakeCardEntryScreen.last_kwargs.get("quick_space_backspace", False)
+            assert _FakeCardEntryScreen.last_kwargs["quick_space_backspace"] is True
+            assert _FakeCardEntryScreen.last_kwargs["custom_charset_rows"] == ["23456789", "ATJQKCDHS"]
+            assert _FakeCardEntryScreen.last_kwargs["custom_selected_char"] == "A"
 
             review_view = ToolsCardEntropyReviewView(
                 word_length=21,
@@ -857,8 +856,6 @@ def main() -> int:
             tools_views_mod.ToolsTextQRTextEntryScreen = orig_card_entry_screen
 
         class _FakeHexEntryScreen:
-            KEYBOARD__DIGITS_BUTTON_TEXT = object()
-
             def __init__(self, *args, **kwargs):
                 self.kwargs = kwargs
                 _FakeHexEntryScreen.last_kwargs = kwargs
@@ -873,7 +870,9 @@ def main() -> int:
             dest = hex_view.run()
             assert dest.View_cls.__name__ == "ToolsHexEntropyReviewView"
             assert dest.view_args["hex_text"] == "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
-            assert _FakeHexEntryScreen.last_kwargs["initial_keyboard"] == _FakeHexEntryScreen.KEYBOARD__DIGITS_BUTTON_TEXT
+            assert _FakeHexEntryScreen.last_kwargs["quick_space_backspace"] is True
+            assert _FakeHexEntryScreen.last_kwargs["custom_charset_rows"] == ["0123456789", "ABCDEF"]
+            assert _FakeHexEntryScreen.last_kwargs["custom_selected_char"] == "0"
 
             hex_review_view = ToolsHexEntropyReviewView(
                 word_length=12,

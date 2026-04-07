@@ -178,6 +178,7 @@ class Keyboard:
     def __init__(self,
                  draw: ImageDraw,
                  charset="1234567890abcdefghijklmnopqrstuvwxyz",
+                 charset_rows=None,
                  font_name=GUIConstants.FIXED_WIDTH_EMPHASIS_FONT_NAME,
                  font_size=24,
                  selected_char="a",
@@ -195,8 +196,17 @@ class Keyboard:
         """
         self.draw = draw
         self.charset = charset
-        self.rows = rows
-        self.cols = cols
+        self.charset_rows = charset_rows
+        if charset_rows:
+            layout_rows = list(charset_rows)
+            self.rows = len(layout_rows)
+            self.cols = max(len(row) for row in layout_rows)
+            flat_charset = "".join(layout_rows)
+        else:
+            layout_rows = [charset[i * cols:(i + 1) * cols] for i in range(rows)]
+            self.rows = rows
+            self.cols = cols
+            flat_charset = charset
         self.rect = rect
         self.font = Fonts.get_font(font_name, font_size)
 
@@ -211,14 +221,14 @@ class Keyboard:
         additional_key_spaces = 0
         for additional_key in additional_keys:
             additional_key_spaces += additional_key["size"]  # e.g. backspace takes up 2 slots
-        if rows * cols < len(charset) + additional_key_spaces:
+        if self.rows * self.cols < len(flat_charset) + additional_key_spaces:
             raise Exception(f"charset will not fit in a {rows}x{cols} layout | additional_keys: {additional_keys}")
 
         if not selected_char:
             raise Exception("`selected_char` cannot be None")
 
         # Set up the rendering and state params
-        self.active_keys = list(self.charset)
+        self.active_keys = list(flat_charset)
         self.icon_key_font = Fonts.get_font(GUIConstants.ICON_FONT_NAME__SEEDSIGNER, 26)
 
         # Fixed-width fonts will all have same height, ignoring below baseline (e.g. "Q" or "q")
@@ -231,22 +241,22 @@ class Keyboard:
         self.x_start = rect[0]
         self.y_start = rect[1]
         self.x_gap = 2
-        self.key_width = int((rect[2] - rect[0]) / cols) - self.x_gap
-        self.width = cols * (self.key_width) + (cols - 1) * self.x_gap
+        self.key_width = int((rect[2] - rect[0]) / self.cols) - self.x_gap
+        self.width = self.cols * (self.key_width) + (self.cols - 1) * self.x_gap
         self.y_gap = 2
-        self.key_height = int((rect[3] - rect[1]) / rows) - self.y_gap
-        self.height = rows * (self.key_height) + (rows - 1) * self.y_gap
+        self.key_height = int((rect[3] - rect[1]) / self.rows) - self.y_gap
+        self.height = self.rows * (self.key_height) + (self.rows - 1) * self.y_gap
         self.additional_key_entered_from_x = None
 
         # Two-dimensional list of Key obj row data
         self.keys = []
         self.selected_key = {"x": 0, "y": 0}  # Indices in the `keys` 2D list
         cur_y = self.y_start
-        for i in range(0, rows):
+        for i in range(0, self.rows):
             cur_row = []
             cur_x = self.x_start
             cur_index_x = 0
-            for letter in charset[i*cols:(i+1)*cols]:
+            for letter in layout_rows[i]:
                 is_selected = False
                 if letter == selected_char:
                     is_selected = True
@@ -264,7 +274,7 @@ class Keyboard:
                 cur_x += self.key_width + self.x_gap
                 cur_index_x += 1
             self.keys.append(cur_row)
-            if i < rows - 1:
+            if i < self.rows - 1:
                 # increment to the next row and continue
                 cur_y += self.key_height + self.y_gap
             else:

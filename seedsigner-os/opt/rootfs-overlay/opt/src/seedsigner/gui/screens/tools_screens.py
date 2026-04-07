@@ -772,6 +772,8 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
     steel_entry_mode: bool = False
     digits_entry_mode: bool = False
     quick_space_backspace: bool = False
+    custom_charset_rows: List[str] = None
+    custom_selected_char: str = None
 
     KEYBOARD__LOWERCASE_BUTTON_TEXT = "abc"
     KEYBOARD__UPPERCASE_BUTTON_TEXT = "ABC"
@@ -806,160 +808,145 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
         text_entry_display_height = 30
 
         keyboard_start_y = text_entry_display_y + text_entry_display_height + GUIConstants.COMPONENT_PADDING
-        self.keyboard_abc = Keyboard(
-            draw=self.renderer.draw,
-            charset=keys_lower,
+        keyboard_rect = (
+            GUIConstants.COMPONENT_PADDING,
+            keyboard_start_y,
+            self.canvas_width - GUIConstants.COMPONENT_PADDING - self.right_panel_buttons_width,
+            self.canvas_height - GUIConstants.EDGE_PADDING
+        )
+
+        def make_keyboard(charset, rows, cols, *, selected_char=None, additional_keys=None, render_now=False, charset_rows=None):
+            if additional_keys is None:
+                additional_keys = [
+                    Keyboard.KEY_SPACE_5,
+                    Keyboard.KEY_CURSOR_LEFT,
+                    Keyboard.KEY_CURSOR_RIGHT,
+                    Keyboard.KEY_BACKSPACE,
+                ]
+            return Keyboard(
+                draw=self.renderer.draw,
+                charset=charset,
+                charset_rows=charset_rows,
+                selected_char=selected_char or (charset[0] if charset else None),
+                rows=rows,
+                cols=cols,
+                rect=keyboard_rect,
+                additional_keys=additional_keys,
+                auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
+                additional_keys_match_background=True,
+                render_now=render_now,
+            )
+
+        self.keyboard_abc = make_keyboard(
+            keys_lower,
             rows=4,
             cols=max_cols,
-            rect=(
-                GUIConstants.COMPONENT_PADDING,
-                keyboard_start_y,
-                self.canvas_width - GUIConstants.COMPONENT_PADDING - self.right_panel_buttons_width,
-                self.canvas_height - GUIConstants.EDGE_PADDING
-            ),
+            selected_char="a",
             additional_keys=[
                 Keyboard.KEY_SPACE_5,
                 Keyboard.KEY_CURSOR_LEFT,
                 Keyboard.KEY_CURSOR_RIGHT,
-                Keyboard.KEY_BACKSPACE
+                Keyboard.KEY_BACKSPACE,
             ],
-            auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
-            additional_keys_match_background=True,
+            render_now=True,
         )
 
-        self.keyboard_ABC = Keyboard(
-            draw=self.renderer.draw,
-            charset=keys_upper,
+        self.keyboard_ABC = make_keyboard(
+            keys_upper,
             rows=4,
             cols=max_cols,
-            rect=(
-                GUIConstants.COMPONENT_PADDING,
-                keyboard_start_y,
-                self.canvas_width - GUIConstants.COMPONENT_PADDING - self.right_panel_buttons_width,
-                self.canvas_height - GUIConstants.EDGE_PADDING
-            ),
+            selected_char="A",
             additional_keys=[
                 Keyboard.KEY_SPACE_5,
                 Keyboard.KEY_CURSOR_LEFT,
                 Keyboard.KEY_CURSOR_RIGHT,
-                Keyboard.KEY_BACKSPACE
+                Keyboard.KEY_BACKSPACE,
             ],
-            auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
-            additional_keys_match_background=True,
-            render_now=False
+            render_now=False,
         )
 
-        self.keyboard_digits = Keyboard(
-            draw=self.renderer.draw,
-            charset=keys_number,
+        self.keyboard_digits = make_keyboard(
+            keys_number,
             rows=3,
             cols=8,
-            rect=(
-                GUIConstants.COMPONENT_PADDING,
-                keyboard_start_y,
-                self.canvas_width - GUIConstants.COMPONENT_PADDING - self.right_panel_buttons_width,
-                self.canvas_height - GUIConstants.EDGE_PADDING
-            ),
-            additional_keys=[
-                Keyboard.KEY_SPACE_2,
-                Keyboard.KEY_CURSOR_LEFT,
-                Keyboard.KEY_CURSOR_RIGHT,
-                Keyboard.KEY_BACKSPACE
-            ],
-            auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
-            additional_keys_match_background=True,
-            render_now=False
-        )
-
-        self.keyboard_symbols_1 = Keyboard(
-            draw=self.renderer.draw,
-            charset=keys_symbol_1,
-            rows=4,
-            cols=6,
-            rect=(
-                GUIConstants.COMPONENT_PADDING,
-                keyboard_start_y,
-                self.canvas_width - GUIConstants.COMPONENT_PADDING - self.right_panel_buttons_width,
-                self.canvas_height - GUIConstants.EDGE_PADDING
-            ),
-            additional_keys=[
-                Keyboard.KEY_SPACE_2,
-                Keyboard.KEY_CURSOR_LEFT,
-                Keyboard.KEY_CURSOR_RIGHT,
-                Keyboard.KEY_BACKSPACE
-            ],
-            auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
-            additional_keys_match_background=True,
-            render_now=False
-        )
-
-        self.keyboard_symbols_2 = Keyboard(
-            draw=self.renderer.draw,
-            charset=keys_symbol_2,
-            rows=4,
-            cols=6,
-            rect=(
-                GUIConstants.COMPONENT_PADDING,
-                keyboard_start_y,
-                self.canvas_width - GUIConstants.COMPONENT_PADDING - self.right_panel_buttons_width,
-                self.canvas_height - GUIConstants.EDGE_PADDING
-            ),
-            additional_keys=[
-                Keyboard.KEY_SPACE_2,
-                Keyboard.KEY_CURSOR_LEFT,
-                Keyboard.KEY_CURSOR_RIGHT,
-                Keyboard.KEY_BACKSPACE
-            ],
-            auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
-            additional_keys_match_background=True,
-            render_now=False
-        )
-
-        self.keyboard_steel = Keyboard(
-            draw=self.renderer.draw,
-            charset="0123456789+-*/",
             selected_char="0",
+            additional_keys=[
+                Keyboard.KEY_SPACE_2,
+                Keyboard.KEY_CURSOR_LEFT,
+                Keyboard.KEY_CURSOR_RIGHT,
+                Keyboard.KEY_BACKSPACE,
+            ],
+            render_now=False,
+        )
+
+        self.keyboard_symbols_1 = make_keyboard(
+            keys_symbol_1,
+            rows=4,
+            cols=6,
+            selected_char="!",
+            additional_keys=[
+                Keyboard.KEY_SPACE_2,
+                Keyboard.KEY_CURSOR_LEFT,
+                Keyboard.KEY_CURSOR_RIGHT,
+                Keyboard.KEY_BACKSPACE,
+            ],
+            render_now=False,
+        )
+
+        self.keyboard_symbols_2 = make_keyboard(
+            keys_symbol_2,
+            rows=4,
+            cols=6,
+            selected_char="^",
+            additional_keys=[
+                Keyboard.KEY_SPACE_2,
+                Keyboard.KEY_CURSOR_LEFT,
+                Keyboard.KEY_CURSOR_RIGHT,
+                Keyboard.KEY_BACKSPACE,
+            ],
+            render_now=False,
+        )
+
+        self.keyboard_steel = make_keyboard(
+            "0123456789+-*/",
             rows=2,
             cols=10,
-            rect=(
-                GUIConstants.COMPONENT_PADDING,
-                keyboard_start_y,
-                self.canvas_width - GUIConstants.COMPONENT_PADDING - self.right_panel_buttons_width,
-                self.canvas_height - GUIConstants.EDGE_PADDING
-            ),
+            selected_char="0",
             additional_keys=[
                 Keyboard.KEY_SPACE_2,
                 Keyboard.KEY_CURSOR_LEFT,
                 Keyboard.KEY_CURSOR_RIGHT,
-                Keyboard.KEY_BACKSPACE
+                Keyboard.KEY_BACKSPACE,
             ],
-            auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
-            additional_keys_match_background=True,
-            render_now=False
+            render_now=False,
         )
 
-        self.keyboard_digits_entry = Keyboard(
-            draw=self.renderer.draw,
-            charset=keys_number,
-            selected_char="0",
+        self.keyboard_digits_entry = make_keyboard(
+            keys_number,
             rows=2,
             cols=8,
-            rect=(
-                GUIConstants.COMPONENT_PADDING,
-                keyboard_start_y,
-                self.canvas_width - GUIConstants.COMPONENT_PADDING - self.right_panel_buttons_width,
-                self.canvas_height - GUIConstants.EDGE_PADDING
-            ),
+            selected_char="0",
             additional_keys=[
                 Keyboard.KEY_SPACE_2,
                 Keyboard.KEY_CURSOR_LEFT,
                 Keyboard.KEY_CURSOR_RIGHT,
-                Keyboard.KEY_BACKSPACE
+                Keyboard.KEY_BACKSPACE,
             ],
-            auto_wrap=[Keyboard.WRAP_LEFT, Keyboard.WRAP_RIGHT],
-            additional_keys_match_background=True,
-            render_now=False
+            render_now=False,
         )
+
+        self.keyboard_custom = None
+        if self.custom_charset_rows:
+            flat_charset = "".join(self.custom_charset_rows)
+            self.keyboard_custom = make_keyboard(
+                flat_charset,
+                rows=len(self.custom_charset_rows),
+                cols=max(len(row) for row in self.custom_charset_rows),
+                selected_char=self.custom_selected_char or flat_charset[0],
+                additional_keys=[],
+                render_now=False,
+                charset_rows=self.custom_charset_rows,
+            )
 
         self.text_entry_display = TextEntryDisplay(
             canvas=self.renderer.canvas,
@@ -1031,6 +1018,8 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
 
 
     def _get_initial_keyboard(self):
+        if self.keyboard_custom:
+            return self.keyboard_custom
         if self.steel_entry_mode:
             return self.keyboard_steel
         if self.digits_entry_mode:
@@ -1100,7 +1089,7 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
                     self.renderer.show_image()
                     continue
 
-                if (self.steel_entry_mode or self.digits_entry_mode) and input in [HardwareButtonsConstants.KEY1, HardwareButtonsConstants.KEY2]:
+                if (self.steel_entry_mode or self.digits_entry_mode or self.keyboard_custom) and input in [HardwareButtonsConstants.KEY1, HardwareButtonsConstants.KEY2]:
                     continue
 
                 if input == HardwareButtonsConstants.KEY1:
@@ -1263,6 +1252,8 @@ class ToolsTextQRTextEntryScreen(BaseTopNavScreen):
     def _get_button_texts(self, cur_keyboard):
         if self.quick_space_backspace:
             return "空格", "退格"
+        if self.keyboard_custom:
+            return "", ""
         if self.steel_entry_mode or self.digits_entry_mode:
             return "", ""
         if cur_keyboard == self.keyboard_ABC:

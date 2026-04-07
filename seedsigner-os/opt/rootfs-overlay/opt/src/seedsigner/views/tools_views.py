@@ -1004,6 +1004,7 @@ class ToolsCardEntropyEntryView(View):
             "输入格式示例：AH QS 9D TC\n"
             "规则与 iancoleman.io/bip39 的 Card 熵一致。\n"
             "建议保留空格，便于人工核对。\n"
+            "网站核验时请选择下面的 12/15/18/21/24 Words，不要选 Use Raw Entropy。\n"
             f"当前识别到 {card_count} 张牌，约 {actual_bits} bits。\n"
             f"{self.word_length} 词至少需要 {required_bits} bits。"
         )
@@ -1032,6 +1033,7 @@ class ToolsCardEntropyEntryView(View):
                     "输入格式：AH QS 9D TC\n"
                     "也支持连续输入：AHQS9DTC\n"
                     "仅识别 A23456789TJQK + CDHS\n"
+                    "网站核验时请选择 12/15/18/21/24 Words，不要选 Use Raw Entropy。\n"
                     "结果与 iancoleman.io/bip39 的 Card 熵规则一致，可直接核验。"
                 ),
                 button_data=[ButtonOption("开始输入")],
@@ -1042,7 +1044,9 @@ class ToolsCardEntropyEntryView(View):
         ret_dict = ToolsTextQRTextEntryScreen(
             textToEncode=self.initial_value,
             title="扑克牌熵",
-            initial_keyboard=ToolsTextQRTextEntryScreen.KEYBOARD__UPPERCASE_BUTTON_TEXT,
+            quick_space_backspace=True,
+            custom_charset_rows=["23456789", "ATJQKCDHS"],
+            custom_selected_char="A",
         ).display()
 
         card_text = ret_dict["textToEncode"]
@@ -1081,7 +1085,7 @@ class ToolsCardEntropyReviewView(View):
         card_count = len(cards)
         actual_bits = mnemonic_generation.card_entropy_bit_length(self.card_text)
         required_bits = mnemonic_generation.ENTROPY_BYTES_REQUIRED[self.word_length] * 8
-        cards_per_page = 16
+        cards_per_page = 8
         pages = []
 
         for start in range(0, len(cards), cards_per_page):
@@ -1132,6 +1136,8 @@ class ToolsCardEntropyReviewView(View):
             ToolsFormattedTextScreen,
             title=f"核对扑克牌 {page_num + 1}/{len(paged_info)}",
             text=paged_info[page_num],
+            text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+            text_font_size=max(GUIConstants.get_body_font_size() - 2, 14),
             button_data=button_data,
         )
 
@@ -1191,6 +1197,7 @@ class ToolsHexEntropyEntryView(View):
             "也支持连续输入：605517821146416F",
             "规则与 iancoleman.io/bip39 的 Hex 熵一致。",
             "建议保留空格，便于人工核对。",
+            "网站核验时请选择下面的 12/15/18/21/24 Words，不要选 Use Raw Entropy。",
         ]
         if extra_line:
             lines.append(extra_line)
@@ -1225,6 +1232,7 @@ class ToolsHexEntropyEntryView(View):
                     "输入格式：60 55 17 82 11 46 41 6F\n"
                     "也支持连续输入：605517821146416F\n"
                     "仅识别 0-9 和 A-F\n"
+                    "网站核验时请选择 12/15/18/21/24 Words，不要选 Use Raw Entropy。\n"
                     "结果与 iancoleman.io/bip39 的 Hex 熵规则一致，可直接核验。"
                 ),
                 button_data=[ButtonOption("开始输入")],
@@ -1235,7 +1243,9 @@ class ToolsHexEntropyEntryView(View):
         ret_dict = ToolsTextQRTextEntryScreen(
             textToEncode=self.initial_value,
             title="16进制熵",
-            initial_keyboard=ToolsTextQRTextEntryScreen.KEYBOARD__DIGITS_BUTTON_TEXT,
+            quick_space_backspace=True,
+            custom_charset_rows=["0123456789", "ABCDEF"],
+            custom_selected_char="0",
         ).display()
 
         hex_text = ret_dict["textToEncode"]
@@ -1276,12 +1286,12 @@ class ToolsHexEntropyReviewView(View):
         actual_chars = len(self.hex_text)
         actual_bits = actual_chars * 4
         required_bits = mnemonic_generation.ENTROPY_BYTES_REQUIRED[self.word_length] * 8
-        bytes_per_page = 16
+        bytes_per_page = 8
         pages = []
 
         for start in range(0, len(byte_groups), bytes_per_page):
             chunk = byte_groups[start:start + bytes_per_page]
-            hex_lines = [" ".join(chunk[i:i + 8]) for i in range(0, len(chunk), 8)]
+            hex_lines = [" ".join(chunk[i:i + 4]) for i in range(0, len(chunk), 4)]
             pages.append(
                 "\n".join(
                     [
@@ -1327,6 +1337,8 @@ class ToolsHexEntropyReviewView(View):
             ToolsFormattedTextScreen,
             title=f"核对16进制 {page_num + 1}/{len(paged_info)}",
             text=paged_info[page_num],
+            text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+            text_font_size=max(GUIConstants.get_body_font_size() - 2, 14),
             button_data=button_data,
         )
 
