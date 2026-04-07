@@ -85,7 +85,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 | 给 `BlueWallet` 做 `BTC PSBT` 冷签 | 树莓派离线签名器 | [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md) |
 | 想系统搞懂 `BIP85` 子助记词 | 树莓派离线签名器 | [BIP85子助记词使用教程](docs/BIP85子助记词使用教程.zh-CN.md) |
 | 想把助记词做成钛板/钢板备份 | 树莓派离线签名器 | [钛板打孔备份助记词教程](docs/钛板打孔备份助记词教程.zh-CN.md) |
-| 刷树莓派固件 | `dist/` | `system-update-steel-restore-fix-test.img.xz` |
+| 刷树莓派固件 | `dist/` | `system-update-card-entropy-test.img.xz` |
 | 给智能卡刷官方 applet | 官方 release | [官方程序下载验真与校验](docs/官方程序下载验真与校验.zh-CN.md) |
 | 在 `Tails` 里初始化 `Satochip` 卡、设 PIN、导助记词 | `backups/satochip-utils/` | 对应中文教程 |
 
@@ -93,7 +93,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 
 仓库和 GitHub 现在主要保留两张树莓派镜像：
 
-- `dist/system-update-steel-restore-fix-test.img.xz`
+- `dist/system-update-card-entropy-test.img.xz`
   这是现在优先推荐直接刷的本机功能测试包。
   GitHub 当前公开下载入口使用同内容的公开文件名：
   `system-update-seedkeeper-suite-test.img.xz`
@@ -116,8 +116,8 @@ bash scripts/rebuild_official_release.sh wallet-release
   - `重置 Satochip / 重置 SeedKeeper` 只建议在专用单程序卡上使用
   - 如果同一张卡还装了另一个 applet，不要在固件里做恢复出厂
   - build info 在：
-    `dist/system-update-steel-restore-fix-test.build-info.txt`
-  - `sha256 = b72be80ddd80484710092a46723a30c59b9e5298796d7fdc81b8b369cb080141`
+    `dist/system-update-card-entropy-test.build-info.txt`
+  - `sha256 = 4b04c5fe4f07eb759c5c40c1809cae57216b2a215d90e1081121fd3ccc873100`
 
 - `dist/system-update-latest.img.xz`
   这是保留的 clean 正式基线。
