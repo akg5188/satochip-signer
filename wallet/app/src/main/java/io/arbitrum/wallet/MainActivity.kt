@@ -173,11 +173,13 @@ class MainActivity : BiometricGateActivity() {
                     onPrepareDerivedAddressImport = viewModel::prepareDerivedAddressImport,
                     onSelectAddress = viewModel::selectAddress,
                     onRemoveAddress = viewModel::removeAddress,
+                    onSaveAddressNote = viewModel::saveAddressNote,
                     onRefreshBalances = viewModel::refreshSelectedActivity,
                     onBitcoinImportInputChange = viewModel::setBitcoinImportInput,
                     onScanBitcoinWatchAccount = ::startBitcoinImportScan,
                     onImportBitcoinWatchAccount = viewModel::importBitcoinWatchAccount,
                     onRemoveBitcoinWatchAccount = viewModel::removeBitcoinWatchAccount,
+                    onSaveBitcoinWatchAccountNote = viewModel::saveBitcoinWatchAccountNote,
                     onSyncBitcoinWatchAccount = viewModel::syncBitcoinWatchAccount,
                     onPrepareBitcoinTransfer = viewModel::prepareBitcoinTransfer,
                     onPrepareTransferRequest = viewModel::prepareTransferRequest,
@@ -293,11 +295,13 @@ private fun WalletScreen(
     onPrepareDerivedAddressImport: () -> Unit,
     onSelectAddress: (String) -> Unit,
     onRemoveAddress: (String) -> Unit,
+    onSaveAddressNote: (String, String) -> Unit,
     onRefreshBalances: () -> Unit,
     onBitcoinImportInputChange: (String) -> Unit,
     onScanBitcoinWatchAccount: () -> Unit,
     onImportBitcoinWatchAccount: () -> Unit,
     onRemoveBitcoinWatchAccount: (String) -> Unit,
+    onSaveBitcoinWatchAccountNote: (String, String) -> Unit,
     onSyncBitcoinWatchAccount: (String) -> Unit,
     onPrepareBitcoinTransfer: (String, String, String, String?) -> Unit,
     onPrepareTransferRequest: (String, String, String) -> Unit,
@@ -485,10 +489,12 @@ private fun WalletScreen(
                         onPrepareDerivedAddressImport = onPrepareDerivedAddressImport,
                         onSelectAddress = onSelectAddress,
                         onRemoveAddress = onRemoveAddress,
+                        onSaveAddressNote = onSaveAddressNote,
                         onImportInputChange = onBitcoinImportInputChange,
                         onScanImport = onScanBitcoinWatchAccount,
                         onImportAccount = onImportBitcoinWatchAccount,
                         onRemoveAccount = onRemoveBitcoinWatchAccount,
+                        onSaveAccountNote = onSaveBitcoinWatchAccountNote,
                         onSyncAccount = onSyncBitcoinWatchAccount,
                     )
                     if (WalletChains.ALL.size > 1) {
@@ -822,10 +828,12 @@ private fun WatchWalletHubSection(
     onPrepareDerivedAddressImport: () -> Unit,
     onSelectAddress: (String) -> Unit,
     onRemoveAddress: (String) -> Unit,
+    onSaveAddressNote: (String, String) -> Unit,
     onImportInputChange: (String) -> Unit,
     onScanImport: () -> Unit,
     onImportAccount: () -> Unit,
     onRemoveAccount: (String) -> Unit,
+    onSaveAccountNote: (String, String) -> Unit,
     onSyncAccount: (String) -> Unit,
 ) {
     var mode by rememberSaveable { mutableStateOf(HomeSectionMode.EVM) }
@@ -917,9 +925,11 @@ private fun WatchWalletHubSection(
                     state.addresses.forEach { address ->
                         AddressListItem(
                             address = address,
+                            note = state.addressNotes[address.lowercase()].orEmpty(),
                             isSelected = address.equals(state.selectedAddress, ignoreCase = true),
                             onSelect = { onSelectAddress(address) },
                             onRemove = { onRemoveAddress(address) },
+                            onSaveNote = onSaveAddressNote,
                         )
                     }
                 }
@@ -973,6 +983,7 @@ private fun WatchWalletHubSection(
                                 expandedAccountId = if (expandedAccountId == account.id) null else account.id
                             },
                             onRemoveAccount = onRemoveAccount,
+                            onSaveNote = onSaveAccountNote,
                             onSyncAccount = onSyncAccount,
                             showBalanceSummary = false,
                             showSyncSummary = false,
@@ -1138,8 +1149,14 @@ private fun AssetsHubSection(
         CombinedAssetEntry(
             id = "btc:${account.id}",
             symbol = "BTC",
-            title = "BTC",
-            subtitle = account.scriptTypeLabel,
+            title = account.note.ifBlank { account.label },
+            subtitle = buildString {
+                append(account.scriptTypeLabel)
+                if (account.accountFingerprintHex.isNotBlank()) {
+                    append(" · 指纹 ")
+                    append(account.accountFingerprintHex)
+                }
+            },
             amountLabel = formatBitcoinSats(account.balanceSats),
             usdLabel = formatUsdAmount(bitcoinBalanceUsd(account.balanceSats, account.priceUsd)),
             isBitcoin = true,
@@ -1928,9 +1945,11 @@ private fun WalletOverviewSection(
                 state.addresses.forEach { address ->
                     AddressListItem(
                         address = address,
+                        note = state.addressNotes[address.lowercase()].orEmpty(),
                         isSelected = address.equals(state.selectedAddress, ignoreCase = true),
                         onSelect = { onSelectAddress(address) },
                         onRemove = { onRemoveAddress(address) },
+                        onSaveNote = { _, _ -> },
                     )
                 }
             }
@@ -2038,6 +2057,7 @@ private fun BitcoinPrototypeSection(
                             expandedAccountId = if (expandedAccountId == account.id) null else account.id
                         },
                         onRemoveAccount = onRemoveAccount,
+                        onSaveNote = { _, _ -> },
                         onSyncAccount = onSyncAccount,
                         onPrepareTransfer = onPrepareTransfer,
                     )
@@ -2053,6 +2073,7 @@ private fun BitcoinWatchAccountCard(
     expanded: Boolean,
     onToggleExpanded: () -> Unit,
     onRemoveAccount: (String) -> Unit,
+    onSaveNote: (String, String) -> Unit,
     onSyncAccount: (String) -> Unit,
     showBalanceSummary: Boolean = true,
     showSyncSummary: Boolean = true,
@@ -2061,6 +2082,8 @@ private fun BitcoinWatchAccountCard(
 ) {
     val context = LocalContext.current
     var showTransferComposer by rememberSaveable(account.id) { mutableStateOf(false) }
+    var showNoteEditor by rememberSaveable(account.id) { mutableStateOf(false) }
+    var noteDraft by rememberSaveable(account.id, account.note) { mutableStateOf(account.note) }
     var transferTo by rememberSaveable(account.id) { mutableStateOf("") }
     var transferAmount by rememberSaveable(account.id) { mutableStateOf("") }
     var feeRate by rememberSaveable(account.id) { mutableStateOf("") }
@@ -2081,12 +2104,62 @@ private fun BitcoinWatchAccountCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("BTC", fontWeight = FontWeight.SemiBold, color = Color(0xFF101828), fontSize = 13.sp)
-                    Text(account.scriptTypeLabel, fontSize = 11.sp, color = Color(0xFF667085))
+                    Text(
+                        account.note.ifBlank { account.label.ifBlank { "BTC" } },
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF101828),
+                        fontSize = 13.sp,
+                    )
+                    Text(
+                        buildString {
+                            append(account.scriptTypeLabel)
+                            if (account.accountFingerprintHex.isNotBlank()) {
+                                append(" · 指纹 ")
+                                append(account.accountFingerprintHex)
+                            }
+                        },
+                        fontSize = 11.sp,
+                        color = Color(0xFF667085),
+                    )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { showNoteEditor = !showNoteEditor }) {
+                        Text(if (showNoteEditor) "收起备注" else "备注", fontSize = 11.sp)
+                    }
                     TextButton(onClick = onToggleExpanded) {
                         Text(if (expanded) "收起" else "查看", fontSize = 11.sp)
+                    }
+                }
+            }
+
+            if (showNoteEditor) {
+                OutlinedTextField(
+                    value = noteDraft,
+                    onValueChange = { noteDraft = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("BTC 钱包备注", fontSize = 11.sp) },
+                    placeholder = { Text("给这个 BTC 钱包取个名字", fontSize = 11.sp) },
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(
+                        onClick = {
+                            noteDraft = account.note
+                            showNoteEditor = false
+                        },
+                    ) {
+                        Text("取消", fontSize = 12.sp)
+                    }
+                    TextButton(
+                        onClick = {
+                            onSaveNote(account.id, noteDraft)
+                            showNoteEditor = false
+                        },
+                    ) {
+                        Text("保存", fontSize = 12.sp)
                     }
                 }
             }
@@ -2542,10 +2615,15 @@ private fun ChainSelectorSection(
 @Composable
 private fun AddressListItem(
     address: String,
+    note: String,
     isSelected: Boolean,
     onSelect: () -> Unit,
     onRemove: () -> Unit,
+    onSaveNote: (String, String) -> Unit,
 ) {
+    var showNoteEditor by rememberSaveable(address) { mutableStateOf(false) }
+    var noteDraft by rememberSaveable(address, note) { mutableStateOf(note) }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -2569,6 +2647,43 @@ private fun AddressListItem(
                 )
             }
         }
+        Text(
+            text = if (note.isBlank()) "未备注，可点“备注”给这个地址取个名字" else "备注：$note",
+            fontSize = 11.sp,
+            lineHeight = 15.sp,
+            color = if (note.isBlank()) Color(0xFF98A2B3) else Color(0xFF475467),
+        )
+        if (showNoteEditor) {
+            OutlinedTextField(
+                value = noteDraft,
+                onValueChange = { noteDraft = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("地址备注", fontSize = 11.sp) },
+                placeholder = { Text("给这个地址取个名字", fontSize = 11.sp) },
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(
+                    onClick = {
+                        noteDraft = note
+                        showNoteEditor = false
+                    },
+                ) {
+                    Text("取消", fontSize = 12.sp)
+                }
+                TextButton(
+                    onClick = {
+                        onSaveNote(address, noteDraft)
+                        showNoteEditor = false
+                    },
+                ) {
+                    Text("保存", fontSize = 12.sp)
+                }
+            }
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
@@ -2581,6 +2696,9 @@ private fun AddressListItem(
                     color = Color(0xFF475467),
                     modifier = Modifier.padding(end = 4.dp),
                 )
+            }
+            TextButton(onClick = { showNoteEditor = !showNoteEditor }) {
+                Text(if (showNoteEditor) "收起备注" else "备注", fontSize = 12.sp)
             }
             TextButton(
                 onClick = onSelect,

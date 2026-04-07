@@ -83,6 +83,7 @@ data class BitcoinDerivedAddressPreview(
 data class BitcoinWatchAccount(
     val id: String,
     val label: String,
+    val note: String = "",
     val xpub: String,
     val prefix: String,
     val networkLabel: String,
@@ -113,6 +114,7 @@ data class WalletUiState(
     val activeTab: WalletTab = WalletTab.HOME,
     val newAddressInput: String = "",
     val addresses: List<String> = emptyList(),
+    val addressNotes: Map<String, String> = emptyMap(),
     val selectedAddress: String = "",
     val evmDerivationPath: String = DEFAULT_EVM_DERIVATION_PATH,
     val bitcoinImportInput: String = "",

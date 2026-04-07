@@ -163,6 +163,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadBalances()
     }
 
+    fun saveAddressNote(address: String, note: String) {
+        val normalized = normalizeAddress(address)
+            ?: return setError("未找到观察地址")
+        if (_uiState.value.addresses.none { it.equals(normalized, ignoreCase = true) }) {
+            return setError("未找到观察地址")
+        }
+        val trimmed = note.trim()
+        val key = canonicalAddressKey(normalized)
+        _uiState.update { state ->
+            val updatedNotes = state.addressNotes.toMutableMap().apply {
+                if (trimmed.isBlank()) remove(key) else put(key, trimmed)
+            }
+            state.copy(
+                addressNotes = updatedNotes,
+                info = if (trimmed.isBlank()) "地址备注已清除" else "地址备注已保存",
+                error = "",
+            )
+        }
+        persistAddresses()
+    }
+
     fun prepareDerivedAddressImport() {
         val state = _uiState.value
         val path = normalizeDerivationPath(state.evmDerivationPath)
@@ -221,6 +242,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     BitcoinWatchAccount(
                         id = UUID.randomUUID().toString(),
                         label = parsed.defaultLabel,
+                        note = "",
                         xpub = parsed.xpub,
                         prefix = parsed.prefix,
                         networkLabel = parsed.networkLabel,
@@ -248,6 +270,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         persistBitcoinWatchAccounts()
         importedAccountId?.let(::syncBitcoinWatchAccount)
+    }
+
+    fun saveBitcoinWatchAccountNote(accountId: String, note: String) {
+        val account = _uiState.value.bitcoinWatchAccounts.firstOrNull { it.id == accountId }
+            ?: return setError("未找到 BTC 观察账户")
+        val trimmed = note.trim()
+        updateBitcoinWatchAccount(
+            accountId = account.id,
+            transform = { current -> current.copy(note = trimmed) },
+        )
+        _uiState.update {
+            it.copy(
+                info = if (trimmed.isBlank()) "BTC 钱包备注已清除" else "BTC 钱包备注已保存",
+                error = "",
+            )
+        }
     }
 
     fun removeBitcoinWatchAccount(accountId: String) {
@@ -460,6 +498,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeAddress(address: String) {
         val shouldClearSensitiveState = _uiState.value.selectedAddress.equals(address, ignoreCase = true)
+        val normalized = normalizeAddress(address)
         _uiState.update { state ->
             val updated = state.addresses.filterNot { it.equals(address, ignoreCase = true) }
             val selected = when {
@@ -469,6 +508,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             state.copy(
                 addresses = updated,
+                addressNotes = state.addressNotes.toMutableMap().apply {
+                    normalized?.let { remove(canonicalAddressKey(it)) }
+                },
                 selectedAddress = selected,
                 chainPortfolios = if (selected.isBlank()) emptyMap() else state.chainPortfolios,
                 info = "已删除观察地址",
@@ -1346,6 +1388,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun restorePersistedState() {
         val addresses = WalletStorage.readAddresses(prefs, ::normalizeAddress)
+        val addressNotes = WalletStorage.readAddressNotes(prefs, ::normalizeAddress)
         val selected = WalletStorage.readSelectedAddress(prefs, ::normalizeAddress)
         val effectiveSelected = when {
             selected.isNotBlank() && addresses.contains(selected) -> selected
@@ -1370,6 +1413,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 addresses = addresses,
+                addressNotes = addressNotes,
                 selectedAddress = effectiveSelected,
                 evmDerivationPath = evmDerivationPath,
                 bitcoinWatchAccounts = bitcoinWatchAccounts,
@@ -1389,6 +1433,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun persistAddresses() {
         val state = _uiState.value
         WalletStorage.writeAddresses(prefs, state.addresses, state.selectedAddress)
+        val allowedKeys = state.addresses.map(::canonicalAddressKey).toSet()
+        WalletStorage.writeAddressNotes(
+            prefs,
+            state.addressNotes.filterKeys { it in allowedKeys },
+        )
     }
 
     private fun persistContacts() {
@@ -1431,6 +1480,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (persist) {
             persistBitcoinWatchAccounts()
         }
+    }
+
+    private fun canonicalAddressKey(address: String): String {
+        return normalizeAddress(address)?.lowercase() ?: address.trim().lowercase()
     }
 
     private fun persistActivity() {

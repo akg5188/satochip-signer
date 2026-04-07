@@ -12,6 +12,7 @@ object WalletStorage {
     private const val SECURE_PREFS_NAME = "satochip_multi_wallet_secure"
     private const val KEY_MIGRATED_FROM_LEGACY = "_migrated_from_legacy"
     private const val KEY_ADDRESSES = "addresses"
+    private const val KEY_ADDRESS_NOTES = "address_notes"
     private const val KEY_SELECTED_ADDRESS = "selected_address"
     private const val KEY_SELECTED_CHAIN_ID = "selected_chain_id"
     private const val KEY_EVM_DERIVATION_PATH = "evm_derivation_path"
@@ -46,6 +47,9 @@ object WalletStorage {
         val editor = securePrefs.edit()
         if (legacyPrefs.contains(KEY_ADDRESSES)) {
             editor.putString(KEY_ADDRESSES, legacyPrefs.getString(KEY_ADDRESSES, null))
+        }
+        if (legacyPrefs.contains(KEY_ADDRESS_NOTES)) {
+            editor.putString(KEY_ADDRESS_NOTES, legacyPrefs.getString(KEY_ADDRESS_NOTES, null))
         }
         if (legacyPrefs.contains(KEY_SELECTED_ADDRESS)) {
             editor.putString(KEY_SELECTED_ADDRESS, legacyPrefs.getString(KEY_SELECTED_ADDRESS, null))
@@ -93,6 +97,36 @@ object WalletStorage {
             .putString(KEY_ADDRESSES, array.toString())
             .putString(KEY_SELECTED_ADDRESS, selectedAddress)
             .apply()
+    }
+
+    fun readAddressNotes(prefs: SharedPreferences, normalizer: (String?) -> String?): Map<String, String> {
+        val raw = prefs.getString(KEY_ADDRESS_NOTES, null)
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            buildMap {
+                val obj = JSONObject(raw)
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val address = keys.next()
+                    val normalized = normalizer(address)?.lowercase() ?: continue
+                    val note = obj.optString(address).trim()
+                    if (note.isNotBlank()) {
+                        put(normalized, note)
+                    }
+                }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    fun writeAddressNotes(prefs: SharedPreferences, notes: Map<String, String>) {
+        val obj = JSONObject()
+        notes.toSortedMap().forEach { (address, note) ->
+            val trimmed = note.trim()
+            if (address.isNotBlank() && trimmed.isNotBlank()) {
+                obj.put(address, trimmed)
+            }
+        }
+        prefs.edit().putString(KEY_ADDRESS_NOTES, obj.toString()).apply()
     }
 
     fun readSelectedAddress(prefs: SharedPreferences, normalizer: (String?) -> String?): String {
@@ -296,6 +330,7 @@ object WalletStorage {
                         BitcoinWatchAccount(
                             id = obj.optString("id").ifBlank { "btc-account-$index" },
                             label = obj.optString("label").ifBlank { "BTC account ${index + 1}" },
+                            note = obj.optString("note"),
                             xpub = xpub,
                             prefix = obj.optString("prefix").ifBlank { xpub.take(4).lowercase() },
                             networkLabel = obj.optString("networkLabel").ifBlank { "Bitcoin" },
@@ -361,6 +396,7 @@ object WalletStorage {
                     JSONObject().apply {
                         put("id", account.id)
                         put("label", account.label)
+                        put("note", account.note)
                         put("xpub", account.xpub)
                         put("prefix", account.prefix)
                         put("networkLabel", account.networkLabel)
