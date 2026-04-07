@@ -1196,6 +1196,7 @@ class ToolsHexEntropyEntryView(View):
             "输入格式示例：60 55 17 82 11 46 41 6F",
             "也支持连续输入：605517821146416F",
             "规则与 iancoleman.io/bip39 的 Hex 熵一致。",
+            "这条不是 Use Raw Entropy：会先按过滤后的 hex 文本做 SHA256，再按词数截位。",
             "建议保留空格，便于人工核对。",
             "网站核验时请选择下面的 12/15/18/21/24 Words，不要选 Use Raw Entropy。",
         ]
@@ -1232,8 +1233,8 @@ class ToolsHexEntropyEntryView(View):
                     "输入格式：60 55 17 82 11 46 41 6F\n"
                     "也支持连续输入：605517821146416F\n"
                     "仅识别 0-9 和 A-F\n"
-                    "网站核验时请选择 12/15/18/21/24 Words，不要选 Use Raw Entropy。\n"
-                    "结果与 iancoleman.io/bip39 的 Hex 熵规则一致，可直接核验。"
+                    "网站核验：选 12/15/18/21/24 Words\n"
+                    "不要选 Use Raw Entropy"
                 ),
                 button_data=[ButtonOption("开始输入")],
             )

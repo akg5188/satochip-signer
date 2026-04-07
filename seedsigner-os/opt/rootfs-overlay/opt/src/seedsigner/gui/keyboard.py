@@ -337,6 +337,42 @@ class Keyboard:
         return self.get_key_at(self.selected_key["x"], self.selected_key["y"])
 
 
+    def _coerce_valid_selection(self):
+        """
+        Keep keyboard focus on a real key even when rows have uneven lengths.
+
+        This matters for custom 2-row layouts such as card/hex entry: when the
+        user moves from the top nav back into the keyboard, we preserve the last
+        x column if possible, but some rows are shorter than others. In that
+        case, fall back to the nearest valid key on the same row instead of
+        leaving selection on an empty slot.
+        """
+        key = self.get_selected_key()
+        if key is not None:
+            self.selected_key["x"] = key.index_x
+            return key
+
+        row_index = self.selected_key["y"]
+        if row_index < 0 or row_index >= len(self.keys):
+            return None
+
+        row = self.keys[row_index]
+        if not row:
+            return None
+
+        max_index = max(cur_key.index_x + cur_key.size - 1 for cur_key in row)
+        start_x = self.selected_key["x"]
+        for offset in range(0, max_index + 2):
+            for candidate_x in (start_x - offset, start_x + offset):
+                if candidate_x < 0 or candidate_x > max_index:
+                    continue
+                key = self.get_key_at(candidate_x, row_index)
+                if key is not None:
+                    self.selected_key["x"] = key.index_x
+                    return key
+        return None
+
+
     def get_key_at(self, index_x, index_y):
         if index_y < len(self.keys) - 1:
             # Not on the bottom row
@@ -416,11 +452,12 @@ class Keyboard:
 
             Does NOT call self.renderer.show_image to avoid multiple calls on the same screen.
         """
-        key = self.get_key_at(self.selected_key["x"], self.selected_key["y"])
+        key = self._coerce_valid_selection()
 
         # Before we update, undo our previously self.selected_key key
-        key.is_selected = False
-        key.render_key()
+        if key is not None:
+            key.is_selected = False
+            key.render_key()
 
         if input == HardwareButtonsConstants.KEY_RIGHT:
             self.selected_key["x"] = key.index_x + key.size
@@ -476,6 +513,7 @@ class Keyboard:
             # User has returned to the keyboard along the top edge
             # Keep the last x position that was selected.
             self.selected_key["y"] = 0
+            self._coerce_valid_selection()
 
         elif input == Keyboard.ENTER_BOTTOM:
             # User has returned to the keyboard along the bottom edge
@@ -488,9 +526,12 @@ class Keyboard:
                 else:
                     # Can't enter here. Jump up a row
                     self.selected_key["y"] -= 1
+            self._coerce_valid_selection()
 
         # Render the newly self.selected_key letter
-        key = self.get_key_at(self.selected_key["x"], self.selected_key["y"])
+        key = self._coerce_valid_selection()
+        if key is None:
+            raise Exception("Keyboard selection landed on an invalid slot")
         key.is_selected = True
         key.render_key()
 

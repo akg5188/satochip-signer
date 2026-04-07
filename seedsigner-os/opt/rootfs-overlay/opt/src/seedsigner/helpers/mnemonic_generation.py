@@ -162,6 +162,19 @@ def normalize_hex_for_iancoleman(hex_data: str) -> str:
     return "".join(HEX_MATCHER.findall(str(hex_data))).upper()
 
 
+def format_hex_for_iancoleman_hash(hex_data: str) -> str:
+    """
+    iancoleman.io/bip39 "Hex [0-9A-F]" mode does not treat the filtered hex
+    text as raw BIP39 entropy unless "Use Raw Entropy" is selected.
+
+    For the normal 12/15/18/21/24-word flow, it hashes the filtered hex text
+    with SHA-256 and then truncates the hash to the requested entropy length.
+    We normalize to lowercase here so the device matches the common website
+    workflow even though the on-device keyboard shows A-F in uppercase.
+    """
+    return "".join(HEX_MATCHER.findall(str(hex_data))).lower()
+
+
 def hex_entropy_bit_length(hex_data: str) -> int:
     return len(normalize_hex_for_iancoleman(hex_data)) * 4
 
@@ -191,7 +204,9 @@ def generate_mnemonic_from_hex(
     if len(clean_hex) != required_chars:
         raise Exception("Hex entropy length does not match requested mnemonic length")
 
-    entropy_bytes = bytes.fromhex(clean_hex)
+    hash_input = format_hex_for_iancoleman_hash(hex_data)
+    entropy_bytes = hashlib.sha256(hash_input.encode("utf-8")).digest()
+    entropy_bytes = entropy_bytes[:ENTROPY_BYTES_REQUIRED[word_length]]
     return bip39.mnemonic_from_bytes(entropy_bytes, wordlist=Seed.get_wordlist(wordlist_language_code)).split()
 
 

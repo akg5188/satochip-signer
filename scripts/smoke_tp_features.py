@@ -3,6 +3,7 @@ import sys
 import tempfile
 import types
 from pathlib import Path
+from PIL import Image, ImageDraw
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -283,6 +284,7 @@ def main() -> int:
             _seedkeeper_decode_secret_detail,
         )
         from seedsigner.gui.components import reflow_text_into_pages
+        from seedsigner.gui.keyboard import Keyboard
         import seedsigner.views.seed_views as seed_views_mod
         import seedsigner.views.tools_views as tools_views_mod
         import seedsigner.views.tp_views as tp_views_mod
@@ -324,11 +326,27 @@ def main() -> int:
         assert mnemonic_generation.normalize_cards_for_iancoleman("ahqs9dtc") == "AH QS 9D TC"
         assert mnemonic_generation.format_cards_for_iancoleman_hash("ah qs 9dtc") == "A\u2665 Q\u2660 9\u2666 T\u2663"
         assert mnemonic_generation.normalize_hex_for_iancoleman("60 55 17 82 11 46 41 6f") == "605517821146416F"
+        assert mnemonic_generation.format_hex_for_iancoleman_hash("60 55 17 82 11 46 41 6F") == "605517821146416f"
         assert mnemonic_generation.hex_entropy_bit_length("605517821146416F") == 64
         assert mnemonic_generation.hex_entropy_matches_word_length("00000000000000000000000000000000", 12)
-        assert mnemonic_generation.generate_mnemonic_from_hex("00000000000000000000000000000000", 12) == (
-            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".split()
+        assert mnemonic_generation.generate_mnemonic_from_hex("f2a83b9c7d4e1a0b5f6e9d8c7b6a5f4e", 12) == (
+            "huge protect deal panel bullet during fog annual crew cattle anchor rival".split()
         )
+        keyboard = Keyboard(
+            draw=ImageDraw.Draw(Image.new("RGB", (240, 240))),
+            charset="".join(["23456789", "ATJQKCDHS"]),
+            charset_rows=["23456789", "ATJQKCDHS"],
+            selected_char="A",
+            rows=2,
+            cols=9,
+            rect=(0, 40, 180, 120),
+            additional_keys=[],
+            render_now=False,
+        )
+        keyboard.set_selected_key_indices(8, 1)
+        assert keyboard.get_selected_key().code == "S"
+        assert keyboard.update_from_input(Keyboard.ENTER_TOP) == "9"
+        assert keyboard.get_selected_key().code == "9"
         full_deck = " ".join(f"{value}{suit}" for suit in "CDHS" for value in "A23456789TJQK")
         assert mnemonic_generation.card_entropy_bit_length(full_deck) == 232
         assert not mnemonic_generation.card_entropy_is_sufficient("AH QS 9D TC", 12)
@@ -861,7 +879,7 @@ def main() -> int:
                 _FakeHexEntryScreen.last_kwargs = kwargs
 
             def display(self):
-                return {"textToEncode": "00000000000000000000000000000000"}
+                return {"textToEncode": "f2a83b9c7d4e1a0b5f6e9d8c7b6a5f4e"}
 
         tools_views_mod.ToolsTextQRTextEntryScreen = _FakeHexEntryScreen
         try:
@@ -869,7 +887,7 @@ def main() -> int:
             hex_view.run_screen = lambda *args, **kwargs: 0
             dest = hex_view.run()
             assert dest.View_cls.__name__ == "ToolsHexEntropyReviewView"
-            assert dest.view_args["hex_text"] == "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+            assert dest.view_args["hex_text"] == "F2 A8 3B 9C 7D 4E 1A 0B 5F 6E 9D 8C 7B 6A 5F 4E"
             assert _FakeHexEntryScreen.last_kwargs["quick_space_backspace"] is True
             assert _FakeHexEntryScreen.last_kwargs["custom_charset_rows"] == ["0123456789", "ABCDEF"]
             assert _FakeHexEntryScreen.last_kwargs["custom_selected_char"] == "0"
@@ -896,7 +914,7 @@ def main() -> int:
             assert "继续编辑" in review_capture["labels"]
             assert dest.View_cls.__name__ == "SeedWordsWarningView"
             assert hex_review_view.controller.storage.pending_seed.mnemonic_display_list == (
-                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".split()
+                "huge protect deal panel bullet during fog annual crew cattle anchor rival".split()
             )
         finally:
             tools_views_mod.ToolsTextQRTextEntryScreen = orig_card_entry_screen
