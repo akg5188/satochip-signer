@@ -3,8 +3,8 @@
   "profiles": {
     "firmware-clean": {
       "title": "当前 clean 正式树莓派固件",
-      "release_tag": "offline-signer-firmware-20260403-clean",
-      "source_tag": "offline-signer-clean-source-20260403",
+      "release_tag": "offline-signer-firmware-20260408-clean",
+      "source_tag": "offline-signer-clean-source-20260408",
       "artifact_type": "firmware_xz",
       "artifact_path": "dist/system-update-latest.img.xz",
       "sha_path": "dist/system-update-latest.img.xz.sha256",
@@ -20,16 +20,16 @@
         "XZ_THREADS": "1"
       },
       "expected": {
-        "repo_head": "938eb720378b479d6e20bf297beb2738e3d8cbc9",
-        "compressed_image_sha256": "ba3b136ed80a91e7cb7da32abf707aad616dc9f1cb50c2e83e4a05a1739d6f31",
+        "repo_head": "8a87ae5d1d19d3a7a2809a2b13327afee490364f",
+        "compressed_image_sha256": "98ce03bc4e0920e0ac555c851384d623fba9c09da9c19df531c575ac5a450023",
         "repo_dirty": "0",
         "build_clean_mode": "clean"
       }
     },
     "wallet-release": {
       "title": "当前正式安卓观察钱包",
-      "release_tag": "wallet-android-20260403-0.1.3",
-      "source_tag": "wallet-android-20260403-0.1.3-source",
+      "release_tag": "wallet-android-20260408-0.1.4",
+      "source_tag": "wallet-android-20260408-0.1.4-source",
       "artifact_type": "apk",
       "artifact_path": "dist/satochip-wallet-release.apk",
       "sha_path": "dist/satochip-wallet-release.apk.sha256",
@@ -41,9 +41,9 @@
         "WALLET_GRADLE_WORKERS_MAX": "1"
       },
       "expected": {
-        "repo_head": "70b6cae11acb1b7836c9eef8684ae681081c5e5d",
-        "artifact_sha256": "4cb52656e888cbd66f86fa8fd3a4c1f321ac80f98e852d81269b3648353f07bb",
-        "version_name": "0.1.3"
+        "repo_head": "8a87ae5d1d19d3a7a2809a2b13327afee490364f",
+        "artifact_sha256": "0a84fdf7ce58488b246b36d9b007160e73d32893772b9709bd39326672f3a5e9",
+        "version_name": "0.1.4"
       }
     }
   }

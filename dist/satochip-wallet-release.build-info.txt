@@ -1,7 +1,7 @@
 module=wallet
 artifact_path=dist/satochip-wallet-release.apk
-artifact_sha256=b388668f893235d2cbfe56b6bd1a89dd58f611ee1abaf01801960407a56c96f8
-version_name=0.1.3
-repo_head=dd856f26bf9179563f9760bb85caff9ab504dcd2
+artifact_sha256=0a84fdf7ce58488b246b36d9b007160e73d32893772b9709bd39326672f3a5e9
+version_name=0.1.4
+repo_head=8a87ae5d1d19d3a7a2809a2b13327afee490364f
 build_script=scripts/build_wallet_release.sh
-build_time_utc=2026-04-07T13:40:57Z
+build_time_utc=2026-04-08T11:40:46Z

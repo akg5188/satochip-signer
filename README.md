@@ -19,9 +19,9 @@
 当前该下载的 release：
 
 - 树莓派当前固件：
-  看 [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
+  [offline-signer-firmware-20260408-clean](https://github.com/akg5188/satochip-signer/releases/tag/offline-signer-firmware-20260408-clean)
 - 安卓正式钱包：
-  [wallet-android-20260403-0.1.3](https://github.com/akg5188/satochip-signer/releases/tag/wallet-android-20260403-0.1.3)
+  [wallet-android-20260408-0.1.4](https://github.com/akg5188/satochip-signer/releases/tag/wallet-android-20260408-0.1.4)
 - 安卓智能卡 App：
   [smartcard-app-android-20260330](https://github.com/akg5188/satochip-signer/releases/tag/smartcard-app-android-20260330)
 - 智能卡 applet：
@@ -87,46 +87,30 @@ bash scripts/rebuild_official_release.sh wallet-release
 | 给 `BlueWallet` 做 `BTC PSBT` 冷签 | 树莓派离线签名器 | [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md) |
 | 想系统搞懂 `BIP85` 子助记词 | 树莓派离线签名器 | [BIP85子助记词使用教程](docs/BIP85子助记词使用教程.zh-CN.md) |
 | 想把助记词做成钛板/钢板备份 | 树莓派离线签名器 | [钛板打孔备份助记词教程](docs/钛板打孔备份助记词教程.zh-CN.md) |
-| 刷树莓派固件 | `dist/` | `system-update-card-entropy-test.img.xz` |
+| 刷树莓派固件 | `dist/` | `system-update-latest.img.xz` |
 | 给智能卡刷官方 applet | 官方 release | [官方程序下载验真与校验](docs/官方程序下载验真与校验.zh-CN.md) |
 | 在 `Tails` 里初始化 `Satochip` 卡、设 PIN、导助记词 | `backups/satochip-utils/` | 对应中文教程 |
 
-## 两张最重要的树莓派镜像
+## 当前最重要的树莓派正式镜像
 
-仓库和 GitHub 现在主要保留两张树莓派镜像：
-
-- `dist/system-update-card-entropy-test.img.xz`
-  这是现在优先推荐直接刷的本机功能测试包。
-  GitHub 当前公开下载入口使用同内容的公开文件名：
-  `system-update-seedkeeper-suite-test.img.xz`
-  已确认支持：
-  - 自有安卓钱包扫码签名
-  - `BlueWallet` 的 `BTC PSBT`
-  - `TokenPocket` 中转场景
-  - 助记词/BIP39 序号查看、原始熵二维码复核、`BIP85` 子助记词、钢板数字流程、智能卡工具、固件完整性自检
-  - 当前助记词与 `BIP85` 子助记词写入 `SatochipApplet / SeedKeeper`
-  - `助记词工具` 里的 `智能卡真随机创建助记词`
-  - 智能卡工具里的 `SeedKeeper` 功能入口和 `Satochip` 功能入口
-  - `SeedKeeper` 里保存二次加密后的假助记词，并可重新加载回树莓派继续二次还原
-  - 分开的 `更改 Satochip PIN / 更改 SeedKeeper PIN`
-  - 分开的 `重置 Satochip / 重置 SeedKeeper`
-  - 开机 `4-12` 位数字登录密码
-  - 交易详情核对页 + 单次 PIN 流程
-  注意：
-  - 这张是当前功能版，不是 clean 逐字节复现基线
-  - 当前长期建议是 `一张卡只装一个程序`
-  - `重置 Satochip / 重置 SeedKeeper` 只建议在专用单程序卡上使用
-  - 如果同一张卡还装了另一个 applet，不要在固件里做恢复出厂
-  - build info 在：
-    `dist/system-update-card-entropy-test.build-info.txt`
-  - `sha256 = 4b04c5fe4f07eb759c5c40c1809cae57216b2a215d90e1081121fd3ccc873100`
+当前正式推荐固件就是：
 
 - `dist/system-update-latest.img.xz`
-  这是保留的 clean 正式基线。
-  用途：
-  - 以后严格重建并校验哈希
-  - 做长期基线留档
-  - 不再作为当前首先推荐下载的固件
+- `dist/system-update-latest.img.xz.sha256`
+- `dist/system-update-latest.build-info.txt`
+- 固件 release：
+  `offline-signer-firmware-20260408-clean`
+- 源码冻结 tag：
+  `offline-signer-clean-source-20260408`
+- `sha256 = 98ce03bc4e0920e0ac555c851384d623fba9c09da9c19df531c575ac5a450023`
+
+这张正式固件已经把这次最重要的修复和验证一起带上：
+
+- `BlueWallet` 扫回已签名 `BTC PSBT` 的二维码兼容性修复
+- 已签名 `PSBT` 按输入格式回传
+- `PSBT / 已签名交易` 自动动画二维码恢复
+- 二维码显示尺寸修正
+- 固件 smoke、桌面模拟、二维码 round-trip、模块导入 smoke
 
 怎么对应源码，看这里：
 
