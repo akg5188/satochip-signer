@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+WALLET_DIR="$ROOT_DIR/wallet"
 SDK_DIR="${ANDROID_SDK_ROOT:-/tmp/satochip-android-sdk}"
 TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
 TOOLS_DIR="$SDK_DIR/cmdline-tools"
@@ -35,5 +36,11 @@ yes | "$LATEST_DIR/bin/sdkmanager" --sdk_root="$SDK_DIR" --licenses >/dev/null |
 cat > "$ROOT_DIR/local.properties" <<EOF
 sdk.dir=$SDK_DIR
 EOF
+
+if [[ -d "$WALLET_DIR" ]]; then
+cat > "$WALLET_DIR/local.properties" <<EOF
+sdk.dir=$SDK_DIR
+EOF
+fi
 
 printf 'SDK ready at %s\n' "$SDK_DIR"

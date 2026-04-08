@@ -7,6 +7,7 @@ import java.net.URLEncoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -17,9 +18,11 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.bitcoinj.core.LegacyAddress
+import org.bitcoinj.core.Transaction
 import org.bitcoinj.core.SegwitAddress
 import org.bitcoinj.core.Utils
 import org.bitcoinj.script.ScriptBuilder
+import org.bitcoinj.script.ScriptPattern
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.coroutines.async
@@ -30,14 +33,14 @@ import kotlinx.coroutines.withContext
 
 private const val BITCOIN_DEFAULT_GAP_LIMIT = 20
 private const val BITCOIN_MAX_DISCOVERY_INDEX = 1000
-private const val BITCOIN_INITIAL_RECEIVE_PROBE_LIMIT = 200
-private const val BITCOIN_INITIAL_CHANGE_PROBE_LIMIT = 40
 private const val BITCOIN_DISCOVERY_BATCH_SIZE = 10
 private const val BITCOIN_ACTIVITY_FETCH_BATCH_SIZE = 8
 private const val BITCOIN_HTTP_RETRY_PER_CANDIDATE = 2
 private const val BITCOIN_DUST_THRESHOLD_SATS = 546L
 private const val BITCOIN_HTTP_CACHE_TTL_MS = 30_000L
 private const val BITCOIN_HOST_RATE_LIMIT_BACKOFF_MS = 180_000L
+private const val BITCOIN_ELECTRUM_DISCOVERY_BATCH_SIZE = 40
+private const val BITCOIN_ELECTRUM_ACTIVITY_LIMIT = 60
 
 data class BitcoinAccountSnapshot(
     val balanceSats: Long,
@@ -98,6 +101,7 @@ private data class BitcoinBranchDiscovery(
     val lastUsedIndex: Int,
     val usedIndices: List<Int>,
     val usedAddresses: List<String>,
+    val usedKeyMaterials: List<BitcoinDerivedKeyMaterial>,
 )
 
 private data class BitcoinChainActivity(
@@ -124,6 +128,9 @@ object BitcoinTransferService {
         val cachedAt: Long,
     )
 
+    internal var electrumServerResolverOverride: ((String) -> BitcoinElectrumServer?)? = null
+    internal var btcPriceFetcherOverride: (suspend () -> Double?)? = null
+
     private val allowedHosts = setOf("blockstream.info", "mempool.space", "mempool.emzy.de", "btcscan.org")
     private val client = TrustedNetwork.newPinnedClient(
         OkHttpClient.Builder()
@@ -139,12 +146,27 @@ object BitcoinTransferService {
         includeActivity: Boolean = false,
         progress: ((String) -> Unit)? = null,
     ): BitcoinAccountSnapshot = withContext(Dispatchers.IO) {
+        val electrumServer = resolveElectrumServer(account.prefix)
+        var fallbackToQuickHttpSync = false
+        if (electrumServer != null) {
+            runCatching {
+                syncAccountWithElectrum(
+                    account = account,
+                    includeActivity = includeActivity,
+                    progress = progress,
+                    electrumServer = electrumServer,
+                )
+            }.onFailure {
+                fallbackToQuickHttpSync = true
+                progress?.invoke("Electrum 快速同步失败，正在回退公共接口...")
+            }.getOrNull()?.let { return@withContext it }
+        }
         coroutineScope {
             progress?.invoke("正在扫描 BTC 收款地址...")
             val receiveDeferred = async { discoverBranch(account, branch = 0, progress = progress) }
             progress?.invoke("正在扫描 BTC 找零地址...")
             val changeDeferred = async { discoverBranch(account, branch = 1, progress = progress) }
-            val priceDeferred = async { runCatching { EvmRpc.fetchCoingeckoPriceForSymbol("BTC") }.getOrNull() }
+            val priceDeferred = async { fetchBitcoinUsdPrice() }
 
             val receive = receiveDeferred.await()
             val change = changeDeferred.await()
@@ -153,8 +175,9 @@ object BitcoinTransferService {
             val ownedAddresses = (receive.usedAddresses + change.usedAddresses).distinct()
             val priceUsd = priceDeferred.await()
             val activityWarning = StringBuilder()
-            var activityComplete = !includeActivity || ownedAddresses.isEmpty()
-            val recentActivity = if (includeActivity && ownedAddresses.isNotEmpty()) {
+            var activityComplete = ownedAddresses.isEmpty()
+            val shouldFetchActivityInline = includeActivity && ownedAddresses.isNotEmpty() && !fallbackToQuickHttpSync
+            val recentActivity = if (shouldFetchActivityInline) {
                 progress?.invoke("正在拉取 BTC 最近交易...")
                 runCatching {
                     fetchAccountActivity(
@@ -195,6 +218,34 @@ object BitcoinTransferService {
                 recentActivity = recentActivity,
             )
         }
+    }
+
+    suspend fun fetchRecentActivity(
+        prefix: String,
+        ownedAddresses: Set<String>,
+    ): List<WalletActivityItem> = withContext(Dispatchers.IO) {
+        val electrumServer = resolveElectrumServer(prefix)
+        if (electrumServer != null) {
+            runCatching {
+                BitcoinElectrumClient(electrumServer).use { client ->
+                    fetchAccountActivityWithElectrum(
+                        prefix = prefix,
+                        ownedAddresses = ownedAddresses,
+                        client = client,
+                    )
+                }
+            }.getOrNull()?.let { return@withContext it }
+        }
+        fetchAccountActivity(prefix = prefix, ownedAddresses = ownedAddresses)
+    }
+
+    private fun resolveElectrumServer(prefix: String): BitcoinElectrumServer? {
+        return electrumServerResolverOverride?.invoke(prefix) ?: bitcoinElectrumServerForPrefix(prefix)
+    }
+
+    private suspend fun fetchBitcoinUsdPrice(): Double? {
+        return btcPriceFetcherOverride?.invoke()
+            ?: runCatching { EvmRpc.fetchCoingeckoPriceForSymbol("BTC") }.getOrNull()
     }
 
     suspend fun prepareTransfer(
@@ -302,7 +353,7 @@ object BitcoinTransferService {
         prefix: String,
         ownedAddresses: Set<String>,
     ): List<WalletActivityItem> = withContext(Dispatchers.IO) {
-        fetchAccountActivity(prefix, ownedAddresses)
+        fetchRecentActivity(prefix, ownedAddresses)
     }
 
     suspend fun fetchTransactionDetail(
@@ -359,6 +410,326 @@ object BitcoinTransferService {
         )
     }
 
+    private suspend fun syncAccountWithElectrum(
+        account: BitcoinWatchAccount,
+        includeActivity: Boolean,
+        progress: ((String) -> Unit)?,
+        electrumServer: BitcoinElectrumServer,
+    ): BitcoinAccountSnapshot = coroutineScope {
+        BitcoinElectrumClient(electrumServer).use { client ->
+            progress?.invoke("正在通过 Electrum 快速同步 BTC 收款地址...")
+            val receive = discoverBranchWithElectrum(
+                account = account,
+                branch = 0,
+                client = client,
+                progress = progress,
+            )
+            progress?.invoke("正在通过 Electrum 快速同步 BTC 找零地址...")
+            val change = discoverBranchWithElectrum(
+                account = account,
+                branch = 1,
+                client = client,
+                progress = progress,
+            )
+            val priceDeferred = async { fetchBitcoinUsdPrice() }
+            val usedMaterials = (receive.usedKeyMaterials + change.usedKeyMaterials)
+                .associateBy { it.address }
+                .values
+                .toList()
+            val utxos = fetchElectrumUtxos(
+                usedMaterials = usedMaterials,
+                client = client,
+            ).sortedByDescending { it.valueSats }
+            val balanceSats = utxos.sumOf { it.valueSats }
+            val ownedAddresses = usedMaterials.map { it.address }
+            var activityComplete = ownedAddresses.isEmpty()
+            val activityWarning = StringBuilder()
+            val recentActivity = if (includeActivity && ownedAddresses.isNotEmpty()) {
+                progress?.invoke("正在通过 Electrum 刷新 BTC 最近交易...")
+                runCatching {
+                    fetchAccountActivityWithElectrum(
+                        prefix = account.prefix,
+                        ownedAddresses = ownedAddresses.toSet(),
+                        client = client,
+                    )
+                }.onSuccess {
+                    activityComplete = true
+                }.getOrElse {
+                    activityComplete = false
+                    activityWarning.append(" 最近交易暂未刷新。")
+                    emptyList()
+                }
+            } else {
+                emptyList()
+            }
+            val baseStatus = if (utxos.isEmpty()) {
+                "已通过 Electrum 同步链上状态，当前没有可用 UTXO。"
+            } else {
+                "已通过 Electrum 发现 ${utxos.size} 个 UTXO，可用余额 ${formatBitcoinSats(balanceSats)}"
+            }
+            BitcoinAccountSnapshot(
+                balanceSats = balanceSats,
+                priceUsd = priceDeferred.await(),
+                utxoCount = utxos.size,
+                nextReceiveIndex = receive.nextIndex,
+                nextReceiveAddress = receive.nextAddress,
+                nextChangeIndex = change.nextIndex,
+                nextChangeAddress = change.nextAddress,
+                lastReceiveUsedIndex = receive.lastUsedIndex,
+                lastChangeUsedIndex = change.lastUsedIndex,
+                receiveUsedIndices = receive.usedIndices,
+                changeUsedIndices = change.usedIndices,
+                ownedAddresses = ownedAddresses,
+                spendableUtxos = utxos,
+                status = baseStatus + activityWarning.toString(),
+                activityComplete = activityComplete,
+                recentActivity = recentActivity,
+            )
+        }
+    }
+
+    private fun discoverBranchWithElectrum(
+        account: BitcoinWatchAccount,
+        branch: Int,
+        client: BitcoinElectrumClient,
+        progress: ((String) -> Unit)? = null,
+    ): BitcoinBranchDiscovery {
+        val branchLabel = if (branch == 0) "收款" else "找零"
+        val knownUsedIndices = if (branch == 0) {
+            account.receiveUsedIndices.toMutableSet()
+        } else {
+            account.changeUsedIndices.toMutableSet()
+        }
+        val usedMaterials = linkedMapOf<String, BitcoinDerivedKeyMaterial>()
+        val lastUsedHint = if (branch == 0) account.lastReceiveUsedIndex else account.lastChangeUsedIndex
+        val initialLastUsedIndex = maxOf(lastUsedHint, knownUsedIndices.maxOrNull() ?: -1)
+        var index = if (initialLastUsedIndex >= 0) {
+            (initialLastUsedIndex - BITCOIN_DEFAULT_GAP_LIMIT + 1).coerceAtLeast(0)
+        } else {
+            0
+        }
+        var consecutiveUnused = 0
+        var lastUsedIndex = initialLastUsedIndex
+        var shouldStop = false
+
+        knownUsedIndices.sorted().forEach { usedIndex ->
+            val material = deriveBitcoinKeyMaterial(account, branch = branch, index = usedIndex)
+            usedMaterials[material.address] = material
+        }
+
+        while (
+            index < BITCOIN_MAX_DISCOVERY_INDEX &&
+            consecutiveUnused < BITCOIN_DEFAULT_GAP_LIMIT &&
+            !shouldStop
+        ) {
+            val batchEndExclusive = minOf(index + BITCOIN_ELECTRUM_DISCOVERY_BATCH_SIZE, BITCOIN_MAX_DISCOVERY_INDEX)
+            progress?.invoke("正在通过 Electrum 扫描 BTC ${branchLabel}地址 ${index}-${batchEndExclusive - 1}...")
+            val materialsByIndex = (index until batchEndExclusive).associateWith { currentIndex ->
+                deriveBitcoinKeyMaterial(account, branch = branch, index = currentIndex)
+            }
+            val historyByScriptHash = client.fetchScriptHashHistory(
+                materialsByIndex.values.map { material ->
+                    electrumScriptHash(material.scriptPubKey)
+                }
+            )
+            for (currentIndex in index until batchEndExclusive) {
+                val material = materialsByIndex[currentIndex] ?: continue
+                val history = historyByScriptHash[electrumScriptHash(material.scriptPubKey)].orEmpty()
+                val isUsed = history.isNotEmpty() || currentIndex in knownUsedIndices
+                if (isUsed) {
+                    knownUsedIndices += currentIndex
+                    lastUsedIndex = maxOf(lastUsedIndex, currentIndex)
+                    consecutiveUnused = 0
+                    usedMaterials[material.address] = material
+                } else {
+                    consecutiveUnused += 1
+                    if (consecutiveUnused >= BITCOIN_DEFAULT_GAP_LIMIT) {
+                        shouldStop = true
+                        break
+                    }
+                }
+            }
+            index = batchEndExclusive
+        }
+
+        val nextIndex = (lastUsedIndex + 1).coerceAtLeast(0)
+        val nextAddress = deriveBitcoinKeyMaterial(account, branch = branch, index = nextIndex).address
+        return BitcoinBranchDiscovery(
+            utxos = emptyList(),
+            nextIndex = nextIndex,
+            nextAddress = nextAddress,
+            lastUsedIndex = lastUsedIndex,
+            usedIndices = knownUsedIndices.toList().sorted(),
+            usedAddresses = usedMaterials.keys.toList(),
+            usedKeyMaterials = usedMaterials.values.toList(),
+        )
+    }
+
+    private fun fetchElectrumUtxos(
+        usedMaterials: List<BitcoinDerivedKeyMaterial>,
+        client: BitcoinElectrumClient,
+    ): List<BitcoinSpendableUtxo> {
+        if (usedMaterials.isEmpty()) return emptyList()
+        val materialByScriptHash = usedMaterials.associateBy { material ->
+            electrumScriptHash(material.scriptPubKey)
+        }
+        val utxosByScriptHash = client.fetchScriptHashUtxos(materialByScriptHash.keys.toList())
+        return buildList {
+            utxosByScriptHash.forEach { (scriptHash, utxos) ->
+                val material = materialByScriptHash[scriptHash] ?: return@forEach
+                utxos.forEach { utxo ->
+                    add(
+                        BitcoinSpendableUtxo(
+                            txid = utxo.txid,
+                            vout = utxo.vout,
+                            valueSats = utxo.valueSats,
+                            keyMaterial = material,
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun fetchAccountActivityWithElectrum(
+        prefix: String,
+        ownedAddresses: Set<String>,
+        client: BitcoinElectrumClient,
+    ): List<WalletActivityItem> {
+        if (ownedAddresses.isEmpty()) return emptyList()
+        val addressScriptHashes = ownedAddresses.associateWith { address ->
+            electrumScriptHash(outputScriptForAddress(prefix, address))
+        }
+        val historyByScriptHash = client.fetchScriptHashHistory(addressScriptHashes.values.toList())
+        val txHeights = linkedMapOf<String, Int>()
+        historyByScriptHash.values.flatten().forEach { entry ->
+            txHeights[entry.txid] = mergeElectrumHeights(txHeights[entry.txid], entry.height)
+        }
+        val selectedTxs = txHeights.entries
+            .sortedWith(
+                compareByDescending<Map.Entry<String, Int>> { if (it.value > 0) it.value else Int.MAX_VALUE }
+                    .thenByDescending { it.key }
+            )
+            .take(BITCOIN_ELECTRUM_ACTIVITY_LIMIT)
+        if (selectedTxs.isEmpty()) return emptyList()
+
+        val rawTxMap = client.fetchTransactions(selectedTxs.map { it.key })
+        if (rawTxMap.isEmpty()) return emptyList()
+
+        val params = bitcoinNetworkParamsForPrefix(prefix)
+        val currentTransactions = rawTxMap.mapValues { (_, rawHex) ->
+            Transaction(params, hexToBytes(rawHex))
+        }
+        val prevTxIds = buildSet {
+            currentTransactions.values.forEach { tx ->
+                tx.inputs.forEach { input ->
+                    if (!input.isCoinBase) {
+                        add(input.outpoint.hash.toString())
+                    }
+                }
+            }
+        } - currentTransactions.keys
+        val previousTransactions = client.fetchTransactions(prevTxIds.toList()).mapValues { (_, rawHex) ->
+            Transaction(params, hexToBytes(rawHex))
+        }
+        val allTransactions = currentTransactions + previousTransactions
+        val headerTimes = client.fetchBlockHeaders(selectedTxs.mapNotNull { it.value.takeIf { height -> height > 0 } }.distinct())
+            .mapValues { (_, headerHex) -> parseElectrumHeaderTimestamp(headerHex) }
+
+        return selectedTxs.mapNotNull { (txid, height) ->
+            val tx = currentTransactions[txid] ?: return@mapNotNull null
+            val parsed = parseElectrumTransaction(
+                prefix = prefix,
+                tx = tx,
+                height = height,
+                timestamp = headerTimes[height] ?: System.currentTimeMillis(),
+                ownedAddresses = ownedAddresses,
+                allTransactions = allTransactions,
+            ) ?: return@mapNotNull null
+            WalletActivityItem(
+                id = "btc-chain-${parsed.txid}",
+                chainId = WalletChains.DEFAULT.chainId,
+                kind = WalletActivityKind.ONCHAIN,
+                title = if (parsed.incoming) "收到 BTC" else "转出 BTC",
+                subtitle = parsed.counterparty,
+                detail = parsed.detail,
+                amountLabel = "${if (parsed.netSats >= 0) "+" else "-"}${formatBitcoinSats(kotlin.math.abs(parsed.netSats))}",
+                statusLabel = parsed.statusLabel,
+                timestamp = parsed.timestamp,
+                txHash = parsed.txid,
+                externalUrl = parsed.externalUrl,
+            )
+        }.sortedByDescending { it.timestamp }
+    }
+
+    private fun parseElectrumTransaction(
+        prefix: String,
+        tx: Transaction,
+        height: Int,
+        timestamp: Long,
+        ownedAddresses: Set<String>,
+        allTransactions: Map<String, Transaction>,
+    ): BitcoinChainActivity? {
+        var receivedSats = 0L
+        var spentSats = 0L
+        var externalInput = ""
+        var externalOutput = ""
+
+        tx.inputs.forEach { input ->
+            if (input.isCoinBase) return@forEach
+            val prevTx = allTransactions[input.outpoint.hash.toString()] ?: return@forEach
+            val prevOutput = prevTx.outputs.getOrNull(input.outpoint.index.toInt()) ?: return@forEach
+            val address = decodeOutputAddress(prefix, prevOutput.scriptBytes)
+            val value = prevOutput.value.value
+            if (ownedAddresses.contains(address)) {
+                spentSats += value
+            } else if (externalInput.isBlank() && address.isNotBlank()) {
+                externalInput = address
+            }
+        }
+
+        tx.outputs.forEach { output ->
+            val address = decodeOutputAddress(prefix, output.scriptBytes)
+            val value = output.value.value
+            if (ownedAddresses.contains(address)) {
+                receivedSats += value
+            } else if (externalOutput.isBlank() && address.isNotBlank()) {
+                externalOutput = address
+            }
+        }
+
+        val netSats = receivedSats - spentSats
+        if (netSats == 0L && receivedSats == 0L && spentSats == 0L) return null
+
+        return BitcoinChainActivity(
+            txid = tx.txId.toString(),
+            timestamp = timestamp,
+            incoming = netSats >= 0L,
+            netSats = if (netSats == 0L && receivedSats > 0L) receivedSats else netSats,
+            counterparty = if (netSats >= 0L) {
+                shortBitcoinCounterparty(externalInput.ifBlank { "链上账户" })
+            } else {
+                shortBitcoinCounterparty(externalOutput.ifBlank { "链上账户" })
+            },
+            detail = "${shortBitcoinCounterparty(externalInput)} -> ${shortBitcoinCounterparty(externalOutput)}",
+            statusLabel = if (height > 0) "链上确认" else "待确认",
+            externalUrl = "${bitcoinEsploraBaseUrl(prefix)}/tx/${tx.txId}",
+        )
+    }
+
+    private fun mergeElectrumHeights(
+        existing: Int?,
+        candidate: Int,
+    ): Int {
+        if (existing == null) return candidate
+        return when {
+            existing > 0 && candidate > 0 -> maxOf(existing, candidate)
+            existing > 0 -> existing
+            candidate > 0 -> candidate
+            else -> maxOf(existing, candidate)
+        }
+    }
+
     private suspend fun discoverBranch(
         account: BitcoinWatchAccount,
         branch: Int,
@@ -371,16 +742,9 @@ object BitcoinTransferService {
         } else {
             account.changeUsedIndices.toMutableSet()
         }
-        val usedAddresses = mutableListOf<String>()
+        val usedMaterials = linkedMapOf<String, BitcoinDerivedKeyMaterial>()
         val lastUsedHint = if (branch == 0) account.lastReceiveUsedIndex else account.lastChangeUsedIndex
         val initialLastUsedIndex = maxOf(lastUsedHint, knownUsedIndices.maxOrNull() ?: -1)
-        val initialProbeLimit = if (initialLastUsedIndex >= 0 || knownUsedIndices.isNotEmpty()) {
-            0
-        } else if (branch == 0) {
-            BITCOIN_INITIAL_RECEIVE_PROBE_LIMIT
-        } else {
-            BITCOIN_INITIAL_CHANGE_PROBE_LIMIT
-        }
         var index = if (initialLastUsedIndex >= 0) {
             (initialLastUsedIndex - BITCOIN_DEFAULT_GAP_LIMIT + 1).coerceAtLeast(0)
         } else {
@@ -401,7 +765,7 @@ object BitcoinTransferService {
                     usedIndex to async { fetchAddressInfo(account.prefix, material.address) }
                 }
                 materials.forEach { (usedIndex, material) ->
-                    usedAddresses += material.address
+                    usedMaterials[material.address] = material
                     val addressInfo = addressInfoFetches[usedIndex]?.await() ?: BitcoinAddressInfo(isUsed = true, hasUnspent = false)
                     val utxoArray = if (addressInfo.hasUnspent) {
                         fetchAddressUtxos(account.prefix, material.address)
@@ -423,7 +787,7 @@ object BitcoinTransferService {
 
         while (
             index < BITCOIN_MAX_DISCOVERY_INDEX &&
-            (index < initialProbeLimit || consecutiveUnused < BITCOIN_DEFAULT_GAP_LIMIT)
+            consecutiveUnused < BITCOIN_DEFAULT_GAP_LIMIT
         ) {
             val batchEndExclusive = minOf(index + BITCOIN_DISCOVERY_BATCH_SIZE, BITCOIN_MAX_DISCOVERY_INDEX)
             progress?.invoke(
@@ -459,7 +823,7 @@ object BitcoinTransferService {
                     knownUsedIndices += currentIndex
                     lastUsedIndex = currentIndex
                     consecutiveUnused = 0
-                    usedAddresses += material.address
+                    usedMaterials[material.address] = material
                     val utxoArray = utxoFetches[material.address]?.await() ?: JSONArray()
                     for (position in 0 until utxoArray.length()) {
                         val utxo = utxoArray.optJSONObject(position) ?: continue
@@ -472,7 +836,7 @@ object BitcoinTransferService {
                     }
                 } else {
                     consecutiveUnused += 1
-                    if (consecutiveUnused >= BITCOIN_DEFAULT_GAP_LIMIT && batchEndExclusive >= initialProbeLimit) {
+                    if (consecutiveUnused >= BITCOIN_DEFAULT_GAP_LIMIT) {
                         break
                     }
                 }
@@ -488,7 +852,8 @@ object BitcoinTransferService {
             nextAddress = nextAddress,
             lastUsedIndex = lastUsedIndex,
             usedIndices = knownUsedIndices.toList().sorted(),
-            usedAddresses = usedAddresses.distinct(),
+            usedAddresses = usedMaterials.keys.toList(),
+            usedKeyMaterials = usedMaterials.values.toList(),
         )
     }
 
@@ -902,6 +1267,41 @@ object BitcoinTransferService {
         val parsed = candidate.toDoubleOrNull()
         require(parsed != null && parsed > 0.0) { "手续费率请输入正数 sat/vB" }
         return parsed
+    }
+
+    private fun electrumScriptHash(scriptPubKey: ByteArray): String {
+        return MessageDigest.getInstance("SHA-256")
+            .digest(scriptPubKey)
+            .reversedArray()
+            .joinToString("") { byte -> "%02x".format(byte) }
+    }
+
+    private fun parseElectrumHeaderTimestamp(headerHex: String): Long {
+        val bytes = hexToBytes(headerHex)
+        if (bytes.size < 72) return System.currentTimeMillis()
+        val seconds = ByteBuffer.wrap(bytes, 68, 4)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .int
+            .toLong() and 0xffffffffL
+        return seconds * 1000L
+    }
+
+    private fun decodeOutputAddress(prefix: String, scriptPubKey: ByteArray): String {
+        val params = bitcoinNetworkParamsForPrefix(prefix)
+        val script = org.bitcoinj.script.Script(scriptPubKey)
+        return runCatching {
+            when {
+                ScriptPattern.isP2PKH(script) -> LegacyAddress.fromPubKeyHash(params, ScriptPattern.extractHashFromP2PKH(script)).toString()
+                ScriptPattern.isP2SH(script) -> LegacyAddress.fromScriptHash(params, ScriptPattern.extractHashFromP2SH(script)).toString()
+                ScriptPattern.isP2WPKH(script) || ScriptPattern.isP2WSH(script) -> {
+                    SegwitAddress.fromHash(params, ScriptPattern.extractHashFromP2WH(script)).toString()
+                }
+                ScriptPattern.isP2TR(script) -> {
+                    SegwitAddress.fromProgram(params, 1, ScriptPattern.extractOutputKeyFromP2TR(script)).toString()
+                }
+                else -> ""
+            }
+        }.getOrDefault("")
     }
 
     private fun outputScriptForAddress(prefix: String, address: String): ByteArray {

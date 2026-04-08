@@ -1,5 +1,6 @@
 import math
 import base64
+import logging
 
 from embit import bip32
 from embit.networks import NETWORKS
@@ -22,6 +23,8 @@ from urtypes.crypto import PSBT as UR_PSBT
 from urtypes.crypto import Account, HDKey, Output, Keypath, PathComponent, SCRIPT_EXPRESSION_TAG_MAP, CoinInfo
 
 from seedsigner.helpers.bbqr import BBQrParts
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class BaseQrEncoder:
@@ -422,15 +425,74 @@ class BbqrPsbtQrEncoder(BaseSimpleAnimatedQREncoder):
         }
         return density_mapping.get(self.qr_density, (5, 25))
 
-    def _create_parts(self):
-        min_version, max_version = self.bbqr_version_limits
-        bbqr = BBQrParts.from_payload(
+    def _build_parts(self, version_limits):
+        min_version, max_version = version_limits
+        return BBQrParts.from_payload(
             raw=self.psbt.serialize(),
             file_type="P",
             min_version=min_version,
             max_version=max_version,
         )
+
+    def _create_parts(self):
+        requested_limits = self.bbqr_version_limits
+        fallback_limits = (5, 40)
+        try:
+            bbqr = self._build_parts(requested_limits)
+        except ValueError as exc:
+            if "requested QR settings" not in str(exc) or requested_limits == fallback_limits:
+                raise
+            logger.warning(
+                "BBQr PSBT payload did not fit qr_density=%s version_range=%s-%s; retrying with %s-%s",
+                self.qr_density,
+                requested_limits[0],
+                requested_limits[1],
+                fallback_limits[0],
+                fallback_limits[1],
+            )
+            bbqr = self._build_parts(fallback_limits)
         self.parts = bbqr.parts
+
+
+def build_bbqr_psbt_qr_encoder(psbt: PSBT, qr_density: str) -> BbqrPsbtQrEncoder:
+    requested_density = qr_density
+    fallback_densities = []
+    for density in (requested_density, SettingsConstants.DENSITY__HIGH):
+        if density not in fallback_densities:
+            fallback_densities.append(density)
+    last_exc = None
+
+    for density in fallback_densities:
+        try:
+            return BbqrPsbtQrEncoder(psbt=psbt, qr_density=density)
+        except ValueError as exc:
+            if "requested QR settings" not in str(exc):
+                raise
+            last_exc = exc
+            if density != SettingsConstants.DENSITY__HIGH:
+                logger.warning(
+                    "BBQr PSBT encoder still did not fit using qr_density=%s; retrying with qr_density=%s",
+                    density,
+                    SettingsConstants.DENSITY__HIGH,
+                )
+
+    if last_exc is not None:
+        raise last_exc
+    raise ValueError("Failed to build BBQr PSBT encoder")
+
+
+def build_signed_psbt_qr_encoder(psbt: PSBT, qr_density: str, input_qr_type: str):
+    from seedsigner.models.qr_type import QRType
+
+    if input_qr_type == QRType.PSBT__BASE43:
+        return Base43PsbtQrEncoder(psbt=psbt)
+    if input_qr_type == QRType.PSBT__BASE64:
+        return Base64PsbtQrEncoder(psbt=psbt)
+    if input_qr_type == QRType.PSBT__BBQR:
+        return build_bbqr_psbt_qr_encoder(psbt=psbt, qr_density=qr_density)
+    if input_qr_type == QRType.PSBT__SPECTER:
+        return SpecterPsbtQrEncoder(psbt=psbt, qr_density=qr_density)
+    return UrPsbtQrEncoder(psbt=psbt, qr_density=qr_density)
 
 
 @dataclass

@@ -67,6 +67,8 @@ bash scripts/rebuild_official_release.sh wallet-release
 - [固定正式发布重建入口](docs/固定正式发布重建入口.zh-CN.md)
 - [非 GitHub 关键备份清单](docs/非GitHub关键备份清单.zh-CN.md)
 - [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
+- [当前正式发布说明](docs/当前正式发布说明.zh-CN.md)
+- [真机全套回归清单](docs/真机全套回归清单.zh-CN.md)
 - [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md)
 - [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md)
 - [离线熵创建助记词教程](docs/离线熵创建助记词教程.zh-CN.md)

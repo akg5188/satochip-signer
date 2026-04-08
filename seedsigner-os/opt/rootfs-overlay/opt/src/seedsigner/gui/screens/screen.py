@@ -1008,7 +1008,7 @@ class QRDisplayScreen(BaseScreen):
             from seedsigner.models.settings import Settings
             settings = Settings.get_instance()
             cur_brightness_setting = settings.get_value(SettingsConstants.SETTING__QR_BRIGHTNESS_TIPS)
-            is_brightness_tip_enabled = False
+            is_brightness_tip_enabled = cur_brightness_setting == SettingsConstants.OPTION__ENABLED
             pending_encoder_restart = False
 
             # Loop whether the QR is a single frame or animated; each loop might adjust
@@ -1020,7 +1020,13 @@ class QRDisplayScreen(BaseScreen):
                 # Display the brightness tips toast
                 duration = 10 ** 9 * 1.2  # 1.2 seconds
                 if is_brightness_tip_enabled and time.time_ns() - self.tips_start_time.cur_count < duration:
-                    image = self.qr_encoder.part_to_image(self.qr_encoder.cur_part(), 240, 240, border=2, background_color=hex_color)
+                    image = self.qr_encoder.part_to_image(
+                        self.qr_encoder.cur_part(),
+                        self.renderer.canvas_width,
+                        self.renderer.canvas_height,
+                        border=2,
+                        background_color=hex_color,
+                    )
                     self.render_brightness_tip(image)
                     pending_encoder_restart = True
                 else:
@@ -1030,7 +1036,12 @@ class QRDisplayScreen(BaseScreen):
                         # brightness tip is stowed.
                         self.qr_encoder.restart()
                         pending_encoder_restart = False
-                    image = self.qr_encoder.next_part_image(240, 240, border=2, background_color=hex_color)
+                    image = self.qr_encoder.next_part_image(
+                        self.renderer.canvas_width,
+                        self.renderer.canvas_height,
+                        border=2,
+                        background_color=hex_color,
+                    )
 
                 with self.renderer.lock:
                     self.renderer.show_image(image)

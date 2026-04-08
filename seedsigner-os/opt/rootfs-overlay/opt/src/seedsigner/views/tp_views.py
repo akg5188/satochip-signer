@@ -78,6 +78,15 @@ logger = logging.getLogger(__name__)
 _SIGNER_PREVIEW_MODULE = None
 
 
+def _tp_bluewallet_export_script_type(xtype: str) -> str:
+    normalized = (xtype or "").strip().lower()
+    if normalized == "zpub":
+        return SettingsConstants.NATIVE_SEGWIT
+    if normalized == "xpub":
+        return SettingsConstants.LEGACY_P2PKH
+    raise ValueError(f"unsupported BlueWallet xpub type: {xtype}")
+
+
 def _smartcard_tools_destination() -> Destination:
     return Destination(ToolsTpSmartcardToolsView, clear_history=True)
 
@@ -2050,8 +2059,8 @@ class ToolsTpLoadedSeedOptionsView(View):
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     VIEW_ENTROPY = ButtonOption("查看原始熵(HEX)")
     DERIVE_ADDRESS = ButtonOption("派生路径算地址")
-    EXPORT_BTC_ZPUB = ButtonOption("导出当前助记词 BTC zpub")
-    EXPORT_BTC_XPUB = ButtonOption("导出当前助记词 BTC xpub")
+    EXPORT_BTC_ZPUB = ButtonOption("导出当前助记词到 BlueWallet(zpub)")
+    EXPORT_BTC_XPUB = ButtonOption("导出当前助记词到 BlueWallet(xpub)")
     BIP85_CHILD_SEED = ButtonOption("BIP-85 子助记词")
     IMPORT_TO_SMARTCARD = ButtonOption("写入当前助记词到智能卡")
     SAVE_TO_SEEDKEEPER = ButtonOption("写入当前助记词到 SeedKeeper")
@@ -2124,9 +2133,35 @@ class ToolsTpLoadedSeedOptionsView(View):
         if selected == self.DERIVE_ADDRESS:
             return Destination(ToolsTpDeriveAddressPathView, view_args=dict(seed_num=self.seed_num))
         if selected == self.EXPORT_BTC_ZPUB:
-            return Destination(ToolsTpSeedBtcXpubQrView, view_args=dict(seed_num=self.seed_num, xtype="zpub"))
+            from seedsigner.views.seed_views import SeedExportXpubWarningView
+
+            return Destination(
+                SeedExportXpubWarningView,
+                view_args=dict(
+                    seed_num=self.seed_num,
+                    sig_type=SettingsConstants.SINGLE_SIG,
+                    script_type=_tp_bluewallet_export_script_type("zpub"),
+                    coordinator=SettingsConstants.COORDINATOR__BLUE_WALLET,
+                    custom_derivation="",
+                    coordinator_label="BlueWallet",
+                    account=0,
+                ),
+            )
         if selected == self.EXPORT_BTC_XPUB:
-            return Destination(ToolsTpSeedBtcXpubQrView, view_args=dict(seed_num=self.seed_num, xtype="xpub"))
+            from seedsigner.views.seed_views import SeedExportXpubWarningView
+
+            return Destination(
+                SeedExportXpubWarningView,
+                view_args=dict(
+                    seed_num=self.seed_num,
+                    sig_type=SettingsConstants.SINGLE_SIG,
+                    script_type=_tp_bluewallet_export_script_type("xpub"),
+                    coordinator=SettingsConstants.COORDINATOR__BLUE_WALLET,
+                    custom_derivation="",
+                    coordinator_label="BlueWallet",
+                    account=0,
+                ),
+            )
         if selected == self.BIP85_CHILD_SEED:
             from seedsigner.views.seed_views import SeedBIP85ApplicationModeView
             return Destination(SeedBIP85ApplicationModeView, view_args=dict(seed_num=self.seed_num))
@@ -3366,8 +3401,8 @@ class ToolsTpSmartcardToolsView(View):
 
 class ToolsTpSatochipToolsView(View):
     VIEW_ADDRESS = ButtonOption("按路径查看 Satochip 地址")
-    EXPORT_BTC_ZPUB = ButtonOption("导出 Satochip BTC zpub")
-    EXPORT_BTC_XPUB = ButtonOption("导出 Satochip BTC xpub")
+    EXPORT_BTC_ZPUB = ButtonOption("导出 Satochip 到 BlueWallet(zpub)")
+    EXPORT_BTC_XPUB = ButtonOption("导出 Satochip 到 BlueWallet(xpub)")
     IMPORT_LOADED_SEED = ButtonOption("写入已加载助记词到 Satochip")
     CHANGE_PIN = ButtonOption("更改 Satochip PIN")
     FACTORY_RESET = ButtonOption("重置 Satochip")
@@ -3398,9 +3433,33 @@ class ToolsTpSatochipToolsView(View):
         if selected == self.VIEW_ADDRESS:
             return Destination(ToolsTpSmartcardAddressPathView)
         if selected == self.EXPORT_BTC_ZPUB:
-            return Destination(ToolsTpBtcXpubPinEntryView, view_args=dict(xtype="zpub"))
+            from seedsigner.views.tools_views import SatochipExportXpubWarningView
+
+            return Destination(
+                SatochipExportXpubWarningView,
+                view_args=dict(
+                    sig_type=SettingsConstants.SINGLE_SIG,
+                    script_type=_tp_bluewallet_export_script_type("zpub"),
+                    coordinator=SettingsConstants.COORDINATOR__BLUE_WALLET,
+                    custom_derivation="",
+                    coordinator_label="BlueWallet",
+                    account=0,
+                ),
+            )
         if selected == self.EXPORT_BTC_XPUB:
-            return Destination(ToolsTpBtcXpubPinEntryView, view_args=dict(xtype="xpub"))
+            from seedsigner.views.tools_views import SatochipExportXpubWarningView
+
+            return Destination(
+                SatochipExportXpubWarningView,
+                view_args=dict(
+                    sig_type=SettingsConstants.SINGLE_SIG,
+                    script_type=_tp_bluewallet_export_script_type("xpub"),
+                    coordinator=SettingsConstants.COORDINATOR__BLUE_WALLET,
+                    custom_derivation="",
+                    coordinator_label="BlueWallet",
+                    account=0,
+                ),
+            )
         if selected == self.IMPORT_LOADED_SEED:
             from seedsigner.views.tools_views import ToolsSatochipImportSeedView
             return Destination(
@@ -4687,7 +4746,7 @@ class ToolsTpSignerPsbtQrView(View):
         self.tx_hex = tx_hex
 
     def run(self):
-        if self.tx_hex:
+        if not self.psbt_base64 and self.tx_hex:
             from seedsigner.models.encode_qr import BbqrTextQrEncoder
 
             encoder = BbqrTextQrEncoder(
@@ -4700,53 +4759,29 @@ class ToolsTpSignerPsbtQrView(View):
                 max_split=8,
                 frame_repeat=1,
             )
-            parts = _collect_manual_qr_parts(encoder)
-            if len(parts) > 1:
-                self.run_screen(ToolsTpDirectQrPagerScreen, title="手动切换交易二维码", parts=parts)
-                return _tp_home_destination()
-            self.run_screen(QRDisplayScreen, qr_encoder=GenericStaticQrEncoder(data=parts[0]))
+            self.run_screen(QRDisplayScreen, qr_encoder=encoder)
             return _tp_home_destination()
 
         from embit.psbt import PSBT
         from seedsigner.models.encode_qr import (
-            BbqrPsbtQrEncoder,
-            Base43PsbtQrEncoder,
-            Base64PsbtQrEncoder,
-            SpecterPsbtQrEncoder,
-            UrPsbtQrEncoder,
+            build_signed_psbt_qr_encoder,
         )
-        from seedsigner.models.qr_type import QRType
 
         try:
             psbt = PSBT.from_base64(self.psbt_base64)
             qr_density = self.settings.get_value(SettingsConstants.SETTING__QR_DENSITY)
-            if self.input_qr_type == QRType.PSBT__BASE43:
-                encoder = Base43PsbtQrEncoder(psbt=psbt)
-            elif self.input_qr_type == QRType.PSBT__BASE64:
-                encoder = Base64PsbtQrEncoder(psbt=psbt)
-            elif self.input_qr_type == QRType.PSBT__BBQR:
-                encoder = BbqrPsbtQrEncoder(psbt=psbt, qr_density=qr_density)
-            elif self.input_qr_type == QRType.PSBT__SPECTER:
-                encoder = SpecterPsbtQrEncoder(psbt=psbt, qr_density=qr_density)
-            else:
-                encoder = UrPsbtQrEncoder(psbt=psbt, qr_density=qr_density)
+            encoder = build_signed_psbt_qr_encoder(
+                psbt=psbt,
+                qr_density=qr_density,
+                input_qr_type=self.input_qr_type,
+            )
         except Exception as exc:
             logger.warning("TP-only signed PSBT QR render failed: %s", exc)
             if not self.tx_hex:
                 return _masked_error_destination("33")
-            encoder = GenericStaticQrEncoder(data=self.tx_hex)
-        try:
-            parts = _collect_manual_qr_parts(encoder)
-        except Exception as exc:
-            logger.warning("TP-only signed PSBT QR part collection failed: %s", exc)
-            parts = []
-
-        if len(parts) > 1:
-            self.run_screen(ToolsTpDirectQrPagerScreen, title="手动切换签名二维码", parts=parts)
-            return _tp_home_destination()
-
-        if parts:
-            self.run_screen(QRDisplayScreen, qr_encoder=GenericStaticQrEncoder(data=parts[0]))
-        else:
-            self.run_screen(QRDisplayScreen, qr_encoder=encoder)
+            if not self.psbt_base64:
+                encoder = GenericStaticQrEncoder(data=self.tx_hex)
+            else:
+                return _masked_error_destination("33")
+        self.run_screen(QRDisplayScreen, qr_encoder=encoder)
         return _tp_home_destination()

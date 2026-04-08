@@ -345,7 +345,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             lastChangeUsedIndex = snapshot.lastChangeUsedIndex,
                             receiveUsedIndices = snapshot.receiveUsedIndices,
                             changeUsedIndices = snapshot.changeUsedIndices,
-                            lastSyncStatus = snapshot.status,
+                            lastSyncStatus = if (!snapshot.activityComplete && snapshot.ownedAddresses.isNotEmpty()) {
+                                "${snapshot.status} 正在后台刷新最近交易..."
+                            } else {
+                                snapshot.status
+                            },
                             lastSyncAt = syncedAt,
                             syncing = false,
                             recentActivity = when {
@@ -361,6 +365,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             info = "BTC 账户已同步：${current.label}",
                             error = "",
                         )
+                    }
+                    if (!snapshot.activityComplete && snapshot.ownedAddresses.isNotEmpty()) {
+                        launch {
+                            runCatching {
+                                BitcoinTransferService.fetchRecentActivity(
+                                    prefix = current.prefix,
+                                    ownedAddresses = snapshot.ownedAddresses.toSet(),
+                                )
+                            }.onSuccess { recentActivity ->
+                                updateBitcoinWatchAccount(
+                                    accountId = accountId,
+                                    transform = { account ->
+                                        account.copy(
+                                            recentActivity = recentActivity,
+                                            lastSyncStatus = if (recentActivity.isEmpty()) {
+                                                "${snapshot.status} 最近交易已刷新。"
+                                            } else {
+                                                "${snapshot.status} 最近交易已刷新 ${recentActivity.size} 条。"
+                                            },
+                                        )
+                                    },
+                                )
+                            }.onFailure {
+                                updateBitcoinWatchAccount(
+                                    accountId = accountId,
+                                    transform = { account ->
+                                        account.copy(
+                                            lastSyncStatus = "${snapshot.status} 最近交易暂未刷新。",
+                                        )
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
                 .onFailure { error ->

@@ -24,7 +24,7 @@
 - 扫描树莓派回签结果并人工确认广播
 - 通过 `WalletConnect v2` 协调 DApp 请求
 - 导入 `BTC xpub / ypub / zpub` 观察账户
-- 同步 `BTC` 余额、活动、下一收款地址
+- 主网 `BTC` 同步优先走 `Electrum`，更快返回余额、活动、下一收款地址
 - 生成 `BTC PSBT` 给树莓派冷签
 
 ## 当前安全策略

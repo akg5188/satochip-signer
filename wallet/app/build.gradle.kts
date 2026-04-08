@@ -91,8 +91,8 @@ android {
         applicationId = "io.arbitrum.wallet"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.1.4"
         resValue("string", "expected_signer_sha256", "")
 
         ndk {
@@ -134,6 +134,9 @@ android {
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
+    }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
     lint {
         disable += setOf("ObsoleteSdkInt")
@@ -203,4 +206,7 @@ dependencies {
     implementation(platform("com.reown:android-bom:1.4.1"))
     implementation("com.reown:android-core")
     implementation("com.reown:walletkit")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }

@@ -1356,7 +1356,7 @@ private fun AssetsHubSection(
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Text(
-                                        entry.btcAccount.lastSyncStatus.ifBlank { "点击同步后拉取链上余额和交易记录" },
+                                        entry.btcAccount.lastSyncStatus.ifBlank { "主网优先走 Electrum 快速同步，余额和最近交易会尽快一起刷新" },
                                         modifier = Modifier.weight(1f),
                                         fontSize = 11.sp,
                                         color = Color(0xFF667085),

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
+import json
 import sys
 import tempfile
+import time
 import types
 from pathlib import Path
 from PIL import Image, ImageDraw
+from urllib.parse import quote
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -225,6 +228,7 @@ def main() -> int:
             SeedKeeperSelectView,
             SeedMnemonicIndexEntryView,
             SeedMnemonicRawReviewView,
+            SeedExportXpubWarningView,
             SeedWordIndexView,
             SeedWordsView,
             SeedsMenuView,
@@ -234,6 +238,8 @@ def main() -> int:
             TP_STEEL_SECRET_PREFIX,
             ToolsTpLoadedSeedOptionsView,
             ToolsTpSatochipToolsView,
+            ToolsTpSignerPsbtQrView,
+            ToolsTpSignerPsbtRunView,
             ToolsTpSteelCipherOptionsView,
             ToolsTpSeedkeeperLoadSteelCipherView,
             ToolsTpSeedkeeperSelectLoadedSeedView,
@@ -266,7 +272,10 @@ def main() -> int:
             words_to_plate_groups,
         )
         from seedsigner.models.seed import Seed, TransientWordSeed
+        from seedsigner.models.qr_type import QRType
+        from seedsigner.models.settings import SettingsConstants
         from seedsigner.models.seed_storage import SeedStorage
+        from seedsigner.models.threads import ThreadsafeCounter
         from seedsigner.gui.screens.seed_screens import _normalize_review_mnemonic_id
         from seedsigner.views.tools_views import (
             ToolsMenuView,
@@ -279,6 +288,7 @@ def main() -> int:
             ToolsSmartcardMenuView,
             ToolsSatochipFactoryResetView,
             ToolsSatochipDIYView,
+            SatochipExportXpubWarningView,
             _format_seedkeeper_generation_complete_text,
             _seedkeeper_build_entries,
             _seedkeeper_decode_secret_detail,
@@ -288,6 +298,9 @@ def main() -> int:
         import seedsigner.views.seed_views as seed_views_mod
         import seedsigner.views.tools_views as tools_views_mod
         import seedsigner.views.tp_views as tp_views_mod
+        import seedsigner.gui.renderer as renderer_mod
+        import seedsigner.models.encode_qr as encode_qr_mod
+        import seedsigner.models.settings as settings_mod
 
         tp_views_mod.LoadingScreenThread = _FakeLoadingScreenThread
         screen_mod.LoadingScreenThread = _FakeLoadingScreenThread
@@ -303,6 +316,10 @@ def main() -> int:
         assert not hasattr(ToolsTpSeedToolsView, "STEEL_SCAN")
         assert ToolsTpSeedToolsView.CARD_CREATE.button_label == "使用扑克牌创建助记词"
         assert ToolsTpSeedToolsView.HEX_CREATE.button_label == "使用16进制创建助记词"
+        assert ToolsTpLoadedSeedOptionsView.EXPORT_BTC_ZPUB.button_label == "导出当前助记词到 BlueWallet(zpub)"
+        assert ToolsTpLoadedSeedOptionsView.EXPORT_BTC_XPUB.button_label == "导出当前助记词到 BlueWallet(xpub)"
+        assert ToolsTpSatochipToolsView.EXPORT_BTC_ZPUB.button_label == "导出 Satochip 到 BlueWallet(zpub)"
+        assert ToolsTpSatochipToolsView.EXPORT_BTC_XPUB.button_label == "导出 Satochip 到 BlueWallet(xpub)"
         assert LoadSeedView.TYPE_STEEL_RESTORE.button_label == "从钢板数字恢复二次助记词"
         assert ToolsTpUiLockView.SETUP.button_label == "设置登录密码"
         assert ToolsTpUiLockView.UNLOCK.button_label == "输入登录密码"
@@ -332,6 +349,371 @@ def main() -> int:
         assert mnemonic_generation.generate_mnemonic_from_hex("f2a83b9c7d4e1a0b5f6e9d8c7b6a5f4e", 12) == (
             "huge protect deal panel bullet during fog annual crew cattle anchor rival".split()
         )
+        tp_loaded_seed = Seed(
+            mnemonic="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".split(),
+            wordlist_language_code="en",
+        )
+        tp_loaded_view = ToolsTpLoadedSeedOptionsView.__new__(ToolsTpLoadedSeedOptionsView)
+        tp_loaded_view.controller = _FakeController()
+        tp_loaded_view.settings = _FakeSettings()
+        tp_loaded_view.renderer = _FakeRenderer()
+        tp_loaded_view.seed_num = 0
+        tp_loaded_view.controller.storage.seeds.append(tp_loaded_seed)
+        tp_loaded_view.seed = tp_loaded_seed
+        tp_loaded_view.run_screen = lambda *args, **kwargs: kwargs["button_data"].index(ToolsTpLoadedSeedOptionsView.EXPORT_BTC_ZPUB)
+        dest = tp_loaded_view.run()
+        assert dest.View_cls == SeedExportXpubWarningView
+        assert dest.view_args["coordinator"] == SettingsConstants.COORDINATOR__BLUE_WALLET
+        assert dest.view_args["coordinator_label"] == "BlueWallet"
+        assert dest.view_args["script_type"] == SettingsConstants.NATIVE_SEGWIT
+
+        tp_card_view = ToolsTpSatochipToolsView()
+        tp_card_view.run_screen = lambda *args, **kwargs: kwargs["button_data"].index(ToolsTpSatochipToolsView.EXPORT_BTC_XPUB)
+        dest = tp_card_view.run()
+        assert dest.View_cls == SatochipExportXpubWarningView
+        assert dest.view_args["coordinator"] == SettingsConstants.COORDINATOR__BLUE_WALLET
+        assert dest.view_args["coordinator_label"] == "BlueWallet"
+        assert dest.view_args["script_type"] == SettingsConstants.LEGACY_P2PKH
+
+        import embit.psbt as embit_psbt_mod
+
+        original_tp_psbt_from_base64 = embit_psbt_mod.PSBT.from_base64
+        original_tp_build_signed = encode_qr_mod.build_signed_psbt_qr_encoder
+        original_tp_home_destination = tp_views_mod._tp_home_destination
+        original_tp_bbqr_text_qr_encoder = encode_qr_mod.BbqrTextQrEncoder
+
+        class _FakeSignedPsbt:
+            pass
+
+        class _FakeQrEncoder:
+            def seq_len(self):
+                return 1
+
+            def restart(self):
+                return None
+
+            def next_part(self):
+                return "ur:crypto-psbt/part"
+
+        signed_capture = {}
+
+        def _fake_tp_psbt_from_base64(raw):
+            signed_capture["psbt_base64"] = raw
+            return _FakeSignedPsbt()
+
+        def _fake_tp_build_signed(psbt, qr_density, input_qr_type):
+            signed_capture["encoder_args"] = (psbt, qr_density, input_qr_type)
+            return _FakeQrEncoder()
+
+        embit_psbt_mod.PSBT.from_base64 = staticmethod(_fake_tp_psbt_from_base64)
+        encode_qr_mod.build_signed_psbt_qr_encoder = _fake_tp_build_signed
+        tp_views_mod._tp_home_destination = lambda: object()
+        try:
+            signed_view = ToolsTpSignerPsbtQrView(psbt_base64="cHNidP8BAHECAAAAAQ==", input_qr_type=QRType.PSBT__BBQR, tx_hex="deadbeef")
+            screen_capture = {}
+
+            def _signed_run_screen(*args, **kwargs):
+                screen_capture["screen"] = getattr(args[0], "__name__", str(args[0])) if args else ""
+                screen_capture["encoder"] = kwargs["qr_encoder"]
+                return 0
+
+            signed_view.run_screen = _signed_run_screen
+            dest = signed_view.run()
+            assert signed_capture["psbt_base64"] == "cHNidP8BAHECAAAAAQ=="
+            assert signed_capture["encoder_args"][2] == QRType.PSBT__BBQR
+            assert screen_capture["screen"] == "QRDisplayScreen"
+            assert isinstance(screen_capture["encoder"], _FakeQrEncoder)
+            assert dest is not None
+
+            tx_only_capture = {}
+
+            class _FakeBbqrTextEncoder:
+                def __init__(self, **kwargs):
+                    tx_only_capture["encoder_kwargs"] = kwargs
+
+            encode_qr_mod.BbqrTextQrEncoder = _FakeBbqrTextEncoder
+            tx_only_view = ToolsTpSignerPsbtQrView(psbt_base64="", input_qr_type=None, tx_hex="deadbeef")
+
+            def _tx_only_run_screen(*args, **kwargs):
+                tx_only_capture["screen"] = getattr(args[0], "__name__", str(args[0])) if args else ""
+                tx_only_capture["encoder"] = kwargs["qr_encoder"]
+                return 0
+
+            tx_only_view.run_screen = _tx_only_run_screen
+            tx_only_dest = tx_only_view.run()
+            assert tx_only_capture["screen"] == "QRDisplayScreen"
+            assert isinstance(tx_only_capture["encoder"], _FakeBbqrTextEncoder)
+            assert tx_only_capture["encoder_kwargs"]["text"] == "deadbeef"
+            assert tx_only_dest is not None
+        finally:
+            embit_psbt_mod.PSBT.from_base64 = original_tp_psbt_from_base64
+            encode_qr_mod.build_signed_psbt_qr_encoder = original_tp_build_signed
+            tp_views_mod._tp_home_destination = original_tp_home_destination
+            encode_qr_mod.BbqrTextQrEncoder = original_tp_bbqr_text_qr_encoder
+        original_bbqr_from_payload = encode_qr_mod.BBQrParts.from_payload
+        bbqr_retry_calls = []
+
+        def _fake_bbqr_from_payload(
+            cls,
+            raw,
+            file_type="P",
+            *,
+            encoding_preference="auto",
+            min_version=5,
+            max_version=40,
+            min_split=1,
+            max_split=1295,
+        ):
+            bbqr_retry_calls.append((min_version, max_version))
+            if (min_version, max_version) != (5, 40):
+                raise ValueError("BBQr payload does not fit the requested QR settings")
+            return types.SimpleNamespace(parts=["B$2P0100TEST"])
+
+        class _FakePsbt:
+            def serialize(self):
+                return b"psbt"
+
+        encode_qr_mod.BBQrParts.from_payload = classmethod(_fake_bbqr_from_payload)
+        try:
+            bbqr_encoder = encode_qr_mod.build_bbqr_psbt_qr_encoder(
+                psbt=_FakePsbt(),
+                qr_density=SettingsConstants.DENSITY__LOW,
+            )
+            assert bbqr_encoder.parts == ["B$2P0100TEST"]
+            assert bbqr_retry_calls == [(5, 15), (5, 40)]
+        finally:
+            encode_qr_mod.BBQrParts.from_payload = original_bbqr_from_payload
+
+        original_build_bbqr_psbt_qr_encoder = encode_qr_mod.build_bbqr_psbt_qr_encoder
+        original_base43_psbt_qr_encoder = encode_qr_mod.Base43PsbtQrEncoder
+        original_base64_psbt_qr_encoder = encode_qr_mod.Base64PsbtQrEncoder
+        original_specter_psbt_qr_encoder = encode_qr_mod.SpecterPsbtQrEncoder
+        original_ur_psbt_qr_encoder = encode_qr_mod.UrPsbtQrEncoder
+        signed_route_capture = []
+
+        def _fake_encoder_ctor(name):
+            class _FakeEncoder:
+                def __init__(self, **kwargs):
+                    self.name = name
+                    self.kwargs = kwargs
+                    signed_route_capture.append((name, kwargs))
+
+                def seq_len(self):
+                    return 1
+
+            return _FakeEncoder
+
+        def _fake_build_bbqr_signed(psbt, qr_density):
+            signed_route_capture.append(("bbqr", {"psbt": psbt, "qr_density": qr_density}))
+            return "bbqr-encoder"
+
+        class _FakeUrPsbtQrEncoder:
+            def __init__(self, psbt, qr_density):
+                self.psbt = psbt
+                self.qr_density = qr_density
+                signed_route_capture.append(("ur", {"psbt": psbt, "qr_density": qr_density}))
+            def seq_len(self):
+                return 8
+        encode_qr_mod.build_bbqr_psbt_qr_encoder = _fake_build_bbqr_signed
+        encode_qr_mod.Base43PsbtQrEncoder = _fake_encoder_ctor("base43")
+        encode_qr_mod.Base64PsbtQrEncoder = _fake_encoder_ctor("base64")
+        encode_qr_mod.SpecterPsbtQrEncoder = _fake_encoder_ctor("specter")
+        encode_qr_mod.UrPsbtQrEncoder = _FakeUrPsbtQrEncoder
+        try:
+            base43_signed_encoder = encode_qr_mod.build_signed_psbt_qr_encoder(
+                psbt=_FakePsbt(),
+                qr_density=SettingsConstants.DENSITY__LOW,
+                input_qr_type=QRType.PSBT__BASE43,
+            )
+            assert getattr(base43_signed_encoder, "name", "") == "base43"
+            base64_signed_encoder = encode_qr_mod.build_signed_psbt_qr_encoder(
+                psbt=_FakePsbt(),
+                qr_density=SettingsConstants.DENSITY__LOW,
+                input_qr_type=QRType.PSBT__BASE64,
+            )
+            assert getattr(base64_signed_encoder, "name", "") == "base64"
+            bbqr_signed_encoder = encode_qr_mod.build_signed_psbt_qr_encoder(
+                psbt=_FakePsbt(),
+                qr_density=SettingsConstants.DENSITY__LOW,
+                input_qr_type=QRType.PSBT__BBQR,
+            )
+            assert bbqr_signed_encoder == "bbqr-encoder"
+            assert signed_route_capture[-1][0] == "bbqr"
+            specter_signed_encoder = encode_qr_mod.build_signed_psbt_qr_encoder(
+                psbt=_FakePsbt(),
+                qr_density=SettingsConstants.DENSITY__LOW,
+                input_qr_type=QRType.PSBT__SPECTER,
+            )
+            assert getattr(specter_signed_encoder, "name", "") == "specter"
+            ur_signed_encoder = encode_qr_mod.build_signed_psbt_qr_encoder(
+                psbt=_FakePsbt(),
+                qr_density=SettingsConstants.DENSITY__LOW,
+                input_qr_type=QRType.PSBT__UR2,
+            )
+            assert isinstance(ur_signed_encoder, _FakeUrPsbtQrEncoder)
+            assert ur_signed_encoder.qr_density == SettingsConstants.DENSITY__LOW
+        finally:
+            encode_qr_mod.build_bbqr_psbt_qr_encoder = original_build_bbqr_psbt_qr_encoder
+            encode_qr_mod.Base43PsbtQrEncoder = original_base43_psbt_qr_encoder
+            encode_qr_mod.Base64PsbtQrEncoder = original_base64_psbt_qr_encoder
+            encode_qr_mod.SpecterPsbtQrEncoder = original_specter_psbt_qr_encoder
+            encode_qr_mod.UrPsbtQrEncoder = original_ur_psbt_qr_encoder
+
+        original_renderer_get_instance = renderer_mod.Renderer.get_instance
+        original_settings_get_instance = settings_mod.Settings.get_instance
+        original_screen_sleep = screen_mod.time.sleep
+
+        class _FakeLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class _FakeThreadRenderer:
+            def __init__(self, width: int, height: int):
+                self.canvas_width = width
+                self.canvas_height = height
+                self.lock = _FakeLock()
+                self.thread = None
+
+            def show_image(self, image):
+                if self.thread is not None:
+                    self.thread.keep_running = False
+
+        class _FakeBrightnessSettings:
+            def __init__(self, enabled: bool):
+                self.enabled = enabled
+
+            def get_value(self, key):
+                if self.enabled:
+                    return SettingsConstants.OPTION__ENABLED
+                return SettingsConstants.OPTION__DISABLED
+
+        class _FakeScreenEncoder:
+            def __init__(self):
+                self.calls = []
+                self.restart_count = 0
+
+            def cur_part(self):
+                return "part"
+
+            def part_to_image(self, part, width, height, border=0, background_color=None):
+                self.calls.append(("part_to_image", width, height, border, background_color))
+                return Image.new("RGB", (width, height))
+
+            def next_part_image(self, width, height, border=0, background_color=None):
+                self.calls.append(("next_part_image", width, height, border, background_color))
+                return Image.new("RGB", (width, height))
+
+            def restart(self):
+                self.restart_count += 1
+
+        try:
+            screen_mod.time.sleep = lambda _: None
+
+            tip_renderer = _FakeThreadRenderer(320, 180)
+            renderer_mod.Renderer.get_instance = classmethod(lambda cls: tip_renderer)
+            settings_mod.Settings.get_instance = classmethod(lambda cls: _FakeBrightnessSettings(True))
+            tip_encoder = _FakeScreenEncoder()
+            tip_thread = screen_mod.QRDisplayScreen.QRDisplayThread(
+                qr_encoder=tip_encoder,
+                qr_brightness=ThreadsafeCounter(initial_value=255),
+                tips_start_time=ThreadsafeCounter(initial_value=time.time_ns()),
+            )
+            tip_renderer.thread = tip_thread
+            tip_thread.render_brightness_tip = lambda image: None
+            tip_thread.keep_running = True
+            tip_thread.run()
+            assert tip_encoder.calls[0] == ("part_to_image", 320, 180, 2, "ffffff")
+
+            normal_renderer = _FakeThreadRenderer(320, 180)
+            renderer_mod.Renderer.get_instance = classmethod(lambda cls: normal_renderer)
+            settings_mod.Settings.get_instance = classmethod(lambda cls: _FakeBrightnessSettings(False))
+            normal_encoder = _FakeScreenEncoder()
+            normal_thread = screen_mod.QRDisplayScreen.QRDisplayThread(
+                qr_encoder=normal_encoder,
+                qr_brightness=ThreadsafeCounter(initial_value=255),
+                tips_start_time=ThreadsafeCounter(initial_value=0),
+            )
+            normal_renderer.thread = normal_thread
+            normal_thread.keep_running = True
+            normal_thread.run()
+            assert normal_encoder.calls[0] == ("next_part_image", 320, 180, 2, "ffffff")
+        finally:
+            renderer_mod.Renderer.get_instance = original_renderer_get_instance
+            settings_mod.Settings.get_instance = original_settings_get_instance
+            screen_mod.time.sleep = original_screen_sleep
+
+        original_tp_resolve_signer_bin = tp_views_mod._resolve_signer_bin
+        original_tp_subprocess_run = tp_views_mod.subprocess.run
+        original_tp_loading_screen = tp_views_mod.LoadingScreenThread
+        original_tp_default_reader_hint = tp_views_mod.DEFAULT_READER_HINT
+        original_tp_masked_error_destination = tp_views_mod._masked_error_destination
+        original_tp_debug_error_destination = tp_views_mod._debug_error_destination
+        original_tp_extract_error = tp_views_mod._extract_error
+        original_tp_map_signer_error_code = tp_views_mod._map_signer_error_code
+        original_tp_home_destination = tp_views_mod._tp_home_destination
+        tp_views_mod.LoadingScreenThread = _FakeLoadingScreenThread
+        tp_views_mod.DEFAULT_READER_HINT = None
+        tp_views_mod._masked_error_destination = lambda code: types.SimpleNamespace(kind="masked", code=code)
+        tp_views_mod._debug_error_destination = lambda code, detail: types.SimpleNamespace(kind="debug", code=code, detail=detail)
+        tp_views_mod._extract_error = lambda stdout, stderr, fallback: fallback
+        tp_views_mod._map_signer_error_code = lambda detail: "32"
+        tp_views_mod._tp_home_destination = lambda: object()
+        with tempfile.TemporaryDirectory(prefix="tp-smoke-signer-") as signer_tmpdir:
+            signer_path = Path(signer_tmpdir) / "satochip-signer"
+            signer_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            tp_views_mod._resolve_signer_bin = lambda: signer_path
+
+            def _fake_psbt_signer_run(cmd, **kwargs):
+                out_psbt = Path(cmd[cmd.index("--out-psbt-base64") + 1])
+                out_tx = Path(cmd[cmd.index("--out-tx") + 1])
+                out_psbt.write_text("c2lnbmVkLXBzYnQ=", encoding="utf-8")
+                out_tx.write_text("deadbeef", encoding="utf-8")
+                return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            tp_views_mod.subprocess.run = _fake_psbt_signer_run
+            try:
+                legacy_payload = "tp:signPsbt-requestId=req-1&data=" + quote(json.dumps({"psbt": "dW5zaWduZWQtcHNidA=="}))
+                legacy_view = ToolsTpSignerPsbtRunView(payload=legacy_payload, pin="1234")
+                legacy_dest = legacy_view.run()
+                assert legacy_view.legacy_tp_request is True
+                assert legacy_view.response_mode == "btctx"
+                assert legacy_dest.View_cls.__name__ == "ToolsTpSignerQrView"
+                assert legacy_dest.view_args["response_text"] == "btctx:deadbeef"
+
+                compat_view = ToolsTpSignerPsbtRunView(
+                    psbt_base64="dW5zaWduZWQtcHNidA==",
+                    pin="1234",
+                    response_mode="btctx",
+                )
+                compat_dest = compat_view.run()
+                assert compat_dest.View_cls.__name__ == "ToolsTpSignerQrView"
+                assert compat_dest.view_args["response_text"] == "btctx:deadbeef"
+
+                animated_view = ToolsTpSignerPsbtRunView(
+                    psbt_base64="dW5zaWduZWQtcHNidA==",
+                    pin="1234",
+                    psbt_input_qr_type=QRType.PSBT__BBQR,
+                    response_mode="ur",
+                )
+                animated_dest = animated_view.run()
+                assert animated_dest.View_cls.__name__ == "ToolsTpSignerPsbtQrView"
+                assert animated_dest.view_args["psbt_base64"] == "c2lnbmVkLXBzYnQ="
+                assert animated_dest.view_args["input_qr_type"] == QRType.PSBT__BBQR
+                assert animated_dest.view_args["tx_hex"] == "deadbeef"
+            finally:
+                tp_views_mod._resolve_signer_bin = original_tp_resolve_signer_bin
+                tp_views_mod.subprocess.run = original_tp_subprocess_run
+                tp_views_mod.LoadingScreenThread = original_tp_loading_screen
+                tp_views_mod.DEFAULT_READER_HINT = original_tp_default_reader_hint
+                tp_views_mod._masked_error_destination = original_tp_masked_error_destination
+                tp_views_mod._debug_error_destination = original_tp_debug_error_destination
+                tp_views_mod._extract_error = original_tp_extract_error
+                tp_views_mod._map_signer_error_code = original_tp_map_signer_error_code
+                tp_views_mod._tp_home_destination = original_tp_home_destination
+
         keyboard = Keyboard(
             draw=ImageDraw.Draw(Image.new("RGB", (240, 240))),
             charset="".join(["23456789", "ATJQKCDHS"]),

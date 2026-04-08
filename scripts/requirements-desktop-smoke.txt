@@ -1,0 +1,11 @@
+embit>=0.8,<1
+numpy>=2,<3
+opencv-python-headless>=4.11,<5
+Pillow>=10,<12
+pygame>=2.6,<3
+qrcode>=7,<9
+certifi>=2024
+cryptography>=43,<44
+ecdsa>=0.19,<1
+pyaes>=1.6,<2
+pyOpenSSL>=25,<27
