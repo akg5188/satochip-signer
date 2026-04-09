@@ -1,6 +1,6 @@
 # 两个安卓 APK 说明
 
-这个仓库里只有两个安卓 APK，需要分清。
+这个项目当前有两条安卓 App 产品线，需要分清。
 
 `BlueWallet` 不在这个仓库里，它是外部钱包。
 
@@ -24,6 +24,12 @@ bash scripts/build_tp_relay_apk.sh
 - `dist/tp-qr-relay-android-latest.apk`
 - `dist/tp-qr-relay-android-latest.apk.sha256`
 - `dist/tp-qr-relay-android-latest.build-info.txt`
+
+补充说明：
+
+- 这组产物是按需构建的
+- 当前仓库的 `dist/` 不保证长期一直保留这 3 个文件
+- 如果你本地没看到，先运行上面的构建脚本再找
 
 当前真实能力：
 
