@@ -132,7 +132,7 @@ fun defaultBitcoinPrototypeStatus(accounts: Int): String {
     return if (accounts > 0) {
         "已导入 $accounts 个 BTC 观察账户。首页只保留摘要，点进账户后可同步余额、查看地址，并准备树莓派签名的 BTC 转账。"
     } else {
-        "先从树莓派导出 zpub/xpub，再导入这里只读保存。导入后可在账户详情里同步余额、查看地址，并准备 BTC 转账签名。"
+        "先从树莓派导出 xpub/ypub/zpub，再导入这里只读保存。导入后可在账户详情里同步余额、查看地址，并准备 BTC 转账签名。"
     }
 }
 

@@ -17,7 +17,7 @@
 - 支持 `USB-OTG + ACR39U` 读卡器签名
 - 支持 `signTransaction`
 - 支持 `personalSign`
-- 支持 `signTypedData / signTypedDataV4`
+- 支持 `signTypedData / signTypeDataV4`
 - 支持把 `TP` 动态请求拆成树莓派静态中转二维码
 
 ## 不负责什么
@@ -39,12 +39,16 @@ bash scripts/build_tp_relay_apk.sh
 - `dist/tp-qr-relay-android-latest.apk.sha256`
 - `dist/tp-qr-relay-android-latest.build-info.txt`
 
+这些是本机构建产物。它们会在你本地 `dist/` 里生成，但不代表仓库里一定长期保留同名文件。
+
 ## 签名说明
 
 当前 `app/build.gradle.kts` 的规则是：
 
 - 有 `keystore.properties` 就用正式 keystore
 - 没有就回退到 `debug` 签名
+
+另外，旧式数组型 `signTypedDataLegacy` 目前仍不支持；`TP` 当前这条链路里沿用的是 `signTypeDataV4` 这个历史拼写。
 
 所以它适合自己安装测试，但如果你想长期平滑升级，最好尽早换成自己的正式 keystore。
 

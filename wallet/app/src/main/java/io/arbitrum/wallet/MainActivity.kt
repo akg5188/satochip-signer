@@ -219,7 +219,7 @@ class MainActivity : BiometricGateActivity() {
 
     private fun startBitcoinImportScan() {
         val intent = Intent(this, QrScanActivity::class.java)
-            .putExtra(QrScanActivity.EXTRA_STATUS_TEXT, "请扫描树莓派导出的 xpub / zpub 二维码")
+            .putExtra(QrScanActivity.EXTRA_STATUS_TEXT, "请扫描树莓派导出的 xpub / ypub / zpub 二维码")
         bitcoinImportQrLauncher.launch(intent)
     }
 
@@ -957,7 +957,7 @@ private fun WatchWalletHubSection(
                 OutlinedTextField(
                     value = state.bitcoinImportInput,
                     onValueChange = onImportInputChange,
-                    placeholder = { Text("粘贴 zpub / xpub", fontSize = 11.sp) },
+                    placeholder = { Text("粘贴 xpub / ypub / zpub", fontSize = 11.sp) },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2,
                     maxLines = 3,
@@ -2029,7 +2029,7 @@ private fun BitcoinPrototypeSection(
                 value = state.bitcoinImportInput,
                 onValueChange = onImportInputChange,
                 placeholder = {
-                    Text("粘贴 zpub / xpub，或直接扫码导入", fontSize = 12.sp)
+                    Text("粘贴 xpub / ypub / zpub，或直接扫码导入", fontSize = 12.sp)
                 },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 2,
