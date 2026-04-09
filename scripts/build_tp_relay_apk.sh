@@ -9,6 +9,22 @@ OUT_DIR="${OUT_DIR:-$ROOT_DIR/dist}"
 OUT_APK="$OUT_DIR/tp-qr-relay-android-latest.apk"
 OUT_SUM="$OUT_APK.sha256"
 OUT_INFO="$OUT_DIR/tp-qr-relay-android-latest.build-info.txt"
+REQUIRED_JAVA_MAJOR="17"
+
+java_major_version() {
+  local java_bin="$1"
+  "$java_bin" -version 2>&1 | awk -F '"' '/version/ {split($2, parts, "."); print parts[1]; exit}'
+}
+
+is_required_jdk() {
+  local candidate="${1:-}"
+  local java_bin="$candidate/bin/java"
+  local javac_bin="$candidate/bin/javac"
+  local major=""
+  [[ -x "$java_bin" && -x "$javac_bin" ]] || return 1
+  major="$(java_major_version "$java_bin")"
+  [[ "$major" == "$REQUIRED_JAVA_MAJOR" ]]
+}
 
 detect_java_home() {
   local candidate=""
@@ -29,20 +45,23 @@ detect_java_home() {
     "${JAVA_HOME:-}" \
     "$(find_local_jdk17 || true)"
   do
-    if [[ -n "$candidate" && -x "$candidate/bin/java" && -x "$candidate/bin/javac" ]]; then
+    if [[ -n "$candidate" ]] && is_required_jdk "$candidate"; then
       printf '%s\n' "$candidate"
       return
     fi
   done
 
   if command -v javac >/dev/null 2>&1; then
-    dirname "$(dirname "$(readlink -f "$(command -v javac)")")"
-    return
+    candidate="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+    if is_required_jdk "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
   fi
 
   if command -v java >/dev/null 2>&1; then
     candidate="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
-    if [[ -x "$candidate/bin/javac" ]]; then
+    if is_required_jdk "$candidate"; then
       printf '%s\n' "$candidate"
       return
     fi
@@ -157,7 +176,7 @@ printf 'sdk.dir=%s\n' "$SDK_DIR" > "$BUILD_DIR/local.properties"
 cd "$BUILD_DIR"
 export JAVA_HOME="$(detect_java_home)"
 if [[ -z "$JAVA_HOME" ]]; then
-  echo "Unable to locate a usable JDK 17 with both java and javac" >&2
+  echo "Unable to locate a usable JDK $REQUIRED_JAVA_MAJOR with both java and javac" >&2
   exit 1
 fi
 export GRADLE_USER_HOME

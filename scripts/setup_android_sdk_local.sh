@@ -7,6 +7,8 @@ SDK_DIR="${ANDROID_SDK_ROOT:-/tmp/satochip-android-sdk}"
 TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
 TOOLS_DIR="$SDK_DIR/cmdline-tools"
 LATEST_DIR="$TOOLS_DIR/latest"
+ANDROID_PLATFORM="android-34"
+ANDROID_BUILD_TOOLS="35.0.0"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -30,8 +32,8 @@ export ANDROID_HOME="$SDK_DIR"
 yes | "$LATEST_DIR/bin/sdkmanager" --sdk_root="$SDK_DIR" --licenses >/dev/null || true
 "$LATEST_DIR/bin/sdkmanager" --sdk_root="$SDK_DIR" \
   "platform-tools" \
-  "platforms;android-34" \
-  "build-tools;34.0.0"
+  "platforms;$ANDROID_PLATFORM" \
+  "build-tools;$ANDROID_BUILD_TOOLS"
 
 cat > "$ROOT_DIR/local.properties" <<EOF
 sdk.dir=$SDK_DIR
