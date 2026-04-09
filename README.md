@@ -63,6 +63,8 @@ bash scripts/rebuild_official_release.sh wallet-release
 
 - [零基础第一次上手教程](docs/零基础第一次上手教程.zh-CN.md)
 - [全功能操作总手册](docs/全功能操作总手册.zh-CN.md)
+- [第一次小额测试完整流程](docs/第一次小额测试完整流程.zh-CN.md)
+- [树莓派菜单逐项说明](docs/树莓派菜单逐项说明.zh-CN.md)
 - [一页式总导航](docs/一页式总导航.zh-CN.md)
 - [快速开始](docs/快速开始.zh-CN.md)
 - [官方程序下载验真与校验](docs/官方程序下载验真与校验.zh-CN.md)
@@ -241,6 +243,8 @@ bash scripts/build_wallet_release.sh
 
 - [零基础第一次上手教程](docs/零基础第一次上手教程.zh-CN.md)
 - [全功能操作总手册](docs/全功能操作总手册.zh-CN.md)
+- [第一次小额测试完整流程](docs/第一次小额测试完整流程.zh-CN.md)
+- [树莓派菜单逐项说明](docs/树莓派菜单逐项说明.zh-CN.md)
 - [快速开始](docs/快速开始.zh-CN.md)
 - [两个安卓 APK 说明](docs/两个安卓APK说明.zh-CN.md)
 - [仓库结构说明](docs/仓库结构说明.zh-CN.md)
