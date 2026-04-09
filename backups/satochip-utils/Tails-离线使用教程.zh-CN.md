@@ -54,7 +54,8 @@
 
 如果你的卡还是白卡、还没写入 Satochip applet，请先看：
 
-- [../../card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md](../../card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md)
+- [../../docs/官方程序下载验真与校验.zh-CN.md](../../docs/官方程序下载验真与校验.zh-CN.md)
+- [../../docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md](../../docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md)
 
 如果你想问的是：
 
@@ -423,7 +424,7 @@ chmod +x ./Satochip-Utils-linux-x86_64-0.3.0-beta
 - [README.zh-CN.md](README.zh-CN.md)
 - [README-BUNDLE.md](README-BUNDLE.md)
 - [offline-kit-template/README.zh-CN.md](offline-kit-template/README.zh-CN.md)
-- [../../card-applet/README.zh-CN.md](../../card-applet/README.zh-CN.md)
+- [../../docs/官方程序下载验真与校验.zh-CN.md](../../docs/官方程序下载验真与校验.zh-CN.md)
 
 ## 16. 本教程依据
 

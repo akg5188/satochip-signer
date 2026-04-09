@@ -17,7 +17,8 @@
 
 去看：
 
-- [../card-applet/README.zh-CN.md](../card-applet/README.zh-CN.md)
+- [../docs/官方程序下载验真与校验.zh-CN.md](../docs/官方程序下载验真与校验.zh-CN.md)
+- [../docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md](../docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md)
 
 如果你要找的是：
 
