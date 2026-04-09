@@ -888,6 +888,7 @@ def _map_signer_error_code(detail: str) -> str:
         return "42"
     if (
         "未导入种子" in detail
+        or "未导入助记词" in detail
         or "助记词" in detail
         or "seed is not initialized" in lowered
         or "0x9c14" in lowered

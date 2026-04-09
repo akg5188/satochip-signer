@@ -2274,7 +2274,7 @@ def _seedkeeper_build_entries(
             suffix = _seedkeeper_shorten_label(label or str(header["id"]))
             display_label = f"公钥 · {suffix}"
         else:
-            display_label = _seedkeeper_shorten_label(label or f"秘密 #{header['id']}")
+            display_label = _seedkeeper_shorten_label(label or f"项目 #{header['id']}")
 
         entries.append(
             {
@@ -2326,7 +2326,7 @@ def _decode_seedkeeper_mnemonic_payload(secret_dict: dict) -> tuple[str, str]:
         passphrase = passphrase_bytes.decode("utf-8") if passphrase_bytes else ""
         return mnemonic, passphrase
 
-    raise ValueError("当前秘密不是 BIP39 助记词。")
+    raise ValueError("当前卡内项目不是 BIP39 助记词。")
 
 
 def _seedkeeper_decode_secret_detail(entry: dict, secret_dict: dict) -> dict:
@@ -2748,7 +2748,7 @@ class ToolsSatochipFactoryResetView(View):
                 title="警告",
                 status_headline=None,
                 text=(
-                    f"如果没有可用备份就重置 {self.card_label}，其中的资金或秘密可能无法找回。"
+                    f"如果没有可用备份就重置 {self.card_label}，其中的资金或卡内数据可能无法找回。"
                     f"\n\n只建议在只安装 {self.card_label} 的专用单程序卡上继续。"
                     "如果同一张卡还装了另一个 applet，恢复出厂可能把整张卡一起清空，"
                     "或者让另一边也变得不可用。"
@@ -3247,7 +3247,7 @@ class ToolsSeedkeeperView(View):
     IMPORT_PASSWORD = ButtonOption("保存密码到卡片")
     LOAD_DESCRIPTOR = ButtonOption("加载多签描述符")
     SAVE_DESCRIPTOR = ButtonOption("保存多签描述符")
-    CLONE_SECRETS = ButtonOption("克隆卡内秘密")
+    CLONE_SECRETS = ButtonOption("克隆卡内项目")
     CHANGE_PIN = ButtonOption("更改 SeedKeeper PIN")
     FACTORY_RESET = ButtonOption("高风险：重置 SeedKeeper")
 

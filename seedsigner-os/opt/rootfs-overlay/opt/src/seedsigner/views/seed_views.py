@@ -5874,7 +5874,7 @@ class SaveToSeedkeeperView(View):
 
         if status['protocol_minor_version'] == 1:
             if len(payload_bytes) > 255:
-                raise ValueError("SeedKeeper v1 不支持超过 255 字节的文本秘密。")
+                raise ValueError("SeedKeeper v1 不支持超过 255 字节的文本数据。")
             secret_type = "Password"
             secret_list = [len(payload_bytes)] + list(payload_bytes)
         else:
