@@ -12,6 +12,23 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[1]
 REPO_SRC = ROOT / "seedsigner-os/opt/rootfs-overlay/opt/src"
 VENDOR = ROOT / "pi-signer-py/vendor"
+SIGNED_TX_SAMPLE_HEX = (
+    "020000000001045c007cd8e90d93ea21de219dad7acffecc21c1c8e5c34cbecfc5ef6b38d70d450100000000"
+    "ffffffff171cd0ce826655bf4b1219be2a2dd9aeeddbf9309eeaced3595b3719c2eb27f80000000000ffffffff"
+    "d2fe1e143c6a11a6b0ae8d790d6edf0a73edffa5c29da6ab7ef3408bc4e851bd0100000000ffffffff3547f8bc"
+    "22a72ee0b91fcda2f0c8e095d1420c1e1386ad4131d58d28aab979ce0100000000ffffffff01fa490000000000"
+    "0016001403884d74b4b5b49467c2db589761ff34107ccdfa024730440220535132af4c52275e4ef68204375a90"
+    "4f4a0536960f2e37be66f3c3369e30a94502202850588eeb2be48189680d9800807d7288a8acde12612258bc3b"
+    "151937159bf6012103c49cf3c490ec8c75de934ff4891a79787714e086406786d54a52a1d6aa6944cf02483045"
+    "022100bf6c5cf707afa35b999b3ebc4c775034ca7b32a1159c69d3512781132b4d3f9002200d6a02dee1cecd09"
+    "7bd09e1c722986e764153478573b9fafd9d6bc1093c5b2c30121026493ffe864c9f4e214a3a0625393df43157a"
+    "46e7b0454d247ad3dcb6f8761ead0247304402207aba706b25ffbc1923672195086acc96334dd80594019b7b0f"
+    "e2d9fdecbe7a870220611931dcd6d38293f8bf0da70373cbc6a73386a215d2d7f31d5ebde2b629767b0121032b"
+    "6fe88c6ff8daf40153d8c643799f2c6cd11ef6b86e309e2279495ff218f9d102483045022100f16d58022bac16"
+    "cdb454b27eacf122b641caac848f251f6dc404dbbfc1c79b3d02205f4de7b1b4866fc823419b6def7ee3101910"
+    "a5a0df0e1294de25ede40069c0dd0121035fbdb82c74ea685f476d59a500c3e618b278a6a321636e25ac9ba517"
+    "84b9766b00000000"
+)
 sys.path.insert(0, str(REPO_SRC))
 sys.path.insert(0, str(VENDOR))
 
@@ -238,6 +255,7 @@ def main() -> int:
             TP_STEEL_SECRET_PREFIX,
             ToolsTpLoadedSeedOptionsView,
             ToolsTpSatochipToolsView,
+            ToolsTpSignerQrView,
             ToolsTpSignerPsbtQrView,
             ToolsTpSignerPsbtRunView,
             ToolsTpSteelCipherOptionsView,
@@ -280,9 +298,13 @@ def main() -> int:
         from seedsigner.views.tools_views import (
             ToolsMenuView,
             ToolsCardEntropyEntryView,
+            ToolsImageEntropyMnemonicLengthView,
             ToolsCardEntropyReviewView,
             ToolsHexEntropyEntryView,
             ToolsHexEntropyReviewView,
+            ToolsSatochipView,
+            ToolsSatochipImportSeedView,
+            ToolsSatochipImportVerificationView,
             ToolsSeedkeeperView,
             ToolsSeedkeeperViewSecretsView,
             ToolsSmartcardMenuView,
@@ -293,9 +315,10 @@ def main() -> int:
             _seedkeeper_build_entries,
             _seedkeeper_decode_secret_detail,
         )
-        from seedsigner.gui.components import reflow_text_into_pages
+        from seedsigner.gui.components import GUIConstants, ScrollableTextArea, reflow_text_into_pages
         from seedsigner.gui.keyboard import Keyboard
         import seedsigner.views.seed_views as seed_views_mod
+        import seedsigner.views.psbt_views as psbt_views_mod
         import seedsigner.views.tools_views as tools_views_mod
         import seedsigner.views.tp_views as tp_views_mod
         import seedsigner.gui.renderer as renderer_mod
@@ -308,25 +331,35 @@ def main() -> int:
         assert ToolsTpSmartcardToolsView.SATOCHIP_TOOLS.button_label == "Satochip 功能"
         assert ToolsTpSmartcardToolsView.SEEDKEEPER_TOOLS.button_label == "SeedKeeper 功能"
         assert "/mnt/microsd" not in str(tp_views_mod._tp_ui_lock_path())
-        assert ToolsTpSatochipToolsView.IMPORT_LOADED_SEED.button_label == "写入已加载助记词到 Satochip"
-        assert ToolsTpSeedkeeperToolsView.GENERATE_MNEMONIC.button_label == "卡上真随机创建助记词"
-        assert ToolsTpSeedkeeperToolsView.SAVE_STEEL_CIPHER.button_label == "保存二次加密助记词到 SeedKeeper"
-        assert ToolsTpSeedkeeperToolsView.LOAD_STEEL_CIPHER.button_label == "从 SeedKeeper 加载二次加密助记词"
+        assert ToolsTpSatochipToolsView.IMPORT_LOADED_SEED.button_label == "写入助记词"
+        assert ToolsTpSeedkeeperToolsView.GENERATE_MNEMONIC.button_label == "卡上真随机创建"
+        assert ToolsTpSeedkeeperToolsView.SAVE_STEEL_CIPHER.button_label == "保存二次加密"
+        assert ToolsTpSeedkeeperToolsView.LOAD_STEEL_CIPHER.button_label == "加载二次加密"
         assert not hasattr(ToolsTpSeedToolsView, "STEEL_RESTORE")
         assert not hasattr(ToolsTpSeedToolsView, "STEEL_SCAN")
-        assert ToolsTpSeedToolsView.CARD_CREATE.button_label == "使用扑克牌创建助记词"
-        assert ToolsTpSeedToolsView.HEX_CREATE.button_label == "使用16进制创建助记词"
-        assert ToolsTpLoadedSeedOptionsView.EXPORT_BTC_ZPUB.button_label == "导出当前助记词到 BlueWallet(zpub)"
-        assert ToolsTpLoadedSeedOptionsView.EXPORT_BTC_XPUB.button_label == "导出当前助记词到 BlueWallet(xpub)"
-        assert ToolsTpSatochipToolsView.EXPORT_BTC_ZPUB.button_label == "导出 Satochip 到 BlueWallet(zpub)"
-        assert ToolsTpSatochipToolsView.EXPORT_BTC_XPUB.button_label == "导出 Satochip 到 BlueWallet(xpub)"
-        assert LoadSeedView.TYPE_STEEL_RESTORE.button_label == "从钢板数字恢复二次助记词"
+        assert ToolsTpSeedToolsView.CARD_CREATE.button_label == "扑克牌创建"
+        assert ToolsTpSeedToolsView.HEX_CREATE.button_label == "16进制创建"
+        assert ToolsTpLoadedSeedOptionsView.VIEW_WORDS.button_label == "查看助记词"
+        assert ToolsTpLoadedSeedOptionsView.EXPORT_BTC_ZPUB.button_label == "导出 Blue zpub"
+        assert ToolsTpLoadedSeedOptionsView.EXPORT_BTC_XPUB.button_label == "导出 Blue xpub"
+        assert ToolsTpLoadedSeedOptionsView.SAVE_TO_SEEDKEEPER.button_label == "写入到 SeedKeeper"
+        assert ToolsTpLoadedSeedOptionsView.IMPORT_TO_SMARTCARD.button_label == "写入到智能卡"
+        assert ToolsTpSatochipToolsView.EXPORT_BTC_ZPUB.button_label == "导出 Blue zpub"
+        assert ToolsTpSatochipToolsView.EXPORT_BTC_XPUB.button_label == "导出 Blue xpub"
+        assert LoadSeedView.TYPE_STEEL_RESTORE.button_label == "从钢板数字恢复"
         assert ToolsTpUiLockView.SETUP.button_label == "设置登录密码"
         assert ToolsTpUiLockView.UNLOCK.button_label == "输入登录密码"
-        assert ToolsMenuView.CARDS.button_label == "使用扑克牌创建助记词"
-        assert ToolsMenuView.HEX.button_label == "使用16进制创建助记词"
-        assert ToolsSeedkeeperView.VIEW_SECRETS.button_label == "查看和管理卡内助记词"
-        assert ToolsSeedkeeperView.FACTORY_RESET.button_label == "高风险：重置 SeedKeeper"
+        assert ToolsMenuView.CARDS.button_label == "扑克牌创建"
+        assert ToolsMenuView.HEX.button_label == "16进制创建"
+        assert ToolsSeedkeeperView.VIEW_SECRETS.button_label == "管理卡内助记词"
+        assert ToolsSeedkeeperView.VIEW_FREE_SPACE.button_label == "剩余空间"
+        assert ToolsSeedkeeperView.CHANGE_PIN.button_label == "更改 PIN"
+        assert ToolsSeedkeeperView.FACTORY_RESET.button_label == "高风险：重置"
+        assert ToolsSatochipView.IMPORT_SEED.button_label == "写入助记词"
+        assert ToolsSatochipView.EXPORT_XPUB.button_label == "导出公钥"
+        assert ToolsSatochipView.LOAD_DESCRIPTOR.button_label == "加载描述符"
+        assert ToolsSatochipView.CHANGE_PIN.button_label == "更改 PIN"
+        assert ToolsSatochipView.FACTORY_RESET.button_label == "重置卡片"
         assert not hasattr(ToolsSmartcardMenuView, "Satochip_DIY")
         assert ToolsSatochipFactoryResetView.LEGACY_RESET.button_label == "拔插卡恢复出厂（推荐）"
         assert ToolsSatochipFactoryResetView.BLOCKING_RESET.button_label == "锁死 PIN/PUK 恢复出厂"
@@ -375,6 +408,130 @@ def main() -> int:
         assert dest.view_args["coordinator_label"] == "BlueWallet"
         assert dest.view_args["script_type"] == SettingsConstants.LEGACY_P2PKH
 
+        def _run_review_chain(view, run_screen, max_steps=8):
+            controller = view.controller
+            settings = view.settings
+            renderer = view.renderer
+            current = view
+            for _ in range(max_steps):
+                current.controller = controller
+                current.settings = settings
+                current.renderer = renderer
+                current.canvas_width = renderer.canvas_width
+                current.canvas_height = renderer.canvas_height
+                current.run_screen = run_screen
+                dest = current.run()
+                if hasattr(dest, "View_cls") and dest.View_cls == current.__class__:
+                    next_view = dest.View_cls(**(dest.view_args or {}))
+                    next_view.controller = controller
+                    next_view.settings = settings
+                    next_view.renderer = renderer
+                    next_view.canvas_width = renderer.canvas_width
+                    next_view.canvas_height = renderer.canvas_height
+                    current = next_view
+                    continue
+                return dest
+            raise AssertionError("review chain did not terminate")
+
+        from embit import bip32 as embit_bip32_mod
+        from embit.networks import NETWORKS as EMBIT_NETWORKS
+
+        class _FakeExtendedKey:
+            def __init__(self, hdkey):
+                self._hdkey = hdkey
+
+            def get_public_key_bytes(self, compressed=True):
+                if compressed:
+                    return self._hdkey.key.sec()
+                return self._hdkey.key.sec(compressed=False)
+
+        class _FakeSatochipImportConnector:
+            def __init__(self):
+                self.seed_bytes = None
+                self.parser = types.SimpleNamespace(authentikey=object())
+                self._current_priv = None
+
+            def card_bip32_import_seed(self, seed_bytes):
+                self.seed_bytes = bytes(seed_bytes)
+
+            def card_get_status(self):
+                return None, 0x90, 0x00, {"is_seeded": self.seed_bytes is not None}
+
+            def _root(self, is_mainnet=True):
+                embit_network = "main" if is_mainnet else "test"
+                return embit_bip32_mod.HDKey.from_seed(
+                    self.seed_bytes,
+                    version=EMBIT_NETWORKS[embit_network]["xprv"],
+                )
+
+            def card_bip32_get_xpub(self, derivation_path, xtype, is_mainnet):
+                root = self._root(is_mainnet=is_mainnet)
+                if not derivation_path or derivation_path == "m":
+                    derived = root
+                else:
+                    derived = root.derive(derivation_path)
+                public = derived.to_public()
+                version_key = {
+                    "standard": "xpub",
+                    "p2wpkh-p2sh": "ypub",
+                    "p2wpkh": "zpub",
+                }[xtype]
+                embit_network = "main" if is_mainnet else "test"
+                return public.to_base58(version=EMBIT_NETWORKS[embit_network][version_key])
+
+            def card_bip32_get_extendedkey(self, derivation_path):
+                derived = self._root(is_mainnet=True)
+                if derivation_path and derivation_path != "m":
+                    derived = derived.derive(derivation_path)
+                self._current_priv = derived
+                return _FakeExtendedKey(derived.to_public()), bytes(derived.chain_code)
+
+            def card_sign_transaction_hash(self, keynbr, tx_hash, challenge):
+                _ = keynbr
+                _ = challenge
+                sig = self._current_priv.key.sign(bytes(tx_hash)).serialize()
+                return list(sig), 0x90, 0x00
+
+        import_seed_view = ToolsSatochipImportSeedView(
+            preferred_seed_num=0,
+            return_destination=view_mod.Destination(view_mod.BackStackView),
+        )
+        import_seed_view.controller = _FakeController()
+        import_seed_view.settings = _FakeSettings()
+        import_seed_view.renderer = _FakeRenderer()
+        import_seed_view.canvas_width = 240
+        import_seed_view.canvas_height = 240
+        import_seed_view.run_screen = lambda *args, **kwargs: 0
+        import_seed_view.controller.storage.seeds.append(tp_loaded_seed)
+        verify_dest = import_seed_view._import_loaded_seed(_FakeSatochipImportConnector(), tp_loaded_seed)
+        assert verify_dest.View_cls == ToolsSatochipImportVerificationView
+        assert verify_dest.view_args["ok"] is True
+        assert any("主指纹: 通过" in page for page in verify_dest.view_args["pages"])
+        assert any("测试签名验签: 通过" in page for page in verify_dest.view_args["pages"])
+
+        verify_view = ToolsSatochipImportVerificationView(**verify_dest.view_args)
+        verify_view.controller = import_seed_view.controller
+        verify_view.settings = import_seed_view.settings
+        verify_view.renderer = import_seed_view.renderer
+        verify_view.canvas_width = 240
+        verify_view.canvas_height = 240
+        verify_capture = {}
+
+        def _verify_run_screen(*args, **kwargs):
+            screen_name = getattr(args[0], "__name__", str(args[0])) if args else ""
+            verify_capture.setdefault("screens", []).append(screen_name)
+            if screen_name in {"ToolsFormattedTextScreen", "ToolsScrollableTextScreen"}:
+                verify_capture.setdefault("titles", []).append(kwargs["title"])
+                verify_capture.setdefault("texts", []).append(kwargs["text"])
+                return len(kwargs["button_data"]) - 1
+            return 0
+
+        verify_dest_done = _run_review_chain(verify_view, _verify_run_screen, max_steps=40)
+        assert "ToolsScrollableTextScreen" in verify_capture["screens"]
+        assert any(title.startswith("写卡核验") for title in verify_capture["titles"])
+        assert any("Legacy xpub" in text for text in verify_capture["texts"])
+        assert verify_dest_done.View_cls == view_mod.BackStackView
+
         import embit.psbt as embit_psbt_mod
 
         original_tp_psbt_from_base64 = embit_psbt_mod.PSBT.from_base64
@@ -409,19 +566,34 @@ def main() -> int:
         encode_qr_mod.build_signed_psbt_qr_encoder = _fake_tp_build_signed
         tp_views_mod._tp_home_destination = lambda: object()
         try:
-            signed_view = ToolsTpSignerPsbtQrView(psbt_base64="cHNidP8BAHECAAAAAQ==", input_qr_type=QRType.PSBT__BBQR, tx_hex="deadbeef")
+            signed_view = ToolsTpSignerPsbtQrView(
+                psbt_base64="cHNidP8BAHECAAAAAQ==",
+                input_qr_type=QRType.PSBT__BBQR,
+                tx_hex=SIGNED_TX_SAMPLE_HEX,
+            )
             screen_capture = {}
 
             def _signed_run_screen(*args, **kwargs):
-                screen_capture["screen"] = getattr(args[0], "__name__", str(args[0])) if args else ""
+                screen_name = getattr(args[0], "__name__", str(args[0])) if args else ""
+                screen_capture.setdefault("screens", []).append(screen_name)
+                if screen_name in {"ToolsFormattedTextScreen", "ToolsScrollableTextScreen"}:
+                    screen_capture.setdefault("review_titles", []).append(kwargs["title"])
+                    screen_capture.setdefault("review_texts", []).append(kwargs["text"])
+                    return len(kwargs["button_data"]) - 1
                 screen_capture["encoder"] = kwargs["qr_encoder"]
                 return 0
 
-            signed_view.run_screen = _signed_run_screen
-            dest = signed_view.run()
+            dest = _run_review_chain(signed_view, _signed_run_screen)
             assert signed_capture["psbt_base64"] == "cHNidP8BAHECAAAAAQ=="
             assert signed_capture["encoder_args"][2] == QRType.PSBT__BBQR
-            assert screen_capture["screen"] == "QRDisplayScreen"
+            assert "ToolsScrollableTextScreen" in screen_capture["screens"]
+            assert "QRDisplayScreen" in screen_capture["screens"]
+            assert any("结果: 可直接广播的交易" in text for text in screen_capture["review_texts"])
+            assert any("扫码方式: 单张二维码" in text for text in screen_capture["review_texts"])
+            assert any("随机数重复: 未发现" in text for text in screen_capture["review_texts"])
+            assert all("回传格式:" not in text for text in screen_capture["review_texts"])
+            assert all("帧数:" not in text for text in screen_capture["review_texts"])
+            assert all("RawTx 预览" not in text for text in screen_capture["review_texts"])
             assert isinstance(screen_capture["encoder"], _FakeQrEncoder)
             assert dest is not None
 
@@ -432,19 +604,89 @@ def main() -> int:
                     tx_only_capture["encoder_kwargs"] = kwargs
 
             encode_qr_mod.BbqrTextQrEncoder = _FakeBbqrTextEncoder
-            tx_only_view = ToolsTpSignerPsbtQrView(psbt_base64="", input_qr_type=None, tx_hex="deadbeef")
+            tx_only_view = ToolsTpSignerPsbtQrView(
+                psbt_base64="",
+                input_qr_type=None,
+                tx_hex=SIGNED_TX_SAMPLE_HEX,
+            )
 
             def _tx_only_run_screen(*args, **kwargs):
-                tx_only_capture["screen"] = getattr(args[0], "__name__", str(args[0])) if args else ""
+                screen_name = getattr(args[0], "__name__", str(args[0])) if args else ""
+                tx_only_capture.setdefault("screens", []).append(screen_name)
+                if screen_name in {"ToolsFormattedTextScreen", "ToolsScrollableTextScreen"}:
+                    tx_only_capture.setdefault("review_texts", []).append(kwargs["text"])
+                    return len(kwargs["button_data"]) - 1
                 tx_only_capture["encoder"] = kwargs["qr_encoder"]
                 return 0
 
-            tx_only_view.run_screen = _tx_only_run_screen
-            tx_only_dest = tx_only_view.run()
-            assert tx_only_capture["screen"] == "QRDisplayScreen"
+            tx_only_dest = _run_review_chain(tx_only_view, _tx_only_run_screen)
+            assert "ToolsScrollableTextScreen" in tx_only_capture["screens"]
+            assert "QRDisplayScreen" in tx_only_capture["screens"]
+            assert any("结果: 可直接广播的交易" in text for text in tx_only_capture["review_texts"])
+            assert any("随机数重复: 未发现" in text for text in tx_only_capture["review_texts"])
             assert isinstance(tx_only_capture["encoder"], _FakeBbqrTextEncoder)
-            assert tx_only_capture["encoder_kwargs"]["text"] == "deadbeef"
+            assert tx_only_capture["encoder_kwargs"]["text"] == SIGNED_TX_SAMPLE_HEX
             assert tx_only_dest is not None
+
+            generic_capture = {}
+            generic_view = ToolsTpSignerQrView(response_text=f"btctx:{SIGNED_TX_SAMPLE_HEX}")
+
+            def _generic_run_screen(*args, **kwargs):
+                screen_name = getattr(args[0], "__name__", str(args[0])) if args else ""
+                generic_capture.setdefault("screens", []).append(screen_name)
+                if screen_name in {"ToolsFormattedTextScreen", "ToolsScrollableTextScreen"}:
+                    generic_capture.setdefault("review_texts", []).append(kwargs["text"])
+                    return len(kwargs["button_data"]) - 1
+                generic_capture["encoder"] = kwargs["qr_encoder"]
+                return 0
+
+            generic_dest = _run_review_chain(generic_view, _generic_run_screen)
+            assert "ToolsScrollableTextScreen" in generic_capture["screens"]
+            assert "QRDisplayScreen" in generic_capture["screens"]
+            assert any("手机扫回后可直接广播" in text for text in generic_capture["review_texts"])
+            assert any("随机数重复: 未发现" in text for text in generic_capture["review_texts"])
+            assert all("回传类型:" not in text for text in generic_capture["review_texts"])
+            assert all("RawTx 预览" not in text for text in generic_capture["review_texts"])
+            assert generic_dest is not None
+
+            original_psbt_signed_qr_display = psbt_views_mod.PSBTSignedQRDisplayView
+            psbt_capture = {}
+            psbt_view = original_psbt_signed_qr_display()
+            psbt_view.controller.psbt = object()
+            psbt_view.controller.psbt_seed = object()
+            psbt_view.controller.signed_tx_hex = SIGNED_TX_SAMPLE_HEX
+            psbt_view.controller.psbt_microsd_save_path = None
+            psbt_view.controller.psbt_from_microsd = False
+            psbt_view.controller.psbt_microsd_seed_warning_shown = False
+            psbt_view.controller.psbt_parser = types.SimpleNamespace(
+                num_inputs=4,
+                num_destinations=2,
+                spend_amount=12000,
+                fee_amount=150,
+                change_amount=300,
+                destination_addresses=["bc1qexampleaddress0000000000000000000000000"],
+            )
+
+            def _psbt_run_screen(*args, **kwargs):
+                screen_name = getattr(args[0], "__name__", str(args[0])) if args else ""
+                psbt_capture.setdefault("screens", []).append(screen_name)
+                if screen_name in {"ToolsFormattedTextScreen", "ToolsScrollableTextScreen"}:
+                    psbt_capture.setdefault("review_texts", []).append(kwargs["text"])
+                    return len(kwargs["button_data"]) - 1
+                psbt_capture["encoder"] = kwargs["qr_encoder"]
+                return 0
+
+            psbt_dest = _run_review_chain(psbt_view, _psbt_run_screen)
+            assert "ToolsScrollableTextScreen" in psbt_capture["screens"]
+            assert "QRDisplayScreen" in psbt_capture["screens"]
+            assert any("矿工费: 150 sats" in text for text in psbt_capture["review_texts"])
+            assert any("结果: 可直接广播的交易" in text for text in psbt_capture["review_texts"])
+            assert any("扫码方式: 单张二维码" in text for text in psbt_capture["review_texts"])
+            assert any("随机数重复: 未发现" in text for text in psbt_capture["review_texts"])
+            assert all("回传格式:" not in text for text in psbt_capture["review_texts"])
+            assert all("RawTx 预览" not in text for text in psbt_capture["review_texts"])
+            assert isinstance(psbt_capture["encoder"], _FakeQrEncoder)
+            assert psbt_dest is not None
         finally:
             embit_psbt_mod.PSBT.from_base64 = original_tp_psbt_from_base64
             encode_qr_mod.build_signed_psbt_qr_encoder = original_tp_build_signed
@@ -741,28 +983,28 @@ def main() -> int:
 
         tool_menu_view = ToolsMenuView(include_password_generator=False)
         tool_menu_view.run_screen = lambda *args, **kwargs: next(
-            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "使用扑克牌创建助记词"
+            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "扑克牌创建"
         )
         dest = tool_menu_view.run()
         assert dest.View_cls.__name__ == "ToolsCardEntropyMnemonicLengthView"
 
         tool_menu_hex_view = ToolsMenuView(include_password_generator=False)
         tool_menu_hex_view.run_screen = lambda *args, **kwargs: next(
-            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "使用16进制创建助记词"
+            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "16进制创建"
         )
         dest = tool_menu_hex_view.run()
         assert dest.View_cls.__name__ == "ToolsHexEntropyMnemonicLengthView"
 
         tp_seed_tools_view = ToolsTpSeedToolsView()
         tp_seed_tools_view.run_screen = lambda *args, **kwargs: next(
-            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "使用扑克牌创建助记词"
+            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "扑克牌创建"
         )
         dest = tp_seed_tools_view.run()
         assert dest.View_cls.__name__ == "ToolsCardEntropyMnemonicLengthView"
 
         tp_seed_tools_hex_view = ToolsTpSeedToolsView()
         tp_seed_tools_hex_view.run_screen = lambda *args, **kwargs: next(
-            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "使用16进制创建助记词"
+            i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "16进制创建"
         )
         dest = tp_seed_tools_hex_view.run()
         assert dest.View_cls.__name__ == "ToolsHexEntropyMnemonicLengthView"
@@ -886,7 +1128,7 @@ def main() -> int:
         steel_groups = words_to_plate_groups(words)
         restored_indices = parse_restore_indices(",".join(steel_groups))
         assert restored_indices == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-        assert ToolsTpSteelPlateReviewView.EDIT_PAGE.button_label == "编辑当前页"
+        assert ToolsTpSteelPlateReviewView.EDIT_PAGE.button_label == "编辑词条"
         assert _format_number_groups(steel_groups, 0, entries_per_page=1)[1] == 12
         fake_view = types.SimpleNamespace(controller=_FakeController())
         seed_num = _store_restored_steel_cipher(fake_view, words)
@@ -965,13 +1207,12 @@ def main() -> int:
 
         seed_words_view.run_screen = _seed_words_run_screen
         dest = seed_words_view.run()
-        assert seed_words_capture["screen_cls"] == "ToolsFormattedTextScreen"
-        assert seed_words_capture["title"] == "BIP39 序号：1/3"
+        assert seed_words_capture["screen_cls"] == "ToolsScrollableTextScreen"
+        assert seed_words_capture["title"] == "BIP39 序号"
         assert "01. abandon  0000" in seed_words_capture["text"]
-        assert "04. abandon  0000" in seed_words_capture["text"]
-        assert seed_words_capture["buttons"] == ["下一页"]
-        assert dest.View_cls.__name__ == "SeedWordsView"
-        assert dest.view_args["page_index"] == 1
+        assert seed_words_capture["text"].count("\n") >= 9
+        assert seed_words_capture["buttons"] == ["完成"]
+        assert dest.View_cls.__name__ == "SeedWordsBackupTestPromptView"
 
         invalid_seed_words_view = SeedWordsView.__new__(SeedWordsView)
         invalid_seed_words_view.controller = _FakeController()
@@ -995,12 +1236,12 @@ def main() -> int:
 
         invalid_seed_words_view.run_screen = _invalid_seed_run_screen
         dest = invalid_seed_words_view.run()
-        assert invalid_seed_capture["screen_cls"] == "ToolsFormattedTextScreen"
+        assert invalid_seed_capture["screen_cls"] == "ToolsScrollableTextScreen"
         assert "01. goood" in invalid_seed_capture["text"]
         assert "0000" not in invalid_seed_capture["text"]
-        assert invalid_seed_capture["buttons"] == ["下一页"]
-        assert dest.View_cls.__name__ == "SeedWordsView"
-        assert dest.view_args["page_index"] == 1
+        assert invalid_seed_capture["text"].count("\n") >= 9
+        assert invalid_seed_capture["buttons"] == ["完成"]
+        assert dest.View_cls.__name__ == "SeedWordsBackupTestPromptView"
 
         indexed_transient_view = SeedWordsView.__new__(SeedWordsView)
         indexed_transient_view.controller = _FakeController()
@@ -1029,8 +1270,8 @@ def main() -> int:
         dest = indexed_transient_view.run()
         assert "01. Enjoy" in indexed_transient_capture["text"]
         assert "0000" in indexed_transient_capture["text"]
-        assert dest.View_cls.__name__ == "SeedWordsView"
-        assert dest.view_args["page_index"] == 1
+        assert indexed_transient_capture["text"].count("\n") >= 9
+        assert dest.View_cls.__name__ == "SeedWordsBackupTestPromptView"
 
         transient_index_view = SeedWordIndexView(seed_num=0, title="假助记词序号")
         transient_index_view.controller.storage.seeds = [
@@ -1049,8 +1290,8 @@ def main() -> int:
         dest = transient_index_view.run()
         assert "01. enjoy" in transient_index_capture["text"]
         assert "0011" in transient_index_capture["text"]
-        assert dest.View_cls.__name__ == "SeedWordIndexView"
-        assert dest.view_args["page_index"] == 1
+        assert transient_index_capture["text"].count("\n") >= 9
+        assert dest.View_cls.__name__ == "BackStackView"
 
         explicit_index_view = SeedWordIndexView(
             words=["goood", "journey", "repair"],
@@ -1078,20 +1319,17 @@ def main() -> int:
             raw_index_review_capture["title"] = kwargs["title"]
             raw_index_review_capture["text"] = kwargs["text"]
             raw_index_review_capture["buttons"] = [button.button_label for button in kwargs["button_data"]]
-            return next(
-                i for i, button in enumerate(kwargs["button_data"])
-                if button.button_label == "下一页"
-            )
+            return next(i for i, button in enumerate(kwargs["button_data"]) if button.button_label == "按原样导入")
 
         raw_index_review_view.run_screen = _raw_index_review_run_screen
         dest = raw_index_review_view.run()
-        assert raw_index_review_capture["screen_cls"] == "ToolsFormattedTextScreen"
-        assert raw_index_review_capture["title"] == "检查 BIP39 序号：1/3"
+        assert raw_index_review_capture["screen_cls"] == "ToolsScrollableTextScreen"
+        assert raw_index_review_capture["title"] == "检查 BIP39 序号"
         assert "01. abandon" in raw_index_review_capture["text"]
         assert "0000" in raw_index_review_capture["text"]
-        assert raw_index_review_capture["buttons"] == ["下一页"]
-        assert dest.View_cls.__name__ == "SeedMnemonicRawReviewView"
-        assert dest.view_args["page_index"] == 1
+        assert raw_index_review_capture["text"].count("\n") >= 9
+        assert raw_index_review_capture["buttons"] == ["重新输入", "按原样导入"]
+        assert dest.View_cls.__name__ == "SeedsMenuView"
 
         class _FakeIndexEntryScreen:
             KEYBOARD__DIGITS_BUTTON_TEXT = object()
@@ -1162,7 +1400,7 @@ def main() -> int:
             loaded_seed_buttons["labels"] = [button.button_label for button in kwargs["button_data"]]
             return next(
                 i for i, button in enumerate(kwargs["button_data"])
-                if button.button_label == "写入当前助记词到 SeedKeeper"
+                if button.button_label == "写入到 SeedKeeper"
             )
 
         loaded_seed_view.run_screen = _loaded_seed_run_screen
@@ -1171,7 +1409,109 @@ def main() -> int:
         assert dest.view_args["label_prefix"] == TP_STEEL_SECRET_PREFIX
         assert dest.view_args["words_override"] == words
         assert dest.view_args["bip39_indices_override"] == words_to_indices(words)
-        assert "查看 BIP39 序号" in loaded_seed_buttons["labels"]
+        assert "查看助记词" in loaded_seed_buttons["labels"]
+
+        card_entropy_seed = Seed(
+            expected_card_mnemonic,
+            entropy_source_label="扑克牌",
+            entropy_input_format_label="Card",
+            entropy_display_text="AH QS 9D TC 4H 8S KD 2C",
+            entropy_qr_text="AH QS 9D TC 4H 8S KD 2C",
+            entropy_transform_label="SHA256 后截位",
+        )
+        entropy_info = card_entropy_seed.get_entropy_display_info()
+        assert entropy_info["source_label"] == "扑克牌"
+        assert entropy_info["input_format_label"] == "Card"
+        assert entropy_info["entropy_bits"] == 224
+        assert entropy_info["search_space_label"] == "2^224"
+        assert entropy_info["strength_label"] == "很高"
+
+        entropy_info, entropy_pages = seed_views_mod._build_seed_entropy_pages(card_entropy_seed)
+        assert entropy_pages[0]["title"] == "熵详情"
+        assert "来源: 扑克牌" in entropy_pages[0]["text"]
+        assert "难度: 2^224" in entropy_pages[0]["text"]
+        assert entropy_pages[1]["title"] == "牌序"
+        assert "AH QS 9D TC" in entropy_pages[1]["text"]
+
+        fallback_entropy_seed = Seed("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".split())
+        fallback_info = fallback_entropy_seed.get_entropy_display_info()
+        assert fallback_info["source_label"] == "从助记词还原"
+        assert fallback_info["input_format_label"] == "Hex"
+        assert fallback_info["transform_label"] == "BIP39 反推"
+
+        orig_button_list_screen = tools_views_mod.ButtonListScreen
+        orig_derive_camera_entropy = tools_views_mod._derive_camera_entropy_bytes
+        try:
+            class _FixedButtonListScreen:
+                def __init__(self, *args, **kwargs):
+                    self.button_data = kwargs.get("button_data", [])
+
+                def display(self):
+                    return 0
+
+            tools_views_mod.ButtonListScreen = _FixedButtonListScreen
+            tools_views_mod._derive_camera_entropy_bytes = (
+                lambda previews, final: bytes.fromhex(
+                    "00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF"
+                )
+            )
+
+            camera_entropy_view = ToolsImageEntropyMnemonicLengthView()
+            camera_entropy_view.controller.image_entropy_preview_frames = [object(), object()]
+            camera_entropy_view.controller.image_entropy_final_image = object()
+            camera_entropy_view.controller.create_slip39 = False
+            dest = camera_entropy_view.run()
+            assert dest.View_cls.__name__ == "SeedWordsWarningView"
+            pending_camera_seed = camera_entropy_view.controller.storage.get_pending_seed()
+            assert pending_camera_seed is not None
+            camera_entropy_info = pending_camera_seed.get_entropy_display_info()
+            assert camera_entropy_info["source_label"] == "拍照随机源"
+            assert camera_entropy_info["input_format_label"] == "Hex"
+            assert camera_entropy_info["transform_label"] == "直接作为随机数"
+            assert camera_entropy_info["display_text"] == "00 11 22 33 44 55 66 77 88 99 AA BB CC DD EE FF"
+            assert camera_entropy_info["qr_text"] == "00112233445566778899AABBCCDDEEFF"
+            assert camera_entropy_view.controller.image_entropy_preview_frames is None
+            assert camera_entropy_view.controller.image_entropy_final_image is None
+        finally:
+            tools_views_mod.ButtonListScreen = orig_button_list_screen
+            tools_views_mod._derive_camera_entropy_bytes = orig_derive_camera_entropy
+
+        scroll_canvas = Image.new("RGB", (240, 240), "black")
+        scroll_draw = ImageDraw.Draw(scroll_canvas)
+        scroll_text = "\n".join(
+            f"{index:02d}. abandon  0000" for index in range(1, 25)
+        )
+        original_renderer_instance = renderer_mod.Renderer._instance
+        try:
+            renderer_mod.Renderer._instance = types.SimpleNamespace(
+                canvas_width=240,
+                canvas_height=240,
+                draw=scroll_draw,
+                canvas=scroll_canvas,
+            )
+            scrollable_text = ScrollableTextArea(
+                image_draw=scroll_draw,
+                canvas=scroll_canvas,
+                text=scroll_text,
+                width=208,
+                height=112,
+                screen_x=16,
+                screen_y=16,
+                font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+                font_size=19,
+                background_color="black",
+                font_color="white",
+                is_text_centered=False,
+            )
+            assert scrollable_text.max_vertical_scroll > 0
+            assert scrollable_text.scroll_surface.height >= (
+                scrollable_text.rendered_text_img.height + GUIConstants.COMPONENT_PADDING
+            )
+            scrollable_text.set_vertical_scroll_y(scrollable_text.max_vertical_scroll)
+            assert scrollable_text.vertical_scroll_y == scrollable_text.max_vertical_scroll
+            scrollable_text.render()
+        finally:
+            renderer_mod.Renderer._instance = original_renderer_instance
 
         steel_cipher_view = ToolsTpSteelCipherOptionsView()
         steel_cipher_view.controller.storage.set_steel_encrypted_mnemonic(words)
@@ -1183,7 +1523,7 @@ def main() -> int:
 
         steel_cipher_view.run_screen = _steel_cipher_run_screen
         dest = steel_cipher_view.run()
-        assert "查看 BIP39 序号" in steel_cipher_buttons["labels"]
+        assert "查看二次加密单词" in steel_cipher_buttons["labels"]
         assert dest.View_cls.__name__ == "ToolsTpSteelCipherWordsView"
 
         seedkeeper_select_view = ToolsTpSeedkeeperSelectLoadedSeedView()
@@ -1235,7 +1575,7 @@ def main() -> int:
                 card_text=dest.view_args["card_text"],
                 page_num=99,
             )
-            expected_review_text = review_view._prepare_pages()[-1]
+            expected_review_text = "\n\n".join(review_view._prepare_pages())
             review_capture = {}
 
             def _review_run_screen(*args, **kwargs):
@@ -1246,7 +1586,7 @@ def main() -> int:
 
             review_view.run_screen = _review_run_screen
             dest = review_view.run()
-            assert review_capture["title"].startswith("核对扑克牌 ")
+            assert review_capture["title"] == "核对牌序"
             assert review_capture["text"] == expected_review_text
             assert "确认生成" in review_capture["labels"]
             assert "继续编辑" in review_capture["labels"]
@@ -1279,7 +1619,7 @@ def main() -> int:
                 hex_text=dest.view_args["hex_text"],
                 page_num=99,
             )
-            expected_hex_review_text = hex_review_view._prepare_pages()[-1]
+            expected_hex_review_text = "\n\n".join(hex_review_view._prepare_pages())
             review_capture = {}
 
             def _hex_review_run_screen(*args, **kwargs):
@@ -1290,7 +1630,7 @@ def main() -> int:
 
             hex_review_view.run_screen = _hex_review_run_screen
             dest = hex_review_view.run()
-            assert review_capture["title"].startswith("核对16进制 ")
+            assert review_capture["title"] == "核对 Hex"
             assert review_capture["text"] == expected_hex_review_text
             assert "确认生成" in review_capture["labels"]
             assert "继续编辑" in review_capture["labels"]
@@ -1503,7 +1843,7 @@ def main() -> int:
 
         raw_review_view.run_screen = _raw_review_run_screen
         dest = raw_review_view.run()
-        assert raw_review_capture["screen_cls"] == "ToolsFormattedTextScreen"
+        assert raw_review_capture["screen_cls"] == "ToolsScrollableTextScreen"
         assert "09. absurd" in raw_review_capture["text"]
         assert "0008" in raw_review_capture["text"]
         assert dest.View_cls.__name__ == "SeedsMenuView"
@@ -1573,18 +1913,17 @@ def main() -> int:
             steel_plate_capture["title"] = kwargs["title"]
             return next(
                 i for i, button in enumerate(kwargs["button_data"])
-                if button.button_label == "下一页"
+                if button.button_label == "完成"
             )
 
         steel_plate_words_view.run_screen = _steel_plate_run_screen
         dest = steel_plate_words_view.run()
-        assert steel_plate_capture["title"] == "打孔位：1/12"
-        assert "序号 0000" in steel_plate_capture["text"]
+        assert steel_plate_capture["title"] == "打孔位"
+        assert "01 词" in steel_plate_capture["text"]
+        assert "序号: 0000" in steel_plate_capture["text"]
         assert "无需打孔" in steel_plate_capture["text"]
         assert "○" not in steel_plate_capture["text"]
-        assert "1 2 4 8 16 32" not in steel_plate_capture["text"]
-        assert dest.View_cls.__name__ == "ToolsTpSteelPlateWordsView"
-        assert dest.view_args["page_index"] == 1
+        assert dest.View_cls.__name__ == "ToolsTpSteelCipherOptionsView"
 
         plate_title, plate_text = tp_views_mod._format_plate_word_page(
             ["demo"],
@@ -1592,12 +1931,12 @@ def main() -> int:
             0,
             indices=[296],
         )
-        assert plate_title == "第 01 词"
-        assert "序号 0296" in plate_text
+        assert plate_title == "01 词"
+        assert "序号: 0296" in plate_text
+        assert "打孔位:" in plate_text
         assert "8 32" in plate_text
         assert "256" in plate_text
         assert "○" not in plate_text
-        assert "1 2 4 8 16 32" not in plate_text
 
         class _FakeShiftEntryScreen:
             KEYBOARD__DIGITS_BUTTON_TEXT = object()

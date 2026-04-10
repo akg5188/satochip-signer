@@ -148,9 +148,9 @@ def format_seedkeeper_space_error(required_bytes: int, free_bytes: int) -> str:
     """Return a human-readable message describing a space shortfall."""
 
     return (
-        "Not enough space on Seedkeeper\n"
-        f"Requires {required_bytes} bytes\n"
-        f"{free_bytes} bytes free"
+        "SeedKeeper 剩余空间不足\n"
+        f"需要 {required_bytes} 字节\n"
+        f"当前可用 {free_bytes} 字节"
     )
 
 

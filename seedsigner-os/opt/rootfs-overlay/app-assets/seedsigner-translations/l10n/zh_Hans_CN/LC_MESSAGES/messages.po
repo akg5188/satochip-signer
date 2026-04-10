@@ -914,7 +914,7 @@ msgstr "钱包描述符无法验证 PSBT 的 {} 地址。"
 #. Variable is either "change" or "self-transfer".
 #: src/seedsigner/views/psbt_views.py
 msgid "PSBT's {} address could not be generated from your seed."
-msgstr "PSBT 的 {} 地址无法从您的种子中生成。"
+msgstr "PSBT 的 {} 地址无法从您的助记词中生成。"
 
 #: src/seedsigner/views/psbt_views.py
 msgid "Suspicious PSBT"
@@ -1290,7 +1290,7 @@ msgstr "取消"
 
 #: src/seedsigner/views/seed_views.py
 msgid "Can't validate a single sig addr without specifying a seed"
-msgstr "在未指定种子类型的情况下，无法验证单一签名地址"
+msgstr "在未指定助记词的情况下，无法验证单一签名地址"
 
 #: src/seedsigner/views/seed_views.py
 msgid "Scan Descriptor"

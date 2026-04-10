@@ -29,7 +29,12 @@ class Seed:
     def __init__(self,
                  mnemonic: List[str] = None,
                  passphrase: str = "",
-                 wordlist_language_code: str = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH) -> None:
+                 wordlist_language_code: str = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH,
+                 entropy_source_label: str | None = None,
+                 entropy_input_format_label: str | None = None,
+                 entropy_display_text: str | None = None,
+                 entropy_qr_text: str | None = None,
+                 entropy_transform_label: str | None = None) -> None:
         self._wordlist_language_code = wordlist_language_code
 
         if not mnemonic:
@@ -38,6 +43,19 @@ class Seed:
 
         self._passphrase: str = ""
         self.set_passphrase(passphrase, regenerate_seed=False)
+
+        self._entropy_source_label: str | None = None
+        self._entropy_input_format_label: str | None = None
+        self._entropy_display_text: str | None = None
+        self._entropy_qr_text: str | None = None
+        self._entropy_transform_label: str | None = None
+        self.set_entropy_display_profile(
+            source_label=entropy_source_label,
+            input_format_label=entropy_input_format_label,
+            display_text=entropy_display_text,
+            qr_text=entropy_qr_text,
+            transform_label=entropy_transform_label,
+        )
 
         self.seed_bytes: bytes = None
         self.master_secret: bytes | None = None
@@ -197,6 +215,58 @@ class Seed:
     def bip39_entropy_supported(self) -> bool:
         return type(self) is Seed
 
+    @staticmethod
+    def _normalize_entropy_profile_value(value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized if normalized else None
+
+    @staticmethod
+    def _format_hex_pairs(hex_text: str) -> str:
+        clean_hex = "".join(ch for ch in str(hex_text or "") if ch.strip()).upper()
+        return " ".join(clean_hex[i:i + 2] for i in range(0, len(clean_hex), 2))
+
+    def set_entropy_display_profile(
+        self,
+        *,
+        source_label: str | None = None,
+        input_format_label: str | None = None,
+        display_text: str | None = None,
+        qr_text: str | None = None,
+        transform_label: str | None = None,
+    ) -> None:
+        self._entropy_source_label = self._normalize_entropy_profile_value(source_label)
+        self._entropy_input_format_label = self._normalize_entropy_profile_value(input_format_label)
+        self._entropy_display_text = self._normalize_entropy_profile_value(display_text)
+        self._entropy_qr_text = self._normalize_entropy_profile_value(qr_text)
+        self._entropy_transform_label = self._normalize_entropy_profile_value(transform_label)
+
+    @property
+    def has_custom_entropy_display_profile(self) -> bool:
+        return any(
+            value is not None
+            for value in (
+                self._entropy_source_label,
+                self._entropy_input_format_label,
+                self._entropy_display_text,
+                self._entropy_qr_text,
+                self._entropy_transform_label,
+            )
+        )
+
+    @staticmethod
+    def _entropy_strength_label(entropy_bits: int) -> str:
+        if entropy_bits >= 256:
+            return "极高"
+        if entropy_bits >= 192:
+            return "很高"
+        if entropy_bits >= 160:
+            return "高"
+        if entropy_bits >= 128:
+            return "标准"
+        return "偏低"
+
     def get_bip39_word_indices(self) -> List[int]:
         if not self.bip39_word_indices_supported:
             raise SeedWordsUnavailableException("当前这类助记词不支持显示 BIP39 0-2047 序号。")
@@ -217,6 +287,30 @@ class Seed:
 
     def get_bip39_entropy_hex(self) -> str:
         return self.get_bip39_entropy_bytes().hex()
+
+    def get_entropy_display_info(self) -> dict:
+        entropy_bytes = self.get_bip39_entropy_bytes()
+        entropy_hex = entropy_bytes.hex().upper()
+        entropy_bits = len(entropy_bytes) * 8
+
+        display_text = self._entropy_display_text or self._format_hex_pairs(entropy_hex)
+        qr_text = self._entropy_qr_text or entropy_hex
+        source_label = self._entropy_source_label or "从助记词还原"
+        input_format_label = self._entropy_input_format_label or "Hex"
+        transform_label = self._entropy_transform_label
+        if transform_label is None and not self.has_custom_entropy_display_profile:
+            transform_label = "BIP39 反推"
+
+        return {
+            "source_label": source_label,
+            "input_format_label": input_format_label,
+            "display_text": display_text,
+            "qr_text": qr_text,
+            "transform_label": transform_label,
+            "entropy_bits": entropy_bits,
+            "search_space_label": f"2^{entropy_bits}",
+            "strength_label": self._entropy_strength_label(entropy_bits),
+        }
         
 
     def wipe(self):
@@ -229,6 +323,16 @@ class Seed:
         self._mnemonic = []
         wipe_string(self._passphrase)
         self._passphrase = ""
+        wipe_string(self._entropy_source_label)
+        self._entropy_source_label = None
+        wipe_string(self._entropy_input_format_label)
+        self._entropy_input_format_label = None
+        wipe_string(self._entropy_display_text)
+        self._entropy_display_text = None
+        wipe_string(self._entropy_qr_text)
+        self._entropy_qr_text = None
+        wipe_string(self._entropy_transform_label)
+        self._entropy_transform_label = None
 
     ### override operators
     def __eq__(self, other):

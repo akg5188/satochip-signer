@@ -7,9 +7,14 @@ from binascii import hexlify
 from embit import bip32
 import logging
 
+from seedsigner.helpers.signature_health import (
+    analyze_psbt_signature_health,
+    analyze_tx_signature_health,
+    build_signature_health_lines,
+)
 from seedsigner.models.psbt_parser import PSBTParser
 from seedsigner.models.settings import SettingsConstants
-from seedsigner.gui.components import FontAwesomeIconConstants, SeedSignerIconConstants
+from seedsigner.gui.components import FontAwesomeIconConstants, GUIConstants, SeedSignerIconConstants
 from seedsigner.gui.screens.screen import (
     RET_CODE__BACK_BUTTON,
     ButtonListScreen,
@@ -19,10 +24,145 @@ from seedsigner.gui.screens.screen import (
     QRDisplayScreen,
     LargeIconStatusScreen,
 )
+from seedsigner.gui.screens.tools_screens import ToolsFormattedTextScreen, ToolsScrollableTextScreen
 from seedsigner.views.view import BackStackView, MainMenuView, View, Destination
 from seedsigner.hardware.microsd import MicroSD
 
 logger = logging.getLogger(__name__)
+
+
+def _chunk_review_text(text: str, width: int = 18) -> list[str]:
+    value = str(text or "").strip()
+    if not value:
+        return ["-"]
+    width = max(1, int(width))
+    return [value[i:i + width] for i in range(0, len(value), width)] or ["-"]
+
+
+def _paginate_review_lines(lines: list[str], lines_per_page: int = 9) -> list[str]:
+    cleaned = [str(line).rstrip() for line in lines]
+    if not cleaned:
+        return [""]
+    lines_per_page = max(1, int(lines_per_page))
+    pages = []
+    for start in range(0, len(cleaned), lines_per_page):
+        page = "\n".join(cleaned[start:start + lines_per_page]).strip("\n")
+        pages.append(page if page else " ")
+    return pages
+
+
+def _append_review_value(lines: list[str], label: str, value: str, width: int = 18) -> None:
+    lines.append(label)
+    lines.extend(_chunk_review_text(value, width=width))
+
+
+def _format_review_sats(value: int | None) -> str:
+    try:
+        return f"{int(value):,} sats"
+    except Exception:
+        return "-"
+
+
+def _friendly_signed_psbt_format_label(input_qr_type: str | None, signed_tx_hex: str | None) -> str:
+    mapping = {
+        "psbt__base43": "BASE43",
+        "psbt__base64": "BASE64",
+        "psbt__specter": "Specter",
+        "psbt__ur2": "UR",
+        "psbt__bbqr": "BBQr",
+    }
+    if input_qr_type in mapping:
+        return mapping[input_qr_type]
+    return "-"
+
+
+def _describe_review_qr_delivery(qr_encoder) -> tuple[str, str]:
+    frame_count = 1
+    if qr_encoder is not None:
+        try:
+            frame_count = max(1, int(qr_encoder.seq_len()))
+        except Exception:
+            frame_count = 1
+    if frame_count == 1:
+        return "单张二维码", "下一步会显示 1 张二维码"
+    return f"连续二维码（共 {frame_count} 张）", f"下一步会显示 {frame_count} 张连续二维码"
+
+
+def _build_signed_psbt_review_pages(
+    psbt_parser: PSBTParser | None,
+    signed_tx_hex: str | None = None,
+    signed_psbt_base64: str | None = None,
+    qr_encoder=None,
+    input_qr_type: str | None = None,
+) -> list[str]:
+    qr_style, qr_hint = _describe_review_qr_delivery(qr_encoder)
+    result_label = "可直接广播的交易" if signed_tx_hex else "已签名 PSBT"
+    pages: list[str] = []
+
+    summary_lines = [
+        "签名已完成",
+        f"结果: {result_label}",
+        f"扫码方式: {qr_style}",
+        f"输入数: {psbt_parser.num_inputs if psbt_parser is not None else '-'}",
+        f"金额: {_format_review_sats(psbt_parser.spend_amount if psbt_parser is not None else None)}",
+        f"矿工费: {_format_review_sats(psbt_parser.fee_amount if psbt_parser is not None else None)}",
+    ]
+    if psbt_parser is not None and getattr(psbt_parser, "change_amount", 0):
+        summary_lines.append(f"找零: {_format_review_sats(psbt_parser.change_amount)}")
+    else:
+        summary_lines.append("找零: 无")
+    if psbt_parser is not None and getattr(psbt_parser, "num_destinations", 0) > 1:
+        summary_lines.append(f"收款地址: {psbt_parser.num_destinations} 个")
+    pages.append("\n".join(summary_lines))
+
+    if psbt_parser is not None and psbt_parser.destination_addresses:
+        address = psbt_parser.destination_addresses[0]
+        address_lines = [
+            "收款地址:",
+        ]
+        address_lines.extend(_chunk_review_text(address, width=18))
+        if getattr(psbt_parser, "destination_amounts", None):
+            address_lines.append(f"金额: {_format_review_sats(psbt_parser.destination_amounts[0])}")
+        else:
+            address_lines.append("金额: -")
+        if psbt_parser.num_destinations > 1:
+            address_lines.append(f"另有 {psbt_parser.num_destinations - 1} 个其他收款地址")
+        pages.append("\n".join(address_lines))
+
+    if signed_tx_hex:
+        tx_hex = str(signed_tx_hex).strip()
+        if tx_hex:
+            pages.append(
+                "\n".join(
+                    [
+                        f"交易大小: {len(tx_hex) // 2:,} 字节",
+                        f"文本长度: {len(tx_hex):,} 个字符",
+                        "这份结果可直接广播",
+                    ]
+                )
+            )
+
+    signature_health_report = None
+    if signed_tx_hex:
+        signature_health_report = analyze_tx_signature_health(signed_tx_hex)
+    elif signed_psbt_base64:
+        signature_health_report = analyze_psbt_signature_health(signed_psbt_base64)
+
+    if signature_health_report is not None:
+        pages.append("\n".join(build_signature_health_lines(signature_health_report)))
+
+    pages.append(
+        "\n".join(
+            [
+                qr_hint,
+                "刚才确认过的金额和地址",
+                "和下一步二维码是同一份结果",
+                "确认没问题后再点",
+                "“显示二维码”",
+            ]
+        )
+    )
+    return pages
 
 
 
@@ -1031,11 +1171,64 @@ class PSBTFinalizeView(View):
 
 
 class PSBTSignedQRDisplayView(View):
-    def run(self):
+    PREV = ButtonOption("上一页")
+    NEXT = ButtonOption("下一页")
+    SHOW_QR = ButtonOption("显示签名二维码")
+
+    def __init__(self, page_num: int = 0, skip_review: bool = False):
+        super().__init__()
+        self.page_num = max(0, int(page_num))
+        self.skip_review = bool(skip_review)
+
+    def _reload_review(self, page_num: int, skip_review: bool = False) -> Destination:
+        return Destination(
+            PSBTSignedQRDisplayView,
+            view_args=dict(page_num=page_num, skip_review=skip_review),
+            clear_history=True,
+        )
+
+    def _qr_encoder_cache_key(self):
+        return (
+            id(getattr(self.controller, "psbt", None)),
+            getattr(self.controller, "psbt_input_qr_type", None),
+            getattr(self.controller, "signed_tx_hex", None),
+            type(getattr(self.controller, "psbt_seed", None)).__name__,
+        )
+
+    def _get_qr_encoder(self):
         from seedsigner.models.encode_qr import build_signed_psbt_qr_encoder, GenericStringEncoder
         from seedsigner.models.wif import WIFKey
         from seedsigner.gui.screens.screen import LoadingScreenThread
 
+        cache_key = self._qr_encoder_cache_key()
+        if getattr(self.controller, "_psbt_signed_qr_encoder_cache_key", None) == cache_key:
+            cached_encoder = getattr(self.controller, "_psbt_signed_qr_encoder", None)
+            if cached_encoder is not None:
+                return cached_encoder
+
+        if isinstance(self.controller.psbt_seed, WIFKey) and getattr(self.controller, "signed_tx_hex", None):
+            qr_encoder = GenericStringEncoder(self.controller.signed_tx_hex)
+        else:
+            loading = LoadingScreenThread(text=_("Encoding PSBT..."))
+            loading.start()
+            try:
+                qr_encoder = build_signed_psbt_qr_encoder(
+                    psbt=self.controller.psbt,
+                    qr_density=self.settings.get_value(SettingsConstants.SETTING__QR_DENSITY),
+                    input_qr_type=getattr(self.controller, "psbt_input_qr_type", None),
+                )
+            finally:
+                loading.stop()
+
+        self.controller._psbt_signed_qr_encoder_cache_key = cache_key
+        self.controller._psbt_signed_qr_encoder = qr_encoder
+        return qr_encoder
+
+    def _clear_qr_encoder_cache(self) -> None:
+        self.controller._psbt_signed_qr_encoder_cache_key = None
+        self.controller._psbt_signed_qr_encoder = None
+
+    def run(self):
         save_path = getattr(self.controller, "psbt_microsd_save_path", None)
         if save_path:
             signed_path = save_path.with_name(save_path.name + ".signed")
@@ -1069,21 +1262,42 @@ class PSBTSignedQRDisplayView(View):
                 self.controller.psbt_from_microsd = False
                 self.controller.psbt_microsd_seed_warning_shown = False
 
-        if isinstance(self.controller.psbt_seed, WIFKey) and getattr(self.controller, "signed_tx_hex", None):
-            qr_encoder = GenericStringEncoder(self.controller.signed_tx_hex)
-        else:
-            loading = LoadingScreenThread(text=_("Encoding PSBT..."))
-            loading.start()
-            try:
-                qr_encoder = build_signed_psbt_qr_encoder(
-                    psbt=self.controller.psbt,
-                    qr_density=self.settings.get_value(SettingsConstants.SETTING__QR_DENSITY),
-                    input_qr_type=getattr(self.controller, "psbt_input_qr_type", None),
-                )
-            finally:
-                loading.stop()
+        qr_encoder = self._get_qr_encoder()
+        signed_psbt_base64 = None
+        try:
+            if getattr(self.controller, "psbt", None) is not None:
+                signed_psbt_base64 = base64.b64encode(self.controller.psbt.serialize()).decode("ascii")
+        except Exception as exc:
+            logger.warning("Failed to serialize signed PSBT for summary review: %s", exc)
+
+        if not self.skip_review:
+            pages = _build_signed_psbt_review_pages(
+                psbt_parser=getattr(self.controller, "psbt_parser", None),
+                signed_tx_hex=getattr(self.controller, "signed_tx_hex", None),
+                signed_psbt_base64=signed_psbt_base64,
+                qr_encoder=qr_encoder,
+                input_qr_type=getattr(self.controller, "psbt_input_qr_type", None),
+            )
+            review_text = "\n\n".join(page for page in pages if str(page).strip())
+            button_data = [self.SHOW_QR]
+
+            selected_menu_num = self.run_screen(
+                ToolsScrollableTextScreen,
+                title="签名结果摘要",
+                text=review_text,
+                text_font_name=GUIConstants.get_body_font_name(),
+                text_font_size=max(GUIConstants.get_body_font_size() + 1, 19),
+                button_data=button_data,
+            )
+
+            if selected_menu_num == RET_CODE__BACK_BUTTON:
+                self._clear_qr_encoder_cache()
+                return Destination(MainMenuView, clear_history=True)
+
+            return self._reload_review(0, skip_review=True)
 
         self.run_screen(QRDisplayScreen, qr_encoder=qr_encoder)
+        self._clear_qr_encoder_cache()
 
         # We're done with this PSBT. Route back to MainMenuView which always
         #   clears all ephemeral data (except in-memory seeds).

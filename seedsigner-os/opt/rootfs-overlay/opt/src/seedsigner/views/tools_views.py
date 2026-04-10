@@ -36,7 +36,7 @@ from seedsigner.gui.screens.tools_screens import (ToolsCalcFinalWordDoneScreen, 
     ToolsTextQRTranscribeModePromptScreen, ToolsTranscribeTextQRWholeQRScreen, ToolsTranscribeTextQRZoomedInScreen,
     ToolsTranscribeTextQRConfirmQRPromptScreen, ToolsCommonFilterScreen, ToolsNetworkInfoScreen,
     ToolsBatteryCalibrationIntroScreen, ToolsBatteryCalibrationStartScreen, ToolsBatteryCalibrationRunningScreen,
-    ToolsFormattedTextScreen)
+    ToolsFormattedTextScreen, ToolsScrollableTextScreen)
 from seedsigner.helpers import embit_utils, mnemonic_generation
 from seedsigner.helpers import bip85_drng, diceware, password_generation
 from seedsigner.helpers.iso7816 import format_sw_error
@@ -120,6 +120,306 @@ def _tp_post_main_destination() -> Destination:
     return Destination(MainMenuView)
 
 
+def _chunk_status_text(text: str, width: int = 18) -> list[str]:
+    value = str(text or "").strip()
+    if not value:
+        return ["-"]
+    width = max(1, int(width))
+    return [value[i:i + width] for i in range(0, len(value), width)] or ["-"]
+
+
+def _append_status_value(lines: list[str], label: str, value: str, width: int = 18) -> None:
+    lines.append(label)
+    lines.extend(_chunk_status_text(value, width=width))
+
+
+def _paginate_status_lines(lines: list[str], lines_per_page: int = 9) -> list[str]:
+    cleaned = [str(line).rstrip() for line in lines]
+    if not cleaned:
+        return [""]
+    pages = []
+    lines_per_page = max(1, int(lines_per_page))
+    for start in range(0, len(cleaned), lines_per_page):
+        page = "\n".join(cleaned[start:start + lines_per_page]).strip("\n")
+        pages.append(page if page else " ")
+    return pages
+
+
+def _status_mark(ok: bool) -> str:
+    return "通过" if ok else "失败"
+
+
+def _format_entropy_hex_profile(hex_data: str | bytes) -> tuple[str, str]:
+    if isinstance(hex_data, bytes):
+        clean_hex = hex_data.hex().upper()
+    else:
+        clean_hex = mnemonic_generation.normalize_hex_for_iancoleman(hex_data).upper()
+    display_text = " ".join(clean_hex[i:i + 2] for i in range(0, len(clean_hex), 2))
+    return display_text, clean_hex
+
+
+def _satochip_xpub_version_key(script_type: str) -> str:
+    if script_type == SettingsConstants.LEGACY_P2PKH:
+        return "xpub"
+    if script_type == SettingsConstants.NESTED_SEGWIT:
+        return "ypub"
+    if script_type == SettingsConstants.NATIVE_SEGWIT:
+        return "zpub"
+    if script_type == SettingsConstants.TAPROOT:
+        return "xpub"
+    raise ValueError(f"unsupported script type: {script_type}")
+
+
+def _build_satochip_import_verification(seed, connector, network: str) -> dict:
+    from seedsigner.models.settings import Settings
+
+    is_mainnet = network == SettingsConstants.MAINNET
+    embit_network = embit_utils.get_embit_network_name(network) or "main"
+    network_label = {
+        SettingsConstants.MAINNET: "主网",
+        SettingsConstants.TESTNET: "测试网",
+        SettingsConstants.REGTEST: "Regtest",
+    }.get(network, str(network))
+    summary_lines = [
+        "写卡后自动核验",
+        f"网络: {network_label}",
+        "看到“通过”即可继续",
+        "看到“失败”请停用此卡",
+    ]
+    failed_sections: list[list[str]] = []
+    all_ok = True
+
+    def add_check(label: str, ok: bool, detail_lines: list[str]) -> None:
+        nonlocal all_ok
+        all_ok = all_ok and ok
+        summary_lines.append(f"{label}: {_status_mark(ok)}")
+        if not ok:
+            failed_sections.append(detail_lines)
+
+    try:
+        _resp, _sw1, _sw2, status = connector.card_get_status()
+        seeded_ok = bool((status or {}).get("is_seeded"))
+        add_check(
+            "卡片状态",
+            seeded_ok,
+            [
+                "核验项: 卡片状态",
+                f"状态: {_status_mark(seeded_ok)}",
+                f"is_seeded: {'是' if seeded_ok else '否'}",
+            ],
+        )
+    except Exception as exc:
+        add_check(
+            "卡片状态",
+            False,
+            [
+                "核验项: 卡片状态",
+                "状态: 失败",
+                f"错误: {exc}",
+            ],
+        )
+
+    try:
+        card_master_xpub = connector.card_bip32_get_xpub("", "p2wpkh", is_mainnet)
+        card_fingerprint = hexlify(HDKey.from_string(card_master_xpub).my_fingerprint).decode("utf-8")
+        local_fingerprint = seed.get_fingerprint(network)
+        fingerprint_ok = local_fingerprint == card_fingerprint
+        add_check(
+            "主指纹",
+            fingerprint_ok,
+            [
+                "核验项: 主指纹",
+                f"状态: {_status_mark(fingerprint_ok)}",
+                f"本地: {local_fingerprint}",
+                f"卡片: {card_fingerprint}",
+            ],
+        )
+    except Exception as exc:
+        add_check(
+            "主指纹",
+            False,
+            [
+                "核验项: 主指纹",
+                "状态: 失败",
+                f"错误: {exc}",
+            ],
+        )
+
+    native_card_xpub = None
+    native_local_xpub = None
+    profile_checks = [
+        ("Legacy", SettingsConstants.LEGACY_P2PKH, "standard"),
+        ("SegWit", SettingsConstants.NATIVE_SEGWIT, "p2wpkh"),
+    ]
+
+    for label, script_type, card_xtype in profile_checks:
+        derivation_path = embit_utils.get_standard_derivation_path(
+            network=network,
+            wallet_type=SettingsConstants.SINGLE_SIG,
+            script_type=script_type,
+            account=0,
+        )
+        try:
+            card_xpub_text = connector.card_bip32_get_xpub(derivation_path, card_xtype, is_mainnet)
+            card_xpub = HDKey.from_base58(card_xpub_text)
+            local_xpub = seed.get_xpub(wallet_path=derivation_path, network=network)
+            local_xpub_text = local_xpub.to_base58(version=card_xpub.version)
+            xpub_ok = local_xpub_text == card_xpub_text
+
+            local_receive = embit_utils.get_single_sig_address(
+                xpub=local_xpub,
+                script_type=script_type,
+                index=0,
+                is_change=False,
+                embit_network=embit_network,
+            )
+            card_receive = embit_utils.get_single_sig_address(
+                xpub=card_xpub,
+                script_type=script_type,
+                index=0,
+                is_change=False,
+                embit_network=embit_network,
+            )
+            receive_ok = local_receive == card_receive
+
+            local_change = embit_utils.get_single_sig_address(
+                xpub=local_xpub,
+                script_type=script_type,
+                index=0,
+                is_change=True,
+                embit_network=embit_network,
+            )
+            card_change = embit_utils.get_single_sig_address(
+                xpub=card_xpub,
+                script_type=script_type,
+                index=0,
+                is_change=True,
+                embit_network=embit_network,
+            )
+            change_ok = local_change == card_change
+
+            if script_type == SettingsConstants.NATIVE_SEGWIT:
+                native_card_xpub = card_xpub
+                native_local_xpub = local_xpub
+
+            add_check(
+                f"{label} xpub",
+                xpub_ok,
+                [
+                    f"核验项: {label} xpub",
+                    f"状态: {_status_mark(xpub_ok)}",
+                    f"路径: {derivation_path}",
+                    "本地:",
+                    *_chunk_status_text(local_xpub_text),
+                    "卡片:",
+                    *_chunk_status_text(card_xpub_text),
+                ],
+            )
+            add_check(
+                f"{label} 收款0",
+                receive_ok,
+                [
+                    f"核验项: {label} 收款地址 0",
+                    f"状态: {_status_mark(receive_ok)}",
+                    "本地:",
+                    *_chunk_status_text(local_receive),
+                    "卡片:",
+                    *_chunk_status_text(card_receive),
+                ],
+            )
+            add_check(
+                f"{label} 找零0",
+                change_ok,
+                [
+                    f"核验项: {label} 找零地址 0",
+                    f"状态: {_status_mark(change_ok)}",
+                    "本地:",
+                    *_chunk_status_text(local_change),
+                    "卡片:",
+                    *_chunk_status_text(card_change),
+                ],
+            )
+        except Exception as exc:
+            add_check(
+                f"{label} 公开信息",
+                False,
+                [
+                    f"核验项: {label} 公开信息",
+                    "状态: 失败",
+                    f"路径: {derivation_path}",
+                    f"错误: {exc}",
+                ],
+            )
+
+    sign_path = embit_utils.get_standard_derivation_path(
+        network=network,
+        wallet_type=SettingsConstants.SINGLE_SIG,
+        script_type=SettingsConstants.NATIVE_SEGWIT,
+        account=0,
+    ) + "/0/0"
+    try:
+        _get_extended_key(connector, sign_path)
+        test_hash = hashlib.sha256(b"offline-signer-satochip-import-verify").digest()
+        sign_timeout = Settings.get_instance().get_value(SettingsConstants.SETTING__SATOCHIP_SIGN_TIMEOUT)
+        sig, sw1, sw2 = _call_with_timeout(
+            connector.card_sign_transaction_hash,
+            sign_timeout,
+            0xFF,
+            list(test_hash),
+            None,
+        )
+        if sw1 != 0x90 or sw2 != 0x00 or not sig:
+            raise Exception(format_sw_error(sw1, sw2))
+        if native_local_xpub is None:
+            native_local_xpub = seed.get_xpub(
+                wallet_path=embit_utils.get_standard_derivation_path(
+                    network=network,
+                    wallet_type=SettingsConstants.SINGLE_SIG,
+                    script_type=SettingsConstants.NATIVE_SEGWIT,
+                    account=0,
+                ),
+                network=network,
+            )
+        pubkey = native_local_xpub.derive([0, 0]).key.sec()
+        sig_obj = secp256k1.ecdsa_signature_parse_der(bytes(sig))
+        pubkey_obj = secp256k1.ec_pubkey_parse(pubkey)
+        verified = bool(secp256k1.ecdsa_verify(sig_obj, test_hash, pubkey_obj))
+        add_check(
+            "测试签名验签",
+            verified,
+            [
+                "核验项: 测试签名验签",
+                f"状态: {_status_mark(verified)}",
+                f"路径: {sign_path}",
+                "固定测试哈希已通过本地验签"
+                if verified
+                else "固定测试哈希未通过本地验签",
+            ],
+        )
+    except Exception as exc:
+        add_check(
+            "测试签名验签",
+            False,
+            [
+                "核验项: 测试签名验签",
+                "状态: 失败",
+                f"路径: {sign_path}",
+                f"错误: {exc}",
+            ],
+        )
+
+    summary_lines.extend(
+        [
+            "",
+            f"结论: {'可以继续使用' if all_ok else '请不要继续用这张卡保存资金'}",
+        ]
+    )
+    pages = _paginate_status_lines(summary_lines, lines_per_page=7)
+    for section in failed_sections:
+        pages.extend(_paginate_status_lines(section, lines_per_page=7))
+    return {"ok": all_ok, "pages": pages}
+
+
 def _clear_password_entropy_cache(controller) -> None:
     controller.password_generator_entropy_cache = None
 
@@ -141,7 +441,7 @@ def _decode_seedkeeper_random_secret_bytes(secret_hex: str, expected_size: int) 
     )
 
 
-def _load_pending_bip39_seed(controller, mnemonic_words: list[str], wordlist_language_code: str) -> None:
+def _load_pending_bip39_seed(controller, mnemonic_words: list[str], wordlist_language_code: str) -> Seed:
     from seedsigner.models.seed import InvalidSeedException
 
     controller.storage.init_pending_mnemonic(num_words=len(mnemonic_words))
@@ -154,6 +454,7 @@ def _load_pending_bip39_seed(controller, mnemonic_words: list[str], wordlist_lan
         )
     except InvalidSeedException as exc:
         raise ValueError("智能卡生成的助记词未通过本地 BIP39 校验。") from exc
+    return controller.storage.get_pending_seed()
 
 
 def _format_seedkeeper_generation_complete_text(
@@ -403,8 +704,8 @@ def _format_word_password(words: list[str], separator: str) -> str:
 class ToolsMenuView(View):
     IMAGE = ButtonOption(" New seed", FontAwesomeIconConstants.CAMERA)
     DICE = ButtonOption("New seed", FontAwesomeIconConstants.DICE)
-    CARDS = ButtonOption("使用扑克牌创建助记词")
-    HEX = ButtonOption("使用16进制创建助记词")
+    CARDS = ButtonOption("扑克牌创建")
+    HEX = ButtonOption("16进制创建")
     SLIP39_IMAGE = ButtonOption("SLIP39 seed", FontAwesomeIconConstants.CAMERA)
     SLIP39_DICE = ButtonOption("SLIP39 seed", FontAwesomeIconConstants.DICE)
     KEYBOARD = ButtonOption("Calc 12th/24th word", FontAwesomeIconConstants.KEYBOARD)
@@ -633,21 +934,17 @@ class ToolsNetworkInfoView(View):
             return Destination(BackStackView)
 
         selected_menu_num = self.run_screen(
-            ToolsNetworkInfoScreen,
-            page_num=self.page_num,
-            paged_info=self.paged_info,
+            ToolsScrollableTextScreen,
+            title="网络信息",
+            text="\n\n".join(page for page in self.paged_info if str(page).strip()),
+            text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+            text_font_size=GUIConstants.get_body_font_size(),
+            button_data=[ButtonOption("完成")],
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(BackStackView)
-
-        if self.page_num >= len(self.paged_info) - 1:
-            return Destination(BackStackView)
-
-        return Destination(
-            ToolsNetworkInfoView,
-            view_args=dict(page_num=self.page_num + 1, paged_info=self.paged_info),
-        )
+        return Destination(BackStackView)
 
 
 
@@ -793,19 +1090,20 @@ class ToolsImageEntropyMnemonicLengthView(View):
         if mnemonic_length in mnemonic_generation.ENTROPY_BYTES_REQUIRED:
             final_hash = final_hash[:mnemonic_generation.ENTROPY_BYTES_REQUIRED[mnemonic_length]]
 
+        entropy_bytes = bytes(final_hash)
         if getattr(self.controller, "create_slip39", False):
-            secret = final_hash
+            secret = entropy_bytes
         else:
-            mnemonic = mnemonic_generation.generate_mnemonic_from_bytes(final_hash)
+            mnemonic = mnemonic_generation.generate_mnemonic_from_bytes(entropy_bytes)
+            entropy_display_text, entropy_qr_text = _format_entropy_hex_profile(entropy_bytes)
 
         loading_screen.stop()
 
         # Image should never get saved nor stick around in memory
         seed_entropy_image = None
         preview_images = None
-        if not getattr(self.controller, "create_slip39", False):
-            final_hash = None
-        hash_bytes = None
+        final_hash = None
+        entropy_bytes = None
         self.controller.image_entropy_preview_frames = None
         self.controller.image_entropy_final_image = None
 
@@ -813,7 +1111,15 @@ class ToolsImageEntropyMnemonicLengthView(View):
             self.controller.create_slip39 = False
             return Destination(SeedSlip39CreateFromBytesView, view_args=dict(secret=secret), clear_history=True)
         else:
-            seed = Seed(mnemonic, wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE))
+            seed = Seed(
+                mnemonic,
+                wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
+                entropy_source_label="拍照随机源",
+                entropy_input_format_label="Hex",
+                entropy_display_text=entropy_display_text,
+                entropy_qr_text=entropy_qr_text,
+                entropy_transform_label="直接作为随机数",
+            )
             self.controller.storage.set_pending_seed(seed)
             return Destination(SeedWordsWarningView, view_args={"seed_num": None}, clear_history=True)
 
@@ -911,7 +1217,16 @@ class ToolsDiceEntropyEntryView(View):
                 ret,
                 wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
             )
-            seed = Seed(dice_seed_phrase, wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE))
+            normalized_rolls = mnemonic_generation.normalize_dice_rolls_for_iancoleman(ret)
+            seed = Seed(
+                dice_seed_phrase,
+                wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
+                entropy_source_label="骰子",
+                entropy_input_format_label="Dice",
+                entropy_display_text=normalized_rolls,
+                entropy_qr_text=normalized_rolls,
+                entropy_transform_label="SHA256 后截位",
+            )
             self.controller.storage.set_pending_seed(seed)
             loading_screen.stop()
             return Destination(SeedWordsWarningView, view_args={"seed_num": None}, clear_history=True)
@@ -1004,7 +1319,7 @@ class ToolsCardEntropyEntryView(View):
             "输入格式示例：AH QS 9D TC\n"
             "规则与 iancoleman.io/bip39 的 Card 熵一致。\n"
             "建议保留空格，便于人工核对。\n"
-            "网站核验时请选择下面的 12/15/18/21/24 Words，不要选 Use Raw Entropy。\n"
+            "网站核验：熵源选 Card，再选词数。\n"
             f"当前识别到 {card_count} 张牌，约 {actual_bits} bits。\n"
             f"{self.word_length} 词至少需要 {required_bits} bits。"
         )
@@ -1028,13 +1343,12 @@ class ToolsCardEntropyEntryView(View):
         if not self.initial_value:
             ret = self.run_screen(
                 ToolsFormattedTextScreen,
-                title="使用扑克牌创建助记词",
+                title="扑克牌创建",
                 text=(
-                    "输入格式：AH QS 9D TC\n"
-                    "也支持连续输入：AHQS9DTC\n"
-                    "仅识别 A23456789TJQK + CDHS\n"
-                    "网站核验时请选择 12/15/18/21/24 Words，不要选 Use Raw Entropy。\n"
-                    "结果与 iancoleman.io/bip39 的 Card 熵规则一致，可直接核验。"
+                    "输入示例：AH QS 9D TC\n"
+                    "也支持连续输入\n"
+                    "网站核验：选 Card\n"
+                    "只识别 A23456789TJQK+CDHS"
                 ),
                 button_data=[ButtonOption("开始输入")],
             )
@@ -1069,8 +1383,6 @@ class ToolsCardEntropyEntryView(View):
 
 
 class ToolsCardEntropyReviewView(View):
-    PREV = ButtonOption("上一页")
-    NEXT = ButtonOption("下一页")
     EDIT = ButtonOption("继续编辑")
     CONFIRM = ButtonOption("确认生成")
 
@@ -1094,7 +1406,8 @@ class ToolsCardEntropyReviewView(View):
             pages.append(
                 "\n".join(
                     [
-                        f"{card_count} 张牌  {actual_bits}/{required_bits} bits",
+                        f"已录入 {card_count} 张",
+                        f"熵值: {actual_bits}/{required_bits} bits",
                         *card_lines,
                     ]
                 )
@@ -1114,6 +1427,11 @@ class ToolsCardEntropyReviewView(View):
         seed = Seed(
             card_seed_phrase,
             wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
+            entropy_source_label="扑克牌",
+            entropy_input_format_label="Card",
+            entropy_display_text=self.card_text,
+            entropy_qr_text=self.card_text,
+            entropy_transform_label="SHA256 后截位",
         )
         self.controller.storage.set_pending_seed(seed)
         loading_screen.stop()
@@ -1121,23 +1439,15 @@ class ToolsCardEntropyReviewView(View):
 
     def run(self):
         paged_info = self._prepare_pages()
-        page_num = min(self.page_num, len(paged_info) - 1)
-        button_data = []
-
-        if page_num > 0:
-            button_data.append(self.PREV)
-        if page_num < len(paged_info) - 1:
-            button_data.append(self.NEXT)
-        else:
-            button_data.append(self.CONFIRM)
-        button_data.append(self.EDIT)
+        review_text = "\n\n".join(page for page in paged_info if str(page).strip())
+        button_data = [self.CONFIRM, self.EDIT]
 
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
-            title=f"核对扑克牌 {page_num + 1}/{len(paged_info)}",
-            text=paged_info[page_num],
-            text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
-            text_font_size=max(GUIConstants.get_body_font_size() - 2, 14),
+            ToolsScrollableTextScreen,
+            title="核对牌序",
+            text=review_text,
+            text_font_name=GUIConstants.get_body_font_name(),
+            text_font_size=max(GUIConstants.get_body_font_size() + 2, 20),
             button_data=button_data,
         )
 
@@ -1149,20 +1459,6 @@ class ToolsCardEntropyReviewView(View):
             )
 
         selected_button = button_data[selected_menu_num]
-
-        if selected_button == self.PREV:
-            return Destination(
-                ToolsCardEntropyReviewView,
-                view_args=dict(word_length=self.word_length, card_text=self.card_text, page_num=page_num - 1),
-                skip_current_view=True,
-            )
-
-        if selected_button == self.NEXT:
-            return Destination(
-                ToolsCardEntropyReviewView,
-                view_args=dict(word_length=self.word_length, card_text=self.card_text, page_num=page_num + 1),
-                skip_current_view=True,
-            )
 
         if selected_button == self.EDIT:
             return Destination(
@@ -1198,7 +1494,7 @@ class ToolsHexEntropyEntryView(View):
             "规则与 iancoleman.io/bip39 的 Hex 熵一致。",
             "这条不是 Use Raw Entropy：会先按过滤后的 hex 文本做 SHA256，再按词数截位。",
             "建议保留空格，便于人工核对。",
-            "网站核验时请选择下面的 12/15/18/21/24 Words，不要选 Use Raw Entropy。",
+            "网站核验：熵源选 Hex，再选词数。",
         ]
         if extra_line:
             lines.append(extra_line)
@@ -1228,13 +1524,12 @@ class ToolsHexEntropyEntryView(View):
         if not self.initial_value:
             ret = self.run_screen(
                 ToolsFormattedTextScreen,
-                title="使用16进制创建助记词",
+                title="16进制创建",
                 text=(
-                    "输入格式：60 55 17 82 11 46 41 6F\n"
-                    "也支持连续输入：605517821146416F\n"
-                    "仅识别 0-9 和 A-F\n"
-                    "网站核验：选 12/15/18/21/24 Words\n"
-                    "不要选 Use Raw Entropy"
+                    "输入示例：60 55 17 82\n"
+                    "也支持连续输入\n"
+                    "网站核验：选 Hex\n"
+                    "只识别 0-9 和 A-F"
                 ),
                 button_data=[ButtonOption("开始输入")],
             )
@@ -1271,8 +1566,6 @@ class ToolsHexEntropyEntryView(View):
 
 
 class ToolsHexEntropyReviewView(View):
-    PREV = ButtonOption("上一页")
-    NEXT = ButtonOption("下一页")
     EDIT = ButtonOption("继续编辑")
     CONFIRM = ButtonOption("确认生成")
 
@@ -1296,7 +1589,8 @@ class ToolsHexEntropyReviewView(View):
             pages.append(
                 "\n".join(
                     [
-                        f"{actual_chars} 个 hex  {actual_bits}/{required_bits} bits",
+                        f"已录入 {actual_chars} 位 Hex",
+                        f"熵值: {actual_bits}/{required_bits} bits",
                         *hex_lines,
                     ]
                 )
@@ -1316,6 +1610,11 @@ class ToolsHexEntropyReviewView(View):
         seed = Seed(
             hex_seed_phrase,
             wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
+            entropy_source_label="16进制",
+            entropy_input_format_label="Hex",
+            entropy_display_text=" ".join(self.hex_text[i:i + 2] for i in range(0, len(self.hex_text), 2)),
+            entropy_qr_text=self.hex_text,
+            entropy_transform_label="SHA256 后截位",
         )
         self.controller.storage.set_pending_seed(seed)
         loading_screen.stop()
@@ -1323,23 +1622,15 @@ class ToolsHexEntropyReviewView(View):
 
     def run(self):
         paged_info = self._prepare_pages()
-        page_num = min(self.page_num, len(paged_info) - 1)
-        button_data = []
-
-        if page_num > 0:
-            button_data.append(self.PREV)
-        if page_num < len(paged_info) - 1:
-            button_data.append(self.NEXT)
-        else:
-            button_data.append(self.CONFIRM)
-        button_data.append(self.EDIT)
+        review_text = "\n\n".join(page for page in paged_info if str(page).strip())
+        button_data = [self.CONFIRM, self.EDIT]
 
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
-            title=f"核对16进制 {page_num + 1}/{len(paged_info)}",
-            text=paged_info[page_num],
-            text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
-            text_font_size=max(GUIConstants.get_body_font_size() - 2, 14),
+            ToolsScrollableTextScreen,
+            title="核对 Hex",
+            text=review_text,
+            text_font_name=GUIConstants.get_body_font_name(),
+            text_font_size=max(GUIConstants.get_body_font_size() + 2, 20),
             button_data=button_data,
         )
 
@@ -1351,20 +1642,6 @@ class ToolsHexEntropyReviewView(View):
             )
 
         selected_button = button_data[selected_menu_num]
-
-        if selected_button == self.PREV:
-            return Destination(
-                ToolsHexEntropyReviewView,
-                view_args=dict(word_length=self.word_length, hex_text=self.hex_text, page_num=page_num - 1),
-                skip_current_view=True,
-            )
-
-        if selected_button == self.NEXT:
-            return Destination(
-                ToolsHexEntropyReviewView,
-                view_args=dict(word_length=self.word_length, hex_text=self.hex_text, page_num=page_num + 1),
-                skip_current_view=True,
-            )
 
         if selected_button == self.EDIT:
             return Destination(
@@ -2031,7 +2308,7 @@ class ToolsSeedkeeperGenerateMnemonicView(View):
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title="SeedKeeper 真随机创建",
+            title="卡上真随机创建",
             is_button_text_centered=False,
             button_data=button_data,
         )
@@ -2081,13 +2358,20 @@ class ToolsSeedkeeperGenerateMnemonicView(View):
                 entropy_bytes,
                 wordlist_language_code=self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
             )
-            _load_pending_bip39_seed(
+            pending_seed = _load_pending_bip39_seed(
                 self.controller,
                 mnemonic_words,
                 self.settings.get_value(SettingsConstants.SETTING__WORDLIST_LANGUAGE),
             )
-            pending_seed = self.controller.storage.get_pending_seed()
             if pending_seed is not None:
+                entropy_display_text, entropy_qr_text = _format_entropy_hex_profile(entropy_bytes)
+                pending_seed.set_entropy_display_profile(
+                    source_label="卡上真随机",
+                    input_format_label="Hex",
+                    display_text=entropy_display_text,
+                    qr_text=entropy_qr_text,
+                    transform_label="直接作为随机数",
+                )
                 seed_fingerprint = pending_seed.get_fingerprint(
                     self.settings.get_value(SettingsConstants.SETTING__NETWORK)
                 )
@@ -2467,7 +2751,7 @@ class ToolsSmartcardInfoView(View):
         info_lines = []
 
         card_type = getattr(Satochip_Connector, "card_type", "Unknown")
-        info_lines.append(f"Type: {card_type}")
+        info_lines.append(f"卡型: {card_type}")
 
         uid = getattr(Satochip_Connector, "UID_SHA1", None)
         if not uid:
@@ -2479,29 +2763,29 @@ class ToolsSmartcardInfoView(View):
 
         version = f"{status.get('protocol_major_version', 0)}.{status.get('protocol_minor_version', 0)}-" \
                   f"{status.get('applet_major_version', 0)}.{status.get('applet_minor_version', 0)}"
-        info_lines.append(f"Version: {version}")
+        info_lines.append(f"版本: {version}")
 
         pin0 = status.get("PIN0_remaining_tries")
         if pin0 is not None:
-            info_lines.append(f"Remaining PIN tries: {pin0}")
+            info_lines.append(f"PIN 剩余: {pin0}")
 
         setup_done = status.get("setup_done")
         if setup_done is not None:
-            setup_str = "Done" if setup_done else "Not done"
+            setup_str = "已完成" if setup_done else "未完成"
             if card_type == "Satochip" and "is_seeded" in status:
-                setup_str += " (seeded)" if status["is_seeded"] else " (unseeded)"
-            info_lines.append(f"Setup: {setup_str}")
+                setup_str += "（已写入）" if status["is_seeded"] else "（未写入）"
+            info_lines.append(f"已初始化: {setup_str}")
 
         nfc_policy = status.get("nfc_policy")
         if nfc_policy is not None:
-            nfc_map = {0: "Enabled", 1: "Disabled", 2: "Blocked"}
+            nfc_map = {0: "已启用", 1: "已禁用", 2: "已锁定"}
             info_lines.append(f"NFC: {nfc_map.get(nfc_policy, str(nfc_policy))}")
 
         text = "\n".join(info_lines)
 
         self.run_screen(
             LargeIconStatusScreen,
-            title="Card Info",
+            title="卡片信息",
             status_headline=None,
             text=text,
             status_icon_name="",
@@ -2558,30 +2842,30 @@ class ToolsSmartcardGenuineCheckView(View):
             if txt_error:
                 self.run_screen(
                     ErrorScreen,
-                    title="Genuine Check",
+                    title="真伪检查",
                     status_headline=None,
-                    text=f"Genuine check failed: {txt_error}",
+                    text=f"真伪检查失败: {txt_error}",
                 )
             elif is_genuine:
                 self.run_screen(
                     LargeIconStatusScreen,
-                    title="Genuine Check",
+                    title="真伪检查",
                     status_headline=None,
-                    text="Card is genuine",
+                    text="卡片验证通过",
                 )
             else:
                 self.run_screen(
                     WarningScreen,
-                    title="Genuine Check",
+                    title="真伪检查",
                     status_headline=None,
-                    text="Card is NOT genuine",
+                    text="卡片不是官方 genuine",
                 )
         except Exception as e:
             self.run_screen(
                 ErrorScreen,
-                title="Genuine Check",
+                title="真伪检查",
                 status_headline=None,
-                text=f"Genuine: Error ({e})",
+                text=f"真伪检查出错: {e}",
             )
 
         return Destination(BackStackView)
@@ -3241,15 +3525,15 @@ class ToolsSatochipChangeLabelView(View):
         return Destination(MainMenuView)
 
 class ToolsSeedkeeperView(View):
-    GENERATE_MNEMONIC = ButtonOption("卡上真随机创建助记词")
-    VIEW_FREE_SPACE = ButtonOption("查看剩余空间")
-    VIEW_SECRETS = ButtonOption("查看和管理卡内助记词")
+    GENERATE_MNEMONIC = ButtonOption("卡上真随机创建")
+    VIEW_FREE_SPACE = ButtonOption("剩余空间")
+    VIEW_SECRETS = ButtonOption("管理卡内助记词")
     IMPORT_PASSWORD = ButtonOption("保存密码到卡片")
     LOAD_DESCRIPTOR = ButtonOption("加载多签描述符")
     SAVE_DESCRIPTOR = ButtonOption("保存多签描述符")
     CLONE_SECRETS = ButtonOption("克隆卡内项目")
-    CHANGE_PIN = ButtonOption("更改 SeedKeeper PIN")
-    FACTORY_RESET = ButtonOption("高风险：重置 SeedKeeper")
+    CHANGE_PIN = ButtonOption("更改 PIN")
+    FACTORY_RESET = ButtonOption("高风险：重置")
 
     def run(self):
         button_data = [
@@ -3343,7 +3627,7 @@ class ToolsSeedkeeperFreeSpaceView(View):
             except Exception as exc:
                 self.run_screen(
                     WarningScreen,
-                    title="Error",
+                    title="错误",
                     status_headline=None,
                     text=str(exc),
                     show_back_button=True,
@@ -3351,11 +3635,11 @@ class ToolsSeedkeeperFreeSpaceView(View):
                 return Destination(BackStackView)
 
             free_kib = free_bytes / 1024
-            text = f"{free_bytes} bytes free\n({free_kib:.1f} KiB)"
+            text = f"{free_bytes} 字节可用\n({free_kib:.1f} KiB)"
 
             self.run_screen(
                 LargeIconStatusScreen,
-                title="Seedkeeper Free Space",
+                title="剩余空间",
                 status_headline=None,
                 text=text,
                 show_back_button=True,
@@ -3365,7 +3649,7 @@ class ToolsSeedkeeperFreeSpaceView(View):
         except Exception as exc:
             self.run_screen(
                 WarningScreen,
-                title="Error",
+                title="错误",
                 status_headline=None,
                 text=str(exc),
                 show_back_button=True,
@@ -3695,44 +3979,32 @@ class ToolsSeedkeeperViewSecretsView(View):
         if not words:
             return "done"
 
-        entries_per_page = 4
-        total_pages = max(1, (len(words) + entries_per_page - 1) // entries_per_page)
-        page_index = 0
-        next_button = ButtonOption("下一页")
+        all_indices = detail.get("bip39_indices")
+        if not isinstance(all_indices, list) or len(all_indices) != len(words):
+            all_indices = _resolve_optional_bip39_indices(words)
+        review_text = _format_word_position_lines(
+            words,
+            1,
+            all_indices,
+            show_index_placeholders=True,
+        )
 
         while True:
-            is_last_page = page_index >= total_pages - 1
-            start = page_index * entries_per_page
-            page_words = words[start:start + entries_per_page]
-            all_indices = detail.get("bip39_indices")
-            if not isinstance(all_indices, list) or len(all_indices) != len(words):
-                all_indices = _resolve_optional_bip39_indices(words)
-            page_indices = all_indices[start:start + entries_per_page] if all_indices is not None else None
-            page_text = _format_word_position_lines(
-                page_words,
-                start + 1,
-                page_indices,
-                show_index_placeholders=True,
-            )
             button_data = [self.SHOW_QR]
-            if not is_last_page:
-                button_data.append(next_button)
-            else:
-                if allow_delete:
-                    button_data.append(self.DELETE)
-                button_data.append(self.DONE)
+            if allow_delete:
+                button_data.append(self.DELETE)
+            button_data.append(self.DONE)
 
             selected_menu_num = self.run_screen(
-                ToolsFormattedTextScreen,
-                title=f"{detail['title']}：{page_index + 1}/{total_pages}",
-                text=page_text,
+                ToolsScrollableTextScreen,
+                title=detail["title"],
+                text=review_text,
+                text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+                text_font_size=max(GUIConstants.get_body_font_size(), 18),
                 button_data=button_data,
             )
 
             if selected_menu_num == RET_CODE__BACK_BUTTON:
-                if page_index > 0:
-                    page_index -= 1
-                    continue
                 return "back"
 
             selected_button = button_data[selected_menu_num]
@@ -3741,10 +4013,6 @@ class ToolsSeedkeeperViewSecretsView(View):
                     QRDisplayScreen,
                     qr_encoder=GenericStaticQrEncoder(data=detail["qr_text"]),
                 )
-                continue
-
-            if selected_button == next_button:
-                page_index += 1
                 continue
 
             if selected_button == self.DELETE:
@@ -3827,13 +4095,12 @@ class ToolsSeedkeeperViewSecretsView(View):
                 action_buttons.append(self.DONE)
 
                 selected_action = self.run_screen(
-                    ToolsFormattedTextScreen,
+                    ToolsScrollableTextScreen,
                     title=detail["title"],
                     text=detail["text"],
                     text_font_name=detail["text_font_name"],
                     text_font_size=detail["text_font_size"],
                     text_is_centered=False,
-                    allow_text_overflow=False,
                     button_data=action_buttons,
                 )
 
@@ -4347,12 +4614,12 @@ class ToolsSeedkeeperSaveDescriptorView(View):
         return Destination(BackStackView)
 
 class ToolsSatochipView(View):
-    IMPORT_SEED = ButtonOption("用助记词初始化")
-    EXPORT_XPUB = ButtonOption("导出 Xpub")
-    LOAD_DESCRIPTOR = ButtonOption("加载为描述符")
+    IMPORT_SEED = ButtonOption("写入助记词")
+    EXPORT_XPUB = ButtonOption("导出公钥")
+    LOAD_DESCRIPTOR = ButtonOption("加载描述符")
     LOAD_PSBT = ButtonOption("加载 PSBT")
-    CHANGE_PIN = ButtonOption("更改 Satochip PIN")
-    FACTORY_RESET = ButtonOption("重置 Satochip")
+    CHANGE_PIN = ButtonOption("更改 PIN")
+    FACTORY_RESET = ButtonOption("重置卡片")
     ADVANCED = ButtonOption("高级功能")
 
     def run(self):
@@ -4705,13 +4972,29 @@ class ToolsSatochipImportSeedView(View):
             connector.card_bip32_import_seed(seed.seed_bytes)
             loading_screen.stop()
 
-            logger.info("Seed Successfully Imported")
-            self.run_screen(
-                LargeIconStatusScreen,
-                title="成功",
-                status_headline=None,
-                text="助记词写入成功",
-                show_back_button=False,
+            verify_loading = LoadingScreenThread(text="正在回读核验\n\n\n\n\n\n")
+            verify_loading.start()
+            try:
+                verification = _build_satochip_import_verification(
+                    seed=seed,
+                    connector=connector,
+                    network=self.settings.get_value(SettingsConstants.SETTING__NETWORK),
+                )
+            finally:
+                verify_loading.stop()
+
+            logger.info(
+                "Seed imported into Satochip and verification %s",
+                "passed" if verification.get("ok") else "reported issues",
+            )
+            return Destination(
+                ToolsSatochipImportVerificationView,
+                view_args=dict(
+                    pages=verification.get("pages", ["核验结果为空"]),
+                    ok=bool(verification.get("ok")),
+                    return_destination=self._completion_destination(),
+                ),
+                skip_current_view=True,
             )
         except Exception as e:
             if loading_screen is not None:
@@ -4820,8 +5103,44 @@ class ToolsSatochipImportSeedView(View):
             return Destination(ToolsMenuView, view_args={"include_password_generator": False})
         elif button_data[selected_menu_num] == self.TYPE_ELECTRUM:
             return Destination(SeedElectrumMnemonicStartView)
-        
+
         return _tp_post_main_destination()
+
+
+class ToolsSatochipImportVerificationView(View):
+    DONE = ButtonOption("完成")
+
+    def __init__(
+        self,
+        pages: list[str],
+        ok: bool,
+        page_num: int = 0,
+        return_destination: Destination | None = None,
+    ):
+        super().__init__()
+        self.pages = pages or [""]
+        self.ok = bool(ok)
+        self.page_num = max(0, int(page_num))
+        self.return_destination = return_destination
+
+    def _completion_destination(self) -> Destination:
+        return self.return_destination or _tp_post_main_destination()
+
+    def run(self):
+        button_data = [self.DONE]
+
+        selected_menu_num = self.run_screen(
+            ToolsScrollableTextScreen,
+            title="写卡核验",
+            text="\n\n".join(page for page in self.pages if str(page).strip()),
+            text_font_name=GUIConstants.get_body_font_name(),
+            text_font_size=max(GUIConstants.get_body_font_size(), 18),
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return self._completion_destination()
+        return self._completion_destination()
 
 class ToolsSatochipEnable2FAView(View):
     def run(self):

@@ -77,6 +77,7 @@ _UI_TEXT_EXACT_MAP = {
     "Loading Secret": "正在加载卡内项目",
     "Combining Shares": "正在合并分片",
     "Processing...": "正在处理...",
+    "Starting camera...": "启动相机...",
     "Sending Command": "正在发送命令",
     "Aezeed support": "Aezeed 支持",
     "Electrum warning": "Electrum 提示",
@@ -129,6 +130,10 @@ _UI_TEXT_EXACT_MAP = {
     "Keep Seed": "保留助记词",
     "Discard": "删除",
     "View Seed Words": "查看助记词",
+    "Xpub Details": "公钥详情",
+    "Fingerprint": "指纹",
+    "Derivation": "路径",
+    "Xpub": "公钥",
     "Export as SeedQR": "导出为 SeedQR",
     "Export as Plaintext QR": "导出为明文二维码",
     "To SeedKeeper": "写入 SeedKeeper",
@@ -1107,6 +1112,41 @@ class ScrollableTextLine(TextArea):
     def scroll_thread(self) -> TextArea.HorizontalTextScrollThread:
         return self.horizontal_text_scroll_thread
 
+
+
+@dataclass
+class ScrollableTextArea(TextArea):
+    """
+    Clipped vertical-scroll text area for dense small-screen detail pages.
+    """
+    vertical_scroll_y: int = 0
+    bottom_padding: int = GUIConstants.COMPONENT_PADDING
+
+    def __post_init__(self):
+        self.allow_text_overflow = True
+        super().__post_init__()
+        self.bottom_padding = max(0, int(self.bottom_padding))
+        padded_height = self.rendered_text_img.height + self.bottom_padding
+        self.scroll_surface = Image.new(
+            "RGBA",
+            (self.rendered_text_img.width, max(self.height, padded_height)),
+            self.background_color,
+        )
+        self.scroll_surface.paste(self.rendered_text_img, (0, 0))
+        self.max_vertical_scroll = max(0, self.scroll_surface.height - self.height)
+        self.vertical_scroll_y = max(0, min(int(self.vertical_scroll_y), self.max_vertical_scroll))
+
+    def set_vertical_scroll_y(self, scroll_y: int):
+        self.vertical_scroll_y = max(0, min(int(scroll_y), self.max_vertical_scroll))
+
+    def render(self):
+        if self.max_vertical_scroll <= 0:
+            return super().render()
+
+        top = self.vertical_scroll_y
+        bottom = min(top + self.height, self.scroll_surface.height)
+        text_img = self.scroll_surface.crop((0, top, self.scroll_surface.width, bottom))
+        self.canvas.paste(text_img, (self.screen_x, self.screen_y))
 
 
 @dataclass

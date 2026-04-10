@@ -21,7 +21,12 @@ from seedsigner.gui.screens import RET_CODE__BACK_BUTTON, RET_CODE__POWER_BUTTON
 from seedsigner.gui.screens.scan_screens import ScanScreen
 from seedsigner.gui.screens.screen import BaseScreen, ButtonOption, LoadingScreenThread, QRDisplayScreen
 from seedsigner.helpers.iso7816 import format_sw_error
-from seedsigner.gui.screens.tools_screens import ToolsFormattedTextScreen, ToolsTextQRTextEntryScreen
+from seedsigner.gui.screens.tools_screens import ToolsFormattedTextScreen, ToolsScrollableTextScreen, ToolsTextQRTextEntryScreen
+from seedsigner.helpers.signature_health import (
+    analyze_psbt_signature_health,
+    analyze_tx_signature_health,
+    build_signature_health_lines,
+)
 from seedsigner.helpers.firmware_integrity import DEFAULT_MANIFEST_PATH, verify_runtime_manifest
 from seedsigner.helpers.tp_fragment import FragmentParseError, MultiFragmentAssembler, parse_tp_multi_fragment
 from seedsigner.helpers.tp_relay import RelayAssembler, RelayParseError, parse_tp_relay_fragment
@@ -456,6 +461,27 @@ def _format_firmware_integrity_summary(result: dict) -> str:
 
 
 def _build_firmware_integrity_detail_pages(result: dict) -> list[str]:
+    def add_chunk_block(lines: list[str], label: str, value: str, width: int = 14) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        lines.append(f"{label}:")
+        lines.extend(_chunk_text(text, width=width).splitlines())
+        lines.append("")
+
+    def add_time_block(lines: list[str], label: str, value: str) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        lines.append(f"{label}:")
+        if "T" in text:
+            date_part, time_part = text.split("T", 1)
+            lines.append(date_part)
+            lines.append(time_part.rstrip("Z"))
+        else:
+            lines.append(text)
+        lines.append("")
+
     lines = []
 
     if not result.get("supported"):
@@ -472,7 +498,7 @@ def _build_firmware_integrity_detail_pages(result: dict) -> list[str]:
                 "请刷新到最新正式版后再试。",
             ]
         )
-        return _paginate_report_lines(lines)
+        return _paginate_report_lines(lines, lines_per_page=7)
 
     lines.extend(
         [
@@ -483,29 +509,21 @@ def _build_firmware_integrity_detail_pages(result: dict) -> list[str]:
     )
 
     repo_head = result.get("repo_head", "")
-    if repo_head:
-        lines.extend(["构建提交:", _chunk_text(repo_head), ""])
+    add_chunk_block(lines, "构建提交", repo_head)
 
     build_commit_time = result.get("build_commit_time", "")
-    if build_commit_time:
-        lines.append(f"源码时间: {build_commit_time}")
     build_time_utc = result.get("build_time_utc", "")
-    if build_time_utc:
-        lines.append(f"构建时间: {build_time_utc}")
-    if build_commit_time or build_time_utc:
-        lines.append("")
+    add_time_block(lines, "源码时间", build_commit_time)
+    add_time_block(lines, "构建时间", build_time_utc)
 
     snapshot_sha = result.get("source_snapshot_tree_sha256", "")
-    if snapshot_sha:
-        lines.extend(["快照指纹:", _chunk_text(snapshot_sha), ""])
+    add_chunk_block(lines, "快照指纹", snapshot_sha)
 
     expected_tree = result.get("expected_overlay_file_tree_sha256", "")
-    if expected_tree:
-        lines.extend(["内置树摘要:", _chunk_text(expected_tree), ""])
+    add_chunk_block(lines, "内置树摘要", expected_tree)
 
     current_tree = result.get("current_overlay_file_tree_sha256", "")
-    if current_tree:
-        lines.extend(["当前树摘要:", _chunk_text(current_tree), ""])
+    add_chunk_block(lines, "当前树摘要", current_tree)
 
     _append_issue_lines(lines, "被改动:", result.get("modified", []))
     _append_issue_lines(lines, "已缺失:", result.get("missing", []))
@@ -516,11 +534,11 @@ def _build_firmware_integrity_detail_pages(result: dict) -> list[str]:
         [
             "提示:",
             "自检只能发现关键文件和内置清单不一致。",
-            "若有人整卡重刷，仍要把这里的提交和指纹",
-            "与 GitHub Release 上的 build-info 对照。",
+            "若担心整卡重刷，仍要和 GitHub Release",
+            "里的 build-info 对照提交和指纹。",
         ]
     )
-    return _paginate_report_lines(lines)
+    return _paginate_report_lines(lines, lines_per_page=7)
 
 
 def _format_derivation_failure(exc: Exception, derivation_path: str, fallback: str) -> str:
@@ -1269,6 +1287,279 @@ def _build_tp_request_review_pages(payload: str) -> tuple[str, list[str]]:
     raise ValueError(f"不支持的签名请求类型: {request_type}")
 
 
+def _hex_payload_stats(hex_text: str) -> tuple[int | None, int]:
+    value = str(hex_text or "").strip()
+    if not value:
+        return None, 0
+    if value.startswith(("0x", "0X")):
+        value = value[2:]
+    if len(value) % 2 != 0:
+        return None, len(value)
+    try:
+        bytes.fromhex(value)
+    except Exception:
+        return None, len(value)
+    return len(value) // 2, len(value)
+
+
+def _format_signed_byte_size(byte_len: int | None, char_len: int) -> tuple[str, str]:
+    return (
+        f"{byte_len:,}" if byte_len is not None else "-",
+        f"{char_len:,}",
+    )
+
+
+def _describe_review_qr_delivery(qr_encoder) -> tuple[str, int, str]:
+    frame_count = 1
+    if qr_encoder is not None:
+        try:
+            frame_count = max(1, int(qr_encoder.seq_len()))
+        except Exception:
+            frame_count = 1
+    if frame_count == 1:
+        return "单张二维码", frame_count, "下一步会显示 1 张二维码"
+    return f"连续二维码（共 {frame_count} 张）", frame_count, f"下一步会显示 {frame_count} 张连续二维码"
+
+
+def _friendly_signed_psbt_format_label(input_qr_type: str | None, tx_hex: str | None = None) -> str:
+    mapping = {
+        "psbt__base43": "BASE43",
+        "psbt__base64": "BASE64",
+        "psbt__specter": "Specter",
+        "psbt__ur2": "UR",
+        "psbt__bbqr": "BBQr",
+    }
+    if input_qr_type in mapping:
+        return mapping[input_qr_type]
+    return "-"
+
+
+def _build_tp_signed_response_review_pages(response_text: str, qr_encoder=None) -> tuple[str, list[str]]:
+    response = str(response_text or "").strip()
+    if not response:
+        return "签名结果摘要", ["签名结果为空"]
+
+    qr_style, frame_count, qr_hint = _describe_review_qr_delivery(qr_encoder)
+
+    if response.lower().startswith("btctx:"):
+        tx_hex = response[6:].strip()
+        byte_len, char_len = _hex_payload_stats(tx_hex)
+        byte_len_text, char_len_text = _format_signed_byte_size(byte_len, char_len)
+        pages = [
+            "\n".join(
+                [
+                "签名已完成",
+                "手机扫回后可直接广播",
+                f"扫码方式: {qr_style}",
+                f"交易大小: {byte_len_text} 字节",
+                f"文本长度: {char_len_text} 个字符",
+                "确认后再显示二维码",
+                ]
+            )
+        ]
+        pages.append("\n".join(build_signature_health_lines(analyze_tx_signature_health(tx_hex))))
+        pages.append(
+            "\n".join(
+                [
+                    qr_hint,
+                    "刚才确认过的内容",
+                    "和下一步二维码是同一份结果",
+                    "确认没问题后再点",
+                    "“显示二维码”",
+                ]
+            )
+        )
+        return "签名结果摘要", pages
+
+    namespace = "-"
+    action = "-"
+    query_text = ""
+    if ":" in response:
+        namespace, remainder = response.split(":", 1)
+    else:
+        remainder = response
+    if "-" in remainder:
+        action, query_text = remainder.split("-", 1)
+    else:
+        action = remainder
+    if query_text.startswith("?"):
+        query_text = query_text[1:]
+
+    params = {key: values[-1] for key, values in parse_qs(query_text, keep_blank_values=True).items()}
+    raw_data = params.get("data", "")
+    try:
+        data = json.loads(raw_data) if raw_data else {}
+    except Exception:
+        data = {}
+
+    lines = [
+        "签名已完成",
+        f"签名来源: {namespace}",
+        f"动作类型: {action or '-'}",
+        f"扫码方式: {qr_style}",
+    ]
+    if params.get("network"):
+        lines.append(f"网络: {params['network']}")
+    if params.get("chain_id"):
+        lines.append(f"链ID: {params['chain_id']}")
+
+    pages = ["\n".join(lines)]
+
+    detail_lines = []
+    if isinstance(data, dict):
+        signer_address = str(data.get("address") or "").strip()
+        signature_hex = str(data.get("signature") or "").strip()
+        raw_transaction = str(data.get("rawTransaction") or "").strip()
+
+        if signer_address:
+            detail_lines.append("签名地址:")
+            detail_lines.extend(_chunk_text(signer_address, width=18).splitlines() or ["-"])
+
+        if raw_transaction:
+            byte_len, char_len = _hex_payload_stats(raw_transaction)
+            byte_len_text, char_len_text = _format_signed_byte_size(byte_len, char_len)
+            detail_lines.extend(
+                [
+                    "手机扫回后可直接广播",
+                    f"交易大小: {byte_len_text} 字节",
+                    f"文本长度: {char_len_text} 个字符",
+                ]
+            )
+        elif signature_hex:
+            byte_len, char_len = _hex_payload_stats(signature_hex)
+            byte_len_text, char_len_text = _format_signed_byte_size(byte_len, char_len)
+            detail_lines.extend(
+                [
+                    "结果: 签名文本",
+                    f"签名大小: {byte_len_text} 字节",
+                    f"文本长度: {char_len_text} 个字符",
+                ]
+            )
+        elif raw_data:
+            detail_lines.extend(
+                [
+                    "结果: 文本结果",
+                    f"文本长度: {len(raw_data):,}",
+                ]
+            )
+    elif raw_data:
+        detail_lines.extend(
+            [
+                "结果: 文本结果",
+                f"文本长度: {len(raw_data):,}",
+            ]
+        )
+
+    if detail_lines:
+        pages.append("\n".join(detail_lines))
+
+    pages.append(
+        "\n".join(
+            [
+                qr_hint,
+                "刚才确认过的内容",
+                "就是下一步二维码里的结果",
+                "确认没问题后再点",
+                "“显示二维码”",
+            ]
+        )
+    )
+    return "签名结果摘要", pages
+
+
+def _build_tp_signed_psbt_review_pages(
+    psbt_base64: str,
+    input_qr_type: str | None = None,
+    tx_hex: str | None = None,
+    qr_encoder=None,
+) -> tuple[str, list[str]]:
+    qr_style, frame_count, qr_hint = _describe_review_qr_delivery(qr_encoder)
+    result_label = "可直接广播的交易" if tx_hex else "已签名 PSBT"
+
+    lines = [
+        "签名已完成",
+        f"结果: {result_label}",
+        f"扫码方式: {qr_style}",
+    ]
+
+    pages = []
+    parser = None
+    if psbt_base64:
+        try:
+            from embit.psbt import PSBT
+            from seedsigner.models.psbt_parser import PSBTParser
+
+            parser = PSBTParser(PSBT.from_base64(psbt_base64), allow_unverified_single_sig_change=True)
+            parser.parse()
+        except Exception as exc:
+            logger.warning("Failed to parse signed PSBT for review: %s", exc)
+            lines.append("摘要解析失败")
+        else:
+            lines.extend(
+                [
+                    f"输入数: {parser.num_inputs}",
+                    f"金额: {parser.spend_amount:,} sats",
+                    f"矿工费: {parser.fee_amount:,} sats",
+                ]
+            )
+
+    if parser is not None and parser.change_amount:
+        lines.append(f"找零: {parser.change_amount:,} sats")
+    else:
+        lines.append("找零: 无")
+    if parser is not None and parser.num_destinations > 1:
+        lines.append(f"收款地址: {parser.num_destinations} 个")
+    pages.append("\n".join(lines))
+
+    if parser is not None and parser.destination_addresses:
+        address = parser.destination_addresses[0]
+        address_lines = [
+            "收款地址:",
+        ]
+        address_lines.extend(_chunk_text(address, width=18).splitlines() or ["-"])
+        if getattr(parser, "destination_amounts", None):
+            address_lines.append(f"金额: {parser.destination_amounts[0]:,} sats")
+        else:
+            address_lines.append("金额: -")
+        if parser.num_destinations > 1:
+            address_lines.append(f"另有 {parser.num_destinations - 1} 个其他收款地址")
+        pages.append("\n".join(address_lines))
+
+    if tx_hex:
+        byte_len, char_len = _hex_payload_stats(tx_hex)
+        byte_len_text, char_len_text = _format_signed_byte_size(byte_len, char_len)
+        pages.append(
+            "\n".join(
+                [
+                    f"交易大小: {byte_len_text} 字节",
+                    f"文本长度: {char_len_text} 个字符",
+                    "这份结果可直接广播",
+                ]
+            )
+        )
+
+    signature_health_report = None
+    if tx_hex:
+        signature_health_report = analyze_tx_signature_health(tx_hex)
+    elif psbt_base64:
+        signature_health_report = analyze_psbt_signature_health(psbt_base64)
+    if signature_health_report is not None:
+        pages.append("\n".join(build_signature_health_lines(signature_health_report)))
+
+    pages.append(
+        "\n".join(
+            [
+                qr_hint,
+                "刚才确认过的金额和地址",
+                "就是下一步二维码里的结果",
+                "确认没问题后再点",
+                "“显示二维码”",
+            ]
+        )
+    )
+    return "签名结果摘要", pages
+
+
 def _extract_xpub_from_output(stdout: str, xtype: str) -> str:
     normalized_prefixes = ("xpub", "ypub", "zpub", "tpub", "upub", "vpub")
 
@@ -1479,6 +1770,13 @@ def _format_number_groups(entries: list[str], page_index: int, entries_per_page:
     return "\n".join(lines), total_pages
 
 
+def _format_all_number_groups(entries: list[str]) -> str:
+    sections = []
+    for index, entry in enumerate(entries):
+        sections.append("\n".join(_wrap_number_group(index, entry)))
+    return "\n\n".join(section for section in sections if section).strip()
+
+
 def _store_restored_steel_cipher(view: View, words: list[str], indices: list[int] | None = None) -> int:
     if indices is not None:
         indices = [int(index) for index in list(indices)]
@@ -1507,6 +1805,14 @@ def _format_shift_entries(entries: list[str], page_index: int, entries_per_page:
         normalized = str(entry or "").strip()
         lines.append(f"{start + offset + 1:02d}: {normalized or '（不变）'}")
     return "\n".join(lines), total_pages
+
+
+def _format_all_shift_entries(entries: list[str]) -> str:
+    lines = []
+    for offset, entry in enumerate(entries):
+        normalized = str(entry or "").strip()
+        lines.append(f"{offset + 1:02d}: {normalized or '（不变）'}")
+    return "\n".join(lines).strip()
 
 
 def _resolve_plate_selected_weights(group: str) -> list[int]:
@@ -1555,9 +1861,21 @@ def _format_plate_word_page(
         except Exception:
             index_text = "----"
     selected_weights = _resolve_plate_selected_weights(groups[page_index])
-    title = f"第 {page_index + 1:02d} 词"
-    text = "\n".join([f"序号 {index_text}", *_format_plate_selected_weight_lines(selected_weights)])
+    title = f"{page_index + 1:02d} 词"
+    text = "\n".join([f"序号: {index_text}", "打孔位:", *_format_plate_selected_weight_lines(selected_weights)])
     return title, text
+
+
+def _format_all_plate_word_pages(
+    words: list[str],
+    groups: list[str],
+    indices: list[int] | None = None,
+) -> str:
+    sections = []
+    for page_index in range(len(groups)):
+        title, text = _format_plate_word_page(words, groups, page_index, indices=indices)
+        sections.append(f"{title}\n{text}".strip())
+    return "\n\n".join(section for section in sections if section).strip()
 
 
 def _is_lossy_operator(operator: str | None) -> bool:
@@ -1619,7 +1937,8 @@ def _format_weight_line(index: int) -> str:
     weights = solve_weights(index)
     if not weights:
         return "0"
-    return " ".join(str(weight) for weight in weights)
+    chunks = [" ".join(str(weight) for weight in weights[i:i + 6]) for i in range(0, len(weights), 6)]
+    return "\n".join(chunks)
 
 
 def _build_bip39_word_report(word: str) -> str:
@@ -1630,10 +1949,10 @@ def _build_bip39_word_report(word: str) -> str:
     previous_word = get_word_at_index(index - 1) if index > 0 else "（无）"
     next_word = get_word_at_index(index + 1) if index < 2047 else "（无）"
     return (
-        f"单词:\n{normalized}\n\n"
-        f"编号(0-2047):\n{index}\n\n"
-        f"前一个:\n{previous_word}\n\n"
-        f"后一个:\n{next_word}\n\n"
+        f"单词: {normalized}\n"
+        f"编号: {index}\n"
+        f"前词: {previous_word}\n"
+        f"后词: {next_word}\n"
         f"钢板位权:\n{_format_weight_line(index)}"
     )
 
@@ -1656,10 +1975,10 @@ def _build_bip39_index_report(raw_index: str) -> str:
     previous_word = get_word_at_index(index - 1) if index > 0 else "（无）"
     next_word = get_word_at_index(index + 1) if index < 2047 else "（无）"
     return (
-        f"编号:\n{index}\n\n"
-        f"单词:\n{word}\n\n"
-        f"前一个:\n{previous_word}\n\n"
-        f"后一个:\n{next_word}\n\n"
+        f"编号: {index}\n"
+        f"单词: {word}\n"
+        f"前词: {previous_word}\n"
+        f"后词: {next_word}\n"
         f"钢板位权:\n{_format_weight_line(index)}"
     )
 
@@ -1676,15 +1995,15 @@ def _operator_display_label(operator: str) -> str:
 class ToolsTpHomeView(View):
     SCAN = ButtonOption("扫码签名")
     SEED_TOOLS = ButtonOption("助记词工具")
-    FIRMWARE_CHECK = ButtonOption("固件完整性自检")
+    FIRMWARE_CHECK = ButtonOption("固件自检")
     SMARTCARD_TOOLS = ButtonOption("智能卡工具")
 
     def run(self):
         button_data = [
             self.SCAN,
             self.SEED_TOOLS,
-            self.FIRMWARE_CHECK,
             self.SMARTCARD_TOOLS,
+            self.FIRMWARE_CHECK,
         ]
 
         selected_menu_num = self.run_screen(
@@ -1810,11 +2129,11 @@ class ToolsTpUiLockView(View):
 
 
 class ToolsTpSeedToolsView(View):
-    SEEDKEEPER_CREATE = ButtonOption("智能卡真随机创建助记词")
-    CAMERA_CREATE = ButtonOption("拍照创建助记词")
-    DICE_CREATE = ButtonOption("摇骰子创建助记词")
-    CARD_CREATE = ButtonOption("使用扑克牌创建助记词")
-    HEX_CREATE = ButtonOption("使用16进制创建助记词")
+    SEEDKEEPER_CREATE = ButtonOption("卡上真随机创建")
+    CAMERA_CREATE = ButtonOption("拍照创建")
+    DICE_CREATE = ButtonOption("骰子创建")
+    CARD_CREATE = ButtonOption("扑克牌创建")
+    HEX_CREATE = ButtonOption("16进制创建")
     IMPORT_SEED = ButtonOption("导入助记词")
     BIP39_CHECK = ButtonOption("BIP39 单词自检")
     MANAGE_SEEDS = ButtonOption("已加载助记词")
@@ -2018,26 +2337,30 @@ class ToolsTpBip39CheckResultView(View):
     RETRY = ButtonOption("重新查询")
     DONE = ButtonOption("完成")
 
-    def __init__(self, title: str, text: str, return_view: str, return_value: str = ""):
+    def __init__(self, title: str, text: str, return_view: str, return_value: str = "", page_index: int = 0):
         super().__init__()
         self.title = title
         self.text = text
         self.return_view = return_view
         self.return_value = return_value
+        self.page_index = page_index
 
     def run(self):
+        button_data = [self.RETRY, self.DONE]
+
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
+            ToolsScrollableTextScreen,
             title=self.title,
             text=self.text,
             text_font_name=GUIConstants.get_body_font_name(),
-            button_data=[self.RETRY, self.DONE],
+            text_font_size=max(GUIConstants.get_body_font_size() + 1, 19),
+            button_data=button_data,
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             selected = self.DONE
         else:
-            selected = [self.RETRY, self.DONE][selected_menu_num]
+            selected = button_data[selected_menu_num]
 
         if selected == self.RETRY:
             if self.return_view == "index":
@@ -2056,18 +2379,18 @@ class ToolsTpBip39CheckResultView(View):
 
 
 class ToolsTpLoadedSeedOptionsView(View):
-    VIEW_WORDS = ButtonOption("查看 BIP39 序号")
+    VIEW_WORDS = ButtonOption("查看助记词")
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
-    VIEW_ENTROPY = ButtonOption("查看原始熵(HEX)")
-    DERIVE_ADDRESS = ButtonOption("派生路径算地址")
-    EXPORT_BTC_ZPUB = ButtonOption("导出当前助记词到 BlueWallet(zpub)")
-    EXPORT_BTC_XPUB = ButtonOption("导出当前助记词到 BlueWallet(xpub)")
-    BIP85_CHILD_SEED = ButtonOption("BIP-85 子助记词")
-    IMPORT_TO_SMARTCARD = ButtonOption("写入当前助记词到智能卡")
-    SAVE_TO_SEEDKEEPER = ButtonOption("写入当前助记词到 SeedKeeper")
-    SECONDARY_ENCRYPT = ButtonOption("二次加密助记词")
-    SECONDARY_DECRYPT = ButtonOption("二次还原助记词")
-    PLATE_NUMBERS = ButtonOption("转成钢板打孔数字")
+    VIEW_ENTROPY = ButtonOption("查看原始熵")
+    DERIVE_ADDRESS = ButtonOption("按路径算地址")
+    EXPORT_BTC_ZPUB = ButtonOption("导出 Blue zpub")
+    EXPORT_BTC_XPUB = ButtonOption("导出 Blue xpub")
+    BIP85_CHILD_SEED = ButtonOption("BIP85 子助记词")
+    IMPORT_TO_SMARTCARD = ButtonOption("写入到智能卡")
+    SAVE_TO_SEEDKEEPER = ButtonOption("写入到 SeedKeeper")
+    SECONDARY_ENCRYPT = ButtonOption("二次加密")
+    SECONDARY_DECRYPT = ButtonOption("二次还原")
+    PLATE_NUMBERS = ButtonOption("钢板数字")
     DISCARD = ButtonOption("删除助记词", button_label_color="red")
 
     def __init__(self, seed_num: int):
@@ -2123,7 +2446,7 @@ class ToolsTpLoadedSeedOptionsView(View):
                 SeedEntropyView,
                 view_args=dict(
                     seed_num=self.seed_num,
-                    title="原始熵(HEX)",
+                    title="熵详情",
                     return_destination=Destination(
                         ToolsTpLoadedSeedOptionsView,
                         view_args=dict(seed_num=self.seed_num),
@@ -2320,7 +2643,7 @@ class ToolsTpDerivedAddressResultView(View):
                     f"类型: {_script_type_label(self.script_type)}\n\n"
                     f"路径:\n{_wrap_path_text(self.derivation_path)}"
                 ),
-                text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+                text_font_name=GUIConstants.get_body_font_name(),
                 text_font_size=GUIConstants.get_body_font_size(),
             ),
             dict(
@@ -2343,47 +2666,30 @@ class ToolsTpDerivedAddressResultView(View):
         encoder = GenericStaticQrEncoder(data=self.address)
         self.run_screen(QRDisplayScreen, qr_encoder=encoder)
 
-    def _page_title(self, page_index: int, total_pages: int) -> str:
-        if total_pages <= 1:
-            return "派生地址"
-        return f"派生地址 {page_index + 1}/{total_pages}"
-
     def run(self):
         pages = self._page_specs()
-        page_index = 0
+        sections = []
+        for page in pages:
+            text = str(page.get("text") or "").strip()
+            if text:
+                sections.append(text)
 
-        while True:
-            is_last_page = page_index == len(pages) - 1
-            next_button = ButtonOption("下一页")
-            button_data = [self.SHOW_QR, self.DONE] if is_last_page else [next_button, self.DONE]
-            selected_menu_num = self.run_screen(
-                ToolsFormattedTextScreen,
-                title=self._page_title(page_index, len(pages)),
-                text=pages[page_index]["text"],
-                text_font_name=pages[page_index]["text_font_name"],
-                text_font_size=pages[page_index]["text_font_size"],
-                button_data=button_data,
-            )
+        selected_menu_num = self.run_screen(
+            ToolsScrollableTextScreen,
+            title="派生地址",
+            text="\n\n".join(sections),
+            text_font_name=GUIConstants.get_body_font_name(),
+            text_font_size=max(GUIConstants.get_body_font_size(), 18),
+            button_data=[self.SHOW_QR, self.DONE],
+        )
 
-            if selected_menu_num == RET_CODE__BACK_BUTTON:
-                if page_index > 0:
-                    page_index -= 1
-                    continue
-                return self._done_destination()
-
-            selected = button_data[selected_menu_num]
-            if not is_last_page and selected == next_button:
-                page_index += 1
-                continue
-
-            if not is_last_page:
-                return self._done_destination()
-
-            if selected == self.SHOW_QR:
-                self._show_qr()
-                continue
-
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
             return self._done_destination()
+
+        selected = [self.SHOW_QR, self.DONE][selected_menu_num]
+        if selected == self.SHOW_QR:
+            self._show_qr()
+        return self._done_destination()
 
 
 class ToolsTpSeedBtcXpubQrView(View):
@@ -2435,7 +2741,7 @@ class ToolsTpSeedBtcXpubQrView(View):
 
 
 class ToolsTpSteelCipherOptionsView(View):
-    VIEW_WORDS = ButtonOption("查看 BIP39 序号")
+    VIEW_WORDS = ButtonOption("查看二次加密单词")
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     VIEW_PLATE = ButtonOption("查看钢板打孔数字")
     SAVE_TO_SEEDKEEPER = ButtonOption("保存到 SeedKeeper")
@@ -2681,7 +2987,6 @@ class ToolsTpSteelShiftInputView(View):
 
 
 class ToolsTpSteelShiftReviewView(View):
-    NEXT = ButtonOption("下一页")
     REENTER = ButtonOption("重新输入")
     PREVIEW_INDICES = ButtonOption("预览结果序号")
     CONFIRM = ButtonOption("确认执行")
@@ -2740,13 +3045,6 @@ class ToolsTpSteelShiftReviewView(View):
             clear_history=True,
         )
 
-    def _review_title(self, total_pages: int) -> str:
-        return f"检查每词运算：{self.page_index + 1}/{total_pages}"
-
-    def _review_text(self) -> str:
-        text, _ = _format_shift_entries(self.entries, self.page_index, entries_per_page=4)
-        return text
-
     def _has_lossy_entries(self) -> bool:
         for entry in self.entries:
             operator = _extract_entry_operator(entry, fallback="")
@@ -2755,30 +3053,17 @@ class ToolsTpSteelShiftReviewView(View):
         return False
 
     def run(self):
-        entries_per_page = 4
-        total_pages = max(1, (len(self.entries) + entries_per_page - 1) // entries_per_page)
-        is_last_page = self.page_index >= total_pages - 1
-        button_data = [self.PREVIEW_INDICES, self.NEXT] if not is_last_page else [self.REENTER, self.PREVIEW_INDICES, self.CONFIRM]
+        button_data = [self.REENTER, self.PREVIEW_INDICES, self.CONFIRM]
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
-            title=self._review_title(total_pages),
-            text=self._review_text(),
+            ToolsScrollableTextScreen,
+            title="检查运算",
+            text=_format_all_shift_entries(self.entries),
+            text_font_name=GUIConstants.get_body_font_name(),
+            text_font_size=max(GUIConstants.get_body_font_size(), 18),
             button_data=button_data,
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
-            if self.page_index > 0:
-                return Destination(
-                    ToolsTpSteelShiftReviewView,
-                    view_args=dict(
-                        mode=self.mode,
-                        seed_num=self.seed_num,
-                        entries=self.entries,
-                        page_index=self.page_index - 1,
-                        warned_lossy=self.warned_lossy,
-                    ),
-                    clear_history=True,
-                )
             return Destination(
                 ToolsTpSteelShiftInputView,
                 view_args=dict(
@@ -2791,18 +3076,6 @@ class ToolsTpSteelShiftReviewView(View):
             )
 
         selected = button_data[selected_menu_num]
-        if selected == self.NEXT:
-            return Destination(
-                ToolsTpSteelShiftReviewView,
-                view_args=dict(
-                    mode=self.mode,
-                    seed_num=self.seed_num,
-                    entries=self.entries,
-                    page_index=self.page_index + 1,
-                    warned_lossy=self.warned_lossy,
-                ),
-            )
-
         if selected == self.REENTER:
             return Destination(
                 ToolsTpSteelShiftInputView,
@@ -3086,12 +3359,11 @@ class ToolsTpSteelPlateEditSelectView(View):
         self.page_index = page_index
 
     def run(self):
-        start = self.page_index * 2
-        indices = list(range(start, min(start + 2, len(self.entries))))
+        indices = list(range(len(self.entries)))
         button_data = [ButtonOption(f"编辑第 {index + 1:02d} 词") for index in indices]
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title="编辑哪一组",
+            title="编辑词条",
             is_button_text_centered=False,
             button_data=button_data,
         )
@@ -3099,7 +3371,7 @@ class ToolsTpSteelPlateEditSelectView(View):
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(
                 ToolsTpSteelPlateReviewView,
-                view_args=dict(entries=self.entries, page_index=self.page_index),
+                view_args=dict(entries=self.entries, page_index=0),
                 clear_history=True,
             )
 
@@ -3116,8 +3388,7 @@ class ToolsTpSteelPlateEditSelectView(View):
 
 
 class ToolsTpSteelPlateReviewView(View):
-    NEXT = ButtonOption("下一页")
-    EDIT_PAGE = ButtonOption("编辑当前页")
+    EDIT_PAGE = ButtonOption("编辑词条")
     PREVIEW_INDICES = ButtonOption("预览恢复序号")
     CONFIRM = ButtonOption("确认恢复")
 
@@ -3128,28 +3399,17 @@ class ToolsTpSteelPlateReviewView(View):
         self.launched_from_load_seed = launched_from_load_seed
 
     def run(self):
-        page_text, total_pages = _format_number_groups(self.entries, self.page_index, entries_per_page=1)
-        is_last_page = self.page_index >= total_pages - 1
-        button_data = [self.EDIT_PAGE, self.PREVIEW_INDICES, self.NEXT] if not is_last_page else [self.EDIT_PAGE, self.PREVIEW_INDICES, self.CONFIRM]
+        button_data = [self.EDIT_PAGE, self.PREVIEW_INDICES, self.CONFIRM]
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
-            title=f"检查钢板数字：{self.page_index + 1}/{total_pages}",
-            text=page_text,
-            text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+            ToolsScrollableTextScreen,
+            title="检查数字",
+            text=_format_all_number_groups(self.entries),
+            text_font_name=GUIConstants.get_body_font_name(),
+            text_font_size=max(GUIConstants.get_body_font_size(), 18),
             button_data=button_data,
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
-            if self.page_index > 0:
-                return Destination(
-                    ToolsTpSteelPlateReviewView,
-                    view_args=dict(
-                        entries=self.entries,
-                        page_index=self.page_index - 1,
-                        launched_from_load_seed=self.launched_from_load_seed,
-                    ),
-                    clear_history=True,
-                )
             return Destination(
                 ToolsTpSteelPlateEntryView,
                 view_args=dict(
@@ -3161,24 +3421,12 @@ class ToolsTpSteelPlateReviewView(View):
             )
 
         selected = button_data[selected_menu_num]
-        if selected == self.NEXT:
-            return Destination(
-                ToolsTpSteelPlateReviewView,
-                view_args=dict(
-                    entries=self.entries,
-                    page_index=self.page_index + 1,
-                    launched_from_load_seed=self.launched_from_load_seed,
-                ),
-            )
-
         if selected == self.EDIT_PAGE:
             return Destination(
-                ToolsTpSteelPlateEntryView,
+                ToolsTpSteelPlateEditSelectView,
                 view_args=dict(
                     entries=self.entries,
-                    word_index=self.page_index,
-                    review_page_index=self.page_index,
-                    launched_from_load_seed=self.launched_from_load_seed,
+                    page_index=0,
                 ),
                 clear_history=True,
             )
@@ -3254,7 +3502,6 @@ class ToolsTpSteelPlateReviewView(View):
 
 
 class ToolsTpSteelCipherWordsView(View):
-    NEXT = ButtonOption("下一页")
     DONE = ButtonOption("完成")
 
     def __init__(self, page_index: int = 0):
@@ -3268,37 +3515,30 @@ class ToolsTpSteelCipherWordsView(View):
         if not words:
             return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
-        words_per_page = 6
-        num_pages = max(1, (len(words) + words_per_page - 1) // words_per_page)
-        start = self.page_index * words_per_page
-        page_words = [str(word or "").strip() or "（空）" for word in words[start:start + words_per_page]]
         all_indices = self.controller.storage.get_steel_bip39_indices()
         if len(all_indices) != len(words):
             all_indices = []
-        page_indices = all_indices[start:start + words_per_page] if all_indices else None
-        button_data = [self.NEXT] if self.page_index < num_pages - 1 else [self.DONE]
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
-            title=f"二次加密 BIP39 序号：{self.page_index + 1}/{num_pages}",
+            ToolsScrollableTextScreen,
+            title="假助记词序号",
             text=_format_word_position_lines(
-                page_words,
-                start + 1,
-                page_indices,
+                [str(word or "").strip() or "（空）" for word in words],
+                1,
+                all_indices if all_indices else None,
                 show_index_placeholders=True,
             ),
-            button_data=button_data,
+            text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+            text_font_size=max(GUIConstants.get_body_font_size(), 18),
+            button_data=[self.DONE],
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
-        if button_data[selected_menu_num] == self.NEXT:
-            return Destination(ToolsTpSteelCipherWordsView, view_args=dict(page_index=self.page_index + 1))
         return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
 
 class ToolsTpSteelPlateWordsView(View):
-    NEXT = ButtonOption("下一页")
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     DONE = ButtonOption("完成")
 
@@ -3322,29 +3562,24 @@ class ToolsTpSteelPlateWordsView(View):
             return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
         words = self.controller.storage.get_steel_encrypted_mnemonic()
-        page_title, page_text = _format_plate_word_page(
+        page_text = _format_all_plate_word_pages(
             words,
             groups,
-            self.page_index,
             indices=cached_indices if len(cached_indices) == len(groups) else None,
         )
-        num_pages = len(groups)
-        button_data = [self.VIEW_INDICES, self.NEXT] if self.page_index < num_pages - 1 else [self.VIEW_INDICES, self.DONE]
+        button_data = [self.VIEW_INDICES, self.DONE]
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
-            title=f"打孔位：{self.page_index + 1}/{num_pages}",
+            ToolsScrollableTextScreen,
+            title="打孔位",
             text=page_text,
-            text_font_name=GUIConstants.FIXED_WIDTH_EMPHASIS_FONT_NAME,
-            text_font_size=GUIConstants.get_body_font_size() + 16,
-            text_is_centered=True,
+            text_font_name=GUIConstants.get_body_font_name(),
+            text_font_size=max(GUIConstants.get_body_font_size(), 18),
             button_data=button_data,
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(ToolsTpSteelCipherOptionsView, clear_history=True)
 
-        if button_data[selected_menu_num] == self.NEXT:
-            return Destination(ToolsTpSteelPlateWordsView, view_args=dict(page_index=self.page_index + 1))
         if button_data[selected_menu_num] == self.VIEW_INDICES:
             from seedsigner.views.seed_views import SeedWordIndexView
             return Destination(
@@ -3365,7 +3600,7 @@ class ToolsTpSteelPlateWordsView(View):
 class ToolsTpSmartcardToolsView(View):
     SATOCHIP_TOOLS = ButtonOption("Satochip 功能")
     SEEDKEEPER_TOOLS = ButtonOption("SeedKeeper 功能")
-    FULL_SMARTCARD_MENU = ButtonOption("完整智能卡菜单")
+    FULL_SMARTCARD_MENU = ButtonOption("完整菜单")
 
     def run(self):
         button_data = [
@@ -3401,13 +3636,13 @@ class ToolsTpSmartcardToolsView(View):
 
 
 class ToolsTpSatochipToolsView(View):
-    VIEW_ADDRESS = ButtonOption("按路径查看 Satochip 地址")
-    EXPORT_BTC_ZPUB = ButtonOption("导出 Satochip 到 BlueWallet(zpub)")
-    EXPORT_BTC_XPUB = ButtonOption("导出 Satochip 到 BlueWallet(xpub)")
-    IMPORT_LOADED_SEED = ButtonOption("写入已加载助记词到 Satochip")
-    CHANGE_PIN = ButtonOption("更改 Satochip PIN")
-    FACTORY_RESET = ButtonOption("重置 Satochip")
-    MORE = ButtonOption("更多 Satochip 功能")
+    VIEW_ADDRESS = ButtonOption("按路径看地址")
+    EXPORT_BTC_ZPUB = ButtonOption("导出 Blue zpub")
+    EXPORT_BTC_XPUB = ButtonOption("导出 Blue xpub")
+    IMPORT_LOADED_SEED = ButtonOption("写入助记词")
+    CHANGE_PIN = ButtonOption("更改卡 PIN")
+    FACTORY_RESET = ButtonOption("重置卡")
+    MORE = ButtonOption("更多功能")
 
     def run(self):
         button_data = [
@@ -3643,13 +3878,13 @@ class ToolsTpSeedkeeperLoadSteelCipherView(View):
 
 
 class ToolsTpSeedkeeperToolsView(View):
-    GENERATE_MNEMONIC = ButtonOption("卡上真随机创建助记词")
-    SAVE_CURRENT_SEED = ButtonOption("写入已加载助记词到 SeedKeeper")
-    SAVE_STEEL_CIPHER = ButtonOption("保存二次加密助记词到 SeedKeeper")
-    LOAD_STEEL_CIPHER = ButtonOption("从 SeedKeeper 加载二次加密助记词")
-    CHANGE_PIN = ButtonOption("更改 SeedKeeper PIN")
-    FACTORY_RESET = ButtonOption("重置 SeedKeeper")
-    MORE = ButtonOption("更多 SeedKeeper 功能")
+    GENERATE_MNEMONIC = ButtonOption("卡上真随机创建")
+    SAVE_CURRENT_SEED = ButtonOption("写入到 SeedKeeper")
+    SAVE_STEEL_CIPHER = ButtonOption("保存二次加密")
+    LOAD_STEEL_CIPHER = ButtonOption("加载二次加密")
+    CHANGE_PIN = ButtonOption("更改卡 PIN")
+    FACTORY_RESET = ButtonOption("重置卡")
+    MORE = ButtonOption("更多功能")
 
     def run(self):
         button_data = [
@@ -3939,7 +4174,6 @@ class ToolsTpFirmwareIntegrityResultView(View):
 
 
 class ToolsTpFirmwareIntegrityDetailsView(View):
-    NEXT = ButtonOption("下一页")
     BACK = ButtonOption("返回")
 
     def __init__(self, result: dict, page_index: int = 0):
@@ -3949,30 +4183,20 @@ class ToolsTpFirmwareIntegrityDetailsView(View):
 
     def run(self):
         pages = _build_firmware_integrity_detail_pages(self.result)
-        current_page = max(0, min(self.page_index, len(pages) - 1))
-        has_next = current_page < len(pages) - 1
-        button_data = [self.NEXT, self.BACK] if has_next else [self.BACK]
 
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
+            ToolsScrollableTextScreen,
             title="固件完整性",
-            text=pages[current_page],
+            text="\n\n".join(page for page in pages if str(page).strip()),
             text_font_name=GUIConstants.get_body_font_name(),
-            button_data=button_data,
+            text_font_size=max(GUIConstants.get_body_font_size(), 18),
+            button_data=[self.BACK],
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(
                 ToolsTpFirmwareIntegrityResultView,
                 view_args=dict(result=self.result),
-                clear_history=True,
-            )
-
-        selected = button_data[selected_menu_num]
-        if selected == self.NEXT:
-            return Destination(
-                ToolsTpFirmwareIntegrityDetailsView,
-                view_args=dict(result=self.result, page_index=current_page + 1),
                 clear_history=True,
             )
         return Destination(
@@ -4301,39 +4525,17 @@ class ToolsTpSignerPayloadReviewView(View):
                 skip_current_view=True,
             )
 
-        page_index = max(0, min(self.page_index, len(pages) - 1))
-        if len(pages) == 1:
-            title = title_base
-        else:
-            title = f"{title_base} {page_index + 1}/{len(pages)}"
-
-        if page_index < len(pages) - 1:
-            button_data = [ButtonOption("下一页")]
-        else:
-            button_data = [ButtonOption("输入 PIN 并签名")]
-
         selected = self.run_screen(
-            ToolsFormattedTextScreen,
-            title=title,
-            text=pages[page_index],
-            button_data=button_data,
+            ToolsScrollableTextScreen,
+            title=title_base,
+            text="\n\n".join(page for page in pages if str(page).strip()),
+            text_font_name=GUIConstants.get_body_font_name(),
+            text_font_size=max(GUIConstants.get_body_font_size(), 18),
+            button_data=[ButtonOption("输入 PIN 并签名")],
         )
 
         if selected == RET_CODE__BACK_BUTTON:
-            if page_index > 0:
-                return Destination(
-                    ToolsTpSignerPayloadReviewView,
-                    view_args=dict(payload=self.payload, page_index=page_index - 1),
-                    clear_history=True,
-                )
             return _tp_home_destination()
-
-        if page_index < len(pages) - 1:
-            return Destination(
-                ToolsTpSignerPayloadReviewView,
-                view_args=dict(payload=self.payload, page_index=page_index + 1),
-                clear_history=True,
-            )
 
         return Destination(
             ToolsTpSignerPinEntryView,
@@ -4729,24 +4931,92 @@ class ToolsTpSignerRunView(View):
 
 
 class ToolsTpSignerQrView(View):
-    def __init__(self, response_text: str):
+    SHOW_QR = ButtonOption("显示签名二维码")
+
+    def __init__(self, response_text: str, page_index: int = 0, skip_review: bool = False):
         super().__init__()
         self.response_text = response_text
+        self.page_index = max(0, int(page_index))
+        self.skip_review = bool(skip_review)
+
+    def _reload(self, page_index: int, skip_review: bool = False) -> Destination:
+        return Destination(
+            ToolsTpSignerQrView,
+            view_args=dict(
+                response_text=self.response_text,
+                page_index=page_index,
+                skip_review=skip_review,
+            ),
+            clear_history=True,
+        )
+
+    def _get_qr_encoder(self):
+        return GenericStaticQrEncoder(data=self.response_text)
 
     def run(self):
-        encoder = GenericStaticQrEncoder(data=self.response_text)
-        self.run_screen(QRDisplayScreen, qr_encoder=encoder)
+        qr_encoder = self._get_qr_encoder()
+        if not self.skip_review:
+            title_base, pages = _build_tp_signed_response_review_pages(self.response_text, qr_encoder=qr_encoder)
+            button_data = [self.SHOW_QR]
+
+            selected = self.run_screen(
+                ToolsScrollableTextScreen,
+                title=title_base,
+                text="\n\n".join(page for page in pages if str(page).strip()),
+                text_font_name=GUIConstants.get_body_font_name(),
+                text_font_size=max(GUIConstants.get_body_font_size() + 1, 19),
+                button_data=button_data,
+            )
+
+            if selected == RET_CODE__BACK_BUTTON:
+                return _tp_home_destination()
+            return self._reload(0, skip_review=True)
+
+        self.run_screen(QRDisplayScreen, qr_encoder=qr_encoder)
         return _tp_home_destination()
 
 
 class ToolsTpSignerPsbtQrView(View):
-    def __init__(self, psbt_base64: str, input_qr_type: str | None = None, tx_hex: str | None = None):
+    SHOW_QR = ButtonOption("显示签名二维码")
+
+    def __init__(
+        self,
+        psbt_base64: str,
+        input_qr_type: str | None = None,
+        tx_hex: str | None = None,
+        page_index: int = 0,
+        skip_review: bool = False,
+    ):
         super().__init__()
         self.psbt_base64 = psbt_base64
         self.input_qr_type = input_qr_type
         self.tx_hex = tx_hex
+        self.page_index = max(0, int(page_index))
+        self.skip_review = bool(skip_review)
 
-    def run(self):
+    def _reload(self, page_index: int, skip_review: bool = False) -> Destination:
+        return Destination(
+            ToolsTpSignerPsbtQrView,
+            view_args=dict(
+                psbt_base64=self.psbt_base64,
+                input_qr_type=self.input_qr_type,
+                tx_hex=self.tx_hex,
+                page_index=page_index,
+                skip_review=skip_review,
+            ),
+            clear_history=True,
+        )
+
+    def _qr_encoder_cache_key(self):
+        return (self.psbt_base64, self.input_qr_type, self.tx_hex)
+
+    def _get_qr_encoder(self):
+        cache_key = self._qr_encoder_cache_key()
+        if getattr(self.controller, "_tp_signed_psbt_qr_encoder_cache_key", None) == cache_key:
+            cached_encoder = getattr(self.controller, "_tp_signed_psbt_qr_encoder", None)
+            if cached_encoder is not None:
+                return cached_encoder
+
         if not self.psbt_base64 and self.tx_hex:
             from seedsigner.models.encode_qr import BbqrTextQrEncoder
 
@@ -4760,15 +5030,10 @@ class ToolsTpSignerPsbtQrView(View):
                 max_split=8,
                 frame_repeat=1,
             )
-            self.run_screen(QRDisplayScreen, qr_encoder=encoder)
-            return _tp_home_destination()
+        else:
+            from embit.psbt import PSBT
+            from seedsigner.models.encode_qr import build_signed_psbt_qr_encoder
 
-        from embit.psbt import PSBT
-        from seedsigner.models.encode_qr import (
-            build_signed_psbt_qr_encoder,
-        )
-
-        try:
             psbt = PSBT.from_base64(self.psbt_base64)
             qr_density = self.settings.get_value(SettingsConstants.SETTING__QR_DENSITY)
             encoder = build_signed_psbt_qr_encoder(
@@ -4776,13 +5041,55 @@ class ToolsTpSignerPsbtQrView(View):
                 qr_density=qr_density,
                 input_qr_type=self.input_qr_type,
             )
+
+        self.controller._tp_signed_psbt_qr_encoder_cache_key = cache_key
+        self.controller._tp_signed_psbt_qr_encoder = encoder
+        return encoder
+
+    def _clear_qr_encoder_cache(self) -> None:
+        self.controller._tp_signed_psbt_qr_encoder_cache_key = None
+        self.controller._tp_signed_psbt_qr_encoder = None
+
+    def run(self):
+        try:
+            qr_encoder = self._get_qr_encoder()
         except Exception as exc:
             logger.warning("TP-only signed PSBT QR render failed: %s", exc)
             if not self.tx_hex:
                 return _masked_error_destination("33")
             if not self.psbt_base64:
-                encoder = GenericStaticQrEncoder(data=self.tx_hex)
+                qr_encoder = GenericStaticQrEncoder(data=self.tx_hex)
             else:
                 return _masked_error_destination("33")
-        self.run_screen(QRDisplayScreen, qr_encoder=encoder)
+
+        if not self.skip_review:
+            title_base, pages = _build_tp_signed_psbt_review_pages(
+                psbt_base64=self.psbt_base64,
+                input_qr_type=self.input_qr_type,
+                tx_hex=self.tx_hex,
+                qr_encoder=qr_encoder,
+            )
+            button_data = [self.SHOW_QR]
+
+            selected = self.run_screen(
+                ToolsScrollableTextScreen,
+                title=title_base,
+                text="\n\n".join(page for page in pages if str(page).strip()),
+                text_font_name=GUIConstants.get_body_font_name(),
+                text_font_size=max(GUIConstants.get_body_font_size() + 1, 19),
+                button_data=button_data,
+            )
+
+            if selected == RET_CODE__BACK_BUTTON:
+                self._clear_qr_encoder_cache()
+                return _tp_home_destination()
+            return self._reload(0, skip_review=True)
+
+        if not self.psbt_base64 and self.tx_hex:
+            self.run_screen(QRDisplayScreen, qr_encoder=qr_encoder)
+            self._clear_qr_encoder_cache()
+            return _tp_home_destination()
+
+        self.run_screen(QRDisplayScreen, qr_encoder=qr_encoder)
+        self._clear_qr_encoder_cache()
         return _tp_home_destination()

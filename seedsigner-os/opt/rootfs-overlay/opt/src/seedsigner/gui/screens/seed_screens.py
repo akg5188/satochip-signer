@@ -643,7 +643,7 @@ class SeedWordsScreen(WarningEdgesMixin, ButtonListScreen):
 
 @dataclass
 class SeedBIP85SelectChildIndexScreen(KeyboardScreen):
-    title: str = _("BIP-85 Index")
+    title: str = "BIP85 编号"
 
     def __post_init__(self):
         self.user_input = ""
@@ -720,7 +720,7 @@ class SeedExportXpubDetailsScreen(WarningEdgesMixin, ButtonListScreen):
     def __post_init__(self):
         # Programmatically set up other args
         self.button_data = [ButtonOption(self.button_label)]
-        self.title = _("Xpub Details")
+        self.title = "公钥详情"
 
         # Initialize the base class
         super().__post_init__()
@@ -729,8 +729,7 @@ class SeedExportXpubDetailsScreen(WarningEdgesMixin, ButtonListScreen):
         self.fingerprint_line = IconTextLine(
             icon_name=SeedSignerIconConstants.FINGERPRINT,
             icon_color=GUIConstants.INFO_COLOR,
-            # TRANSLATOR_NOTE: Short for "BIP32 Master Fingerprint"
-            label_text=_("Fingerprint"),
+            label_text="指纹",
             value_text=self.fingerprint,
             screen_x=GUIConstants.COMPONENT_PADDING,
             screen_y=self.top_nav.height + GUIConstants.COMPONENT_PADDING,
@@ -740,8 +739,7 @@ class SeedExportXpubDetailsScreen(WarningEdgesMixin, ButtonListScreen):
         self.derivation_line = IconTextLine(
             icon_name=SeedSignerIconConstants.DERIVATION,
             icon_color=GUIConstants.INFO_COLOR,
-            # TRANSLATOR_NOTE: Short for "Derivation Path"
-            label_text=_("Derivation"),
+            label_text="路径",
             value_text=self.derivation_path,
             screen_x=GUIConstants.COMPONENT_PADDING,
             screen_y=self.components[-1].screen_y + self.components[-1].height + int(1.5*GUIConstants.COMPONENT_PADDING),
@@ -757,7 +755,7 @@ class SeedExportXpubDetailsScreen(WarningEdgesMixin, ButtonListScreen):
         self.xpub_line = IconTextLine(
             icon_name=FontAwesomeIconConstants.X,
             icon_color=GUIConstants.INFO_COLOR,
-            label_text=_("Xpub"),
+            label_text="公钥",
             value_text=f"{self.xpub[:num_chars]}...",
             font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
             font_size=GUIConstants.get_body_font_size() + 2,

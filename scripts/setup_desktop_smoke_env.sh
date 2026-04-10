@@ -6,6 +6,7 @@ VENV_PATH="${1:-/tmp/satochip-desktop-smoke-venv}"
 REQ_FILE="$ROOT_DIR/scripts/requirements-desktop-smoke.txt"
 URTYPES_TARBALL="$ROOT_DIR/seedsigner-os/buildroot_dl/python-urtypes/python-urtypes-0.1.0.tar.gz"
 SHAMIR_TARBALL="$ROOT_DIR/seedsigner-os/buildroot_dl/python-shamir-mnemonic/python-shamir-mnemonic-0.3-setuptools.tar.gz"
+MNEMONIC_TARBALL="$ROOT_DIR/seedsigner-os/buildroot_dl/python-mnemonic/python-mnemonic-0.20.tar.gz"
 PYCRYPTODOMEX_TARBALL="$ROOT_DIR/seedsigner-os/buildroot_dl/python-pycryptodomex/pycryptodomex-3.21.0.tar.gz"
 PYASN1_TARBALL="$ROOT_DIR/seedsigner-os/buildroot_dl/python-pyasn1/pyasn1-0.4.8.tar.gz"
 PERIPHERY_TARBALL="$ROOT_DIR/seedsigner-os/buildroot_dl/python-periphery/python-periphery-2.4.1.tar.gz"
@@ -19,6 +20,7 @@ python3 -m venv "$VENV_PATH"
 "$VENV_PATH/bin/pip" install \
   "$URTYPES_TARBALL" \
   "$SHAMIR_TARBALL" \
+  "$MNEMONIC_TARBALL" \
   "$PYCRYPTODOMEX_TARBALL" \
   "$PYASN1_TARBALL" \
   "$PERIPHERY_TARBALL" \

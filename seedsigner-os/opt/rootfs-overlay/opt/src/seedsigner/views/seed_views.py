@@ -21,7 +21,7 @@ from seedsigner.gui.components import FontAwesomeIconConstants, GUIConstants, Se
 from seedsigner.gui.screens import (RET_CODE__BACK_BUTTON, ButtonListScreen,
     WarningScreen, DireWarningScreen, seed_screens, LargeIconStatusScreen)
 from seedsigner.gui.screens.screen import ButtonOption, KeyboardScreen
-from seedsigner.gui.screens.tools_screens import ToolsFormattedTextScreen, ToolsTextQRTextEntryScreen
+from seedsigner.gui.screens.tools_screens import ToolsFormattedTextScreen, ToolsScrollableTextScreen, ToolsTextQRTextEntryScreen
 from seedsigner.hardware.microsd import MicroSD
 from seedsigner.helpers.bitbox02_backup import (
     Bitbox02BackupDetails,
@@ -114,6 +114,74 @@ def _format_word_position_lines(
             suffix = "  ----"
         lines.append(f"{start_position + offset:02d}. {display_word:<{max_word_len}}{suffix}")
     return "\n".join(lines)
+
+
+def _chunk_entropy_value(value: str, *, input_format_label: str) -> list[str]:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return ["-"]
+
+    normalized_format = str(input_format_label or "").strip().lower()
+    if normalized_format == "card":
+        tokens = raw_value.split()
+        return [" ".join(tokens[i:i + 4]) for i in range(0, len(tokens), 4)] or ["-"]
+    if normalized_format == "hex":
+        tokens = raw_value.split()
+        if tokens:
+            return [" ".join(tokens[i:i + 6]) for i in range(0, len(tokens), 6)] or ["-"]
+        raw_value = "".join(ch for ch in raw_value if ch.strip())
+        return [raw_value[i:i + 18] for i in range(0, len(raw_value), 18)] or ["-"]
+    if normalized_format == "dice":
+        compact = "".join(raw_value.split())
+        return [compact[i:i + 18] for i in range(0, len(compact), 18)] or ["-"]
+    return [raw_value[i:i + 18] for i in range(0, len(raw_value), 18)] or ["-"]
+
+
+def _entropy_input_title(info: dict) -> str:
+    normalized_format = str(info.get("input_format_label") or "").strip().lower()
+    if normalized_format == "card":
+        return "牌序"
+    if normalized_format == "dice":
+        return "掷骰"
+    if normalized_format == "hex":
+        return "Hex"
+    return "原始输入"
+
+
+def _build_seed_entropy_pages(seed: Seed) -> tuple[dict, list[dict]]:
+    info = seed.get_entropy_display_info()
+    summary_lines = [
+        f"来源: {info['source_label']}",
+        f"格式: {info['input_format_label']}",
+        f"熵值: {info['entropy_bits']} bits",
+        f"难度: {info['search_space_label']}",
+    ]
+
+    pages = [
+        {
+            "title": "熵详情",
+            "text": "\n".join(summary_lines),
+            "fixed_width": False,
+        }
+    ]
+
+    input_lines = _chunk_entropy_value(
+        info.get("display_text", ""),
+        input_format_label=str(info.get("input_format_label") or ""),
+    )
+    if input_lines and input_lines != ["-"]:
+        page_size = 6
+        input_title = _entropy_input_title(info)
+        for start in range(0, len(input_lines), page_size):
+            pages.append(
+                {
+                    "title": input_title,
+                    "text": "\n".join(input_lines[start:start + page_size]),
+                    "fixed_width": True,
+                }
+            )
+
+    return info, pages
 
 
 class SeedsMenuView(View):
@@ -343,15 +411,15 @@ class SeedSelectSeedView(View):
 ****************************************************************************"""
 class LoadSeedView(View):
     SEED_QR = ButtonOption("扫描 SeedQR", SeedSignerIconConstants.QRCODE)
-    TYPE_12WORD = ButtonOption("输入 12 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=12)
-    TYPE_15WORD = ButtonOption("输入 15 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=15)
-    TYPE_18WORD = ButtonOption("输入 18 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=18)
-    TYPE_21WORD = ButtonOption("输入 21 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=21)
-    TYPE_24WORD = ButtonOption("输入 24 个单词助记词", FontAwesomeIconConstants.KEYBOARD, return_data=24)
-    TYPE_BIP39_INDICES = ButtonOption("按编号导入 BIP39 助记词", FontAwesomeIconConstants.KEYBOARD)
-    TYPE_STEEL_RESTORE = ButtonOption("从钢板数字恢复二次助记词", FontAwesomeIconConstants.KEYBOARD)
-    TYPE_ELECTRUM = ButtonOption("输入 Electrum 助记词", FontAwesomeIconConstants.KEYBOARD)
-    TYPE_AEZEED = ButtonOption("输入 Aezeed 助记词", FontAwesomeIconConstants.KEYBOARD)
+    TYPE_12WORD = ButtonOption("输入 12 个单词", FontAwesomeIconConstants.KEYBOARD, return_data=12)
+    TYPE_15WORD = ButtonOption("输入 15 个单词", FontAwesomeIconConstants.KEYBOARD, return_data=15)
+    TYPE_18WORD = ButtonOption("输入 18 个单词", FontAwesomeIconConstants.KEYBOARD, return_data=18)
+    TYPE_21WORD = ButtonOption("输入 21 个单词", FontAwesomeIconConstants.KEYBOARD, return_data=21)
+    TYPE_24WORD = ButtonOption("输入 24 个单词", FontAwesomeIconConstants.KEYBOARD, return_data=24)
+    TYPE_BIP39_INDICES = ButtonOption("按编号导入 BIP39", FontAwesomeIconConstants.KEYBOARD)
+    TYPE_STEEL_RESTORE = ButtonOption("从钢板数字恢复", FontAwesomeIconConstants.KEYBOARD)
+    TYPE_ELECTRUM = ButtonOption("输入 Electrum", FontAwesomeIconConstants.KEYBOARD)
+    TYPE_AEZEED = ButtonOption("输入 Aezeed", FontAwesomeIconConstants.KEYBOARD)
     TYPE_SLIP39 = ButtonOption("输入 SLIP-39 分片", FontAwesomeIconConstants.KEYBOARD)
     IMPORT_SEEDKEEPER = ButtonOption("从 SeedKeeper 导入", FontAwesomeIconConstants.LOCK)
     BITBOX_BACKUP = ButtonOption("导入 BitBox02 备份", SeedSignerIconConstants.MICROSD)
@@ -1448,7 +1516,6 @@ class SeedMnemonicInvalidView(View):
 
 
 class SeedMnemonicRawReviewView(View):
-    NEXT = ButtonOption("下一页")
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     REENTER = ButtonOption("重新输入")
     IMPORT_RAW = ButtonOption("按原样导入")
@@ -1464,25 +1531,22 @@ class SeedMnemonicRawReviewView(View):
             return Destination(LoadSeedView, clear_history=True)
 
         show_index_layout = self.entry_mode == "index"
-        words_per_page = 4
-        num_pages = max(1, (len(mnemonic) + words_per_page - 1) // words_per_page)
-        start = self.page_index * words_per_page
-        words = mnemonic[start:start + words_per_page]
+        words = mnemonic
         indices = _resolve_optional_bip39_indices(mnemonic)
         if show_index_layout:
-            button_data = [self.NEXT] if self.page_index < num_pages - 1 else [self.REENTER, self.IMPORT_RAW]
-            title = f"检查 BIP39 序号：{self.page_index + 1}/{num_pages}"
+            button_data = [self.REENTER, self.IMPORT_RAW]
+            title = "检查 BIP39 序号"
         else:
-            button_data = [self.VIEW_INDICES, self.NEXT] if self.page_index < num_pages - 1 else [self.VIEW_INDICES, self.REENTER, self.IMPORT_RAW]
-            title = f"检查加密助记词：{self.page_index + 1}/{num_pages}"
+            button_data = [self.VIEW_INDICES, self.REENTER, self.IMPORT_RAW]
+            title = "检查加密助记词"
 
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
+            ToolsScrollableTextScreen,
             title=title,
             text=_format_word_position_lines(
                 words,
-                start + 1,
-                indices[start:start + words_per_page] if indices else None,
+                1,
+                indices if indices else None,
                 show_index_placeholders=bool(indices) or show_index_layout,
             ),
             text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
@@ -1490,12 +1554,6 @@ class SeedMnemonicRawReviewView(View):
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
-            if self.page_index > 0:
-                return Destination(
-                    SeedMnemonicRawReviewView,
-                    view_args=dict(page_index=self.page_index - 1, entry_mode=self.entry_mode),
-                    clear_history=True,
-                )
             reenter_view = SeedMnemonicIndexEntryView if self.entry_mode == "index" else SeedMnemonicEntryView
             return Destination(
                 reenter_view,
@@ -1516,12 +1574,6 @@ class SeedMnemonicRawReviewView(View):
                         skip_current_view=True,
                     ),
                 ),
-            )
-
-        if selected == self.NEXT:
-            return Destination(
-                SeedMnemonicRawReviewView,
-                view_args=dict(page_index=self.page_index + 1, entry_mode=self.entry_mode),
             )
 
         if selected == self.REENTER:
@@ -3131,7 +3183,6 @@ class SeedWordsWarningView(View):
 
 
 class SeedWordsView(View):
-    NEXT = ButtonOption("下一页")
     DONE = ButtonOption("完成")
 
     def __init__(self, seed_num: int, bip85_data: dict = None, page_index: int = 0, share_index: int | None = None):
@@ -3167,10 +3218,7 @@ class SeedWordsView(View):
                     )
                     return Destination(BackStackView)
             title = "BIP39 序号"
-        entries_per_page = 4
-        num_pages = max(1, (len(mnemonic) + entries_per_page - 1) // entries_per_page)
-        start = self.page_index * entries_per_page
-        words = _clean_display_words(mnemonic[start:start + entries_per_page])
+        words = _clean_display_words(mnemonic)
         indices = None
         if self.bip85_data is not None:
             indices = _resolve_optional_bip39_indices(mnemonic)
@@ -3183,47 +3231,30 @@ class SeedWordsView(View):
             resolved_indices = _resolve_optional_bip39_indices(mnemonic)
             if resolved_indices is not None and len(resolved_indices) == len(mnemonic):
                 indices = resolved_indices
-        page_indices = indices[start:start + entries_per_page] if indices is not None else None
         formatted_text = _format_word_position_lines(
             words,
-            start + 1,
-            page_indices,
+            1,
+            indices,
             show_index_placeholders=True,
         )
-        button_data = [self.NEXT] if self.page_index < num_pages - 1 or self.seed_num is None else [self.DONE]
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
-            title=f"{title}：{self.page_index + 1}/{num_pages}",
+            ToolsScrollableTextScreen,
+            title=title,
             text=formatted_text,
-            button_data=button_data,
+            text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+            button_data=[self.DONE],
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(BackStackView)
 
-        selected = button_data[selected_menu_num]
-        if selected == self.NEXT:
-            if self.seed_num is None and self.page_index == num_pages - 1:
-                return Destination(
-                    SeedWordsBackupTestPromptView,
-                    view_args=dict(seed_num=self.seed_num, bip85_data=self.bip85_data, share_index=self.share_index),
-                )
-            else:
-                return Destination(
-                    SeedWordsView,
-                    view_args=dict(seed_num=self.seed_num, page_index=self.page_index + 1, bip85_data=self.bip85_data, share_index=self.share_index)
-                )
-
-        elif selected == self.DONE:
-            # Must clear history to avoid BACK button returning to private info
-            return Destination(
-                SeedWordsBackupTestPromptView,
-                view_args=dict(seed_num=self.seed_num, bip85_data=self.bip85_data, share_index=self.share_index),
-            )
+        return Destination(
+            SeedWordsBackupTestPromptView,
+            view_args=dict(seed_num=self.seed_num, bip85_data=self.bip85_data, share_index=self.share_index),
+        )
 
 
 class SeedWordIndexView(View):
-    NEXT = ButtonOption("下一页")
     DONE = ButtonOption("完成")
 
     def __init__(
@@ -3309,55 +3340,21 @@ class SeedWordIndexView(View):
             )
             return self._return()
 
-        entries_per_page = 4
-        total_pages = max(1, (len(words) + entries_per_page - 1) // entries_per_page)
-        start = self.page_index * entries_per_page
-        end = start + entries_per_page
-        page_words = words[start:end]
-        page_indices = indices[start:end] if indices is not None else None
-        button_data = [self.NEXT] if self.page_index < total_pages - 1 else [self.DONE]
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
-            title=f"{self.title}：{self.page_index + 1}/{total_pages}",
+            ToolsScrollableTextScreen,
+            title=self.title,
             text=_format_word_position_lines(
-                page_words,
-                start + 1,
-                page_indices,
+                words,
+                1,
+                indices,
                 show_index_placeholders=True,
             ),
-            button_data=button_data,
+            text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+            button_data=[self.DONE],
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
-            if self.page_index > 0:
-                return Destination(
-                    SeedWordIndexView,
-                    view_args=dict(
-                        seed_num=self.seed_num,
-                        words=self.words,
-                        indices=self.indices,
-                        page_index=self.page_index - 1,
-                        title=self.title,
-                        use_steel_cache=self.use_steel_cache,
-                        return_destination=self.return_destination,
-                    ),
-                    clear_history=True,
-                )
             return self._return()
-
-        if button_data[selected_menu_num] == self.NEXT:
-            return Destination(
-                SeedWordIndexView,
-                view_args=dict(
-                    seed_num=self.seed_num,
-                    words=self.words,
-                    indices=self.indices,
-                    page_index=self.page_index + 1,
-                    title=self.title,
-                    use_steel_cache=self.use_steel_cache,
-                    return_destination=self.return_destination,
-                ),
-            )
 
         return self._return()
 
@@ -3369,7 +3366,7 @@ class SeedEntropyView(View):
     def __init__(
         self,
         seed_num: int | None = None,
-        title: str = "原始熵(HEX)",
+        title: str = "熵详情",
         return_destination: Destination | None = None,
     ):
         super().__init__()
@@ -3396,7 +3393,7 @@ class SeedEntropyView(View):
             return self._return()
 
         try:
-            entropy_hex = seed.get_bip39_entropy_hex()
+            entropy_info, pages = _build_seed_entropy_pages(seed)
         except SeedWordsUnavailableException as exc:
             self.run_screen(
                 WarningScreen,
@@ -3418,34 +3415,38 @@ class SeedEntropyView(View):
             )
             return self._return()
 
-        entropy_bits = len(entropy_hex) * 4
-        text = "\n".join(
-            entropy_hex[i:i + 16]
-            for i in range(0, len(entropy_hex), 16)
+        sections = []
+        for index, page in enumerate(pages):
+            title = str(page.get("title") or "").strip()
+            text = str(page.get("text") or "").strip()
+            if not text:
+                continue
+            if index == 0 and title == "熵详情":
+                sections.append(text)
+            else:
+                sections.append(f"{title}:\n{text}" if title else text)
+
+        selected_menu_num = self.run_screen(
+            ToolsScrollableTextScreen,
+            title=self.title,
+            text="\n\n".join(sections),
+            text_font_name=GUIConstants.get_body_font_name(),
+            text_font_size=max(GUIConstants.get_body_font_size(), 18),
+            button_data=[self.SHOW_QR, self.DONE],
         )
 
-        while True:
-            selected_menu_num = self.run_screen(
-                ToolsFormattedTextScreen,
-                title=f"{self.title} {entropy_bits}bit",
-                text=text,
-                button_data=[self.SHOW_QR, self.DONE],
-            )
-
-            if selected_menu_num == RET_CODE__BACK_BUTTON:
-                return self._return()
-
-            selected_option = [self.SHOW_QR, self.DONE][selected_menu_num]
-            if selected_option == self.SHOW_QR:
-                from seedsigner.gui.screens.screen import QRDisplayScreen
-
-                self.run_screen(
-                    QRDisplayScreen,
-                    qr_encoder=GenericStaticQrEncoder(data=entropy_hex),
-                )
-                continue
-
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
             return self._return()
+
+        selected_option = [self.SHOW_QR, self.DONE][selected_menu_num]
+        if selected_option == self.SHOW_QR:
+            from seedsigner.gui.screens.screen import QRDisplayScreen
+
+            self.run_screen(
+                QRDisplayScreen,
+                qr_encoder=GenericStaticQrEncoder(data=str(entropy_info["qr_text"])),
+            )
+        return self._return()
 
 
 
@@ -3461,9 +3462,9 @@ class SeedBIP85ApplicationModeView(View):
         *  XPRV (BIP32)
     """
     # TODO: Future enhancement to display WIF (HD-SEED) and XPRV (Bip32)?
-    WORDS_12 = ButtonOption("12 Words")
-    WORDS_18 = ButtonOption("18 Words")
-    WORDS_24 = ButtonOption("24 Words")
+    WORDS_12 = ButtonOption("12 个单词")
+    WORDS_18 = ButtonOption("18 个单词")
+    WORDS_24 = ButtonOption("24 个单词")
 
     def __init__(self, seed_num: int):
         super().__init__()
@@ -3475,7 +3476,7 @@ class SeedBIP85ApplicationModeView(View):
         button_data = [self.WORDS_12, self.WORDS_18, self.WORDS_24]
 
         selected_menu_num = ButtonListScreen(
-            title=_("BIP-85 Num Words"),
+            title="BIP85 词数",
             button_data=button_data
         ).display()
 
@@ -3542,12 +3543,12 @@ class SeedBIP85InvalidChildIndexView(View):
 
     def run(self):
         DireWarningScreen(
-            title=_("BIP-85 Index Error"),
+            title="BIP85 编号错误",
             show_back_button=False,
             status_icon_name=SeedSignerIconConstants.ERROR,
-            status_headline=_("Invalid Child Index"),
-            text=_("BIP-85 Child Index must be between 0 and 2^31-1."),
-            button_data=[ButtonOption("Try Again")]
+            status_headline="编号无效",
+            text="BIP85 子编号必须在 0 到 2^31-1 之间。",
+            button_data=[ButtonOption("重新输入")]
         ).display()
 
         return Destination(
@@ -5588,26 +5589,22 @@ class SeedSignMessageConfirmMessageView(View):
 
 
     def run(self):
-        from seedsigner.gui.screens.seed_screens import SeedSignMessageConfirmMessageScreen
-
         selected_menu_num = self.run_screen(
-            SeedSignMessageConfirmMessageScreen,
-            page_num=self.page_num,
+            ToolsScrollableTextScreen,
+            title="核对消息",
+            text=str(self.controller.sign_message_data.get("message") or ""),
+            text_font_name=GUIConstants.get_body_font_name(),
+            text_font_size=max(GUIConstants.get_body_font_size(), 18),
+            button_data=[ButtonOption("继续")],
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
-            if self.page_num == 0:
-                # We're exiting this flow entirely
-                self.controller.resume_main_flow = None
-                self.controller.sign_message_data = None
+            # We're exiting this flow entirely
+            self.controller.resume_main_flow = None
+            self.controller.sign_message_data = None
             return Destination(BackStackView)
 
-        # User clicked "Next"
-        if self.page_num == len(self.controller.sign_message_data["paged_message"]) - 1:
-            # We've reached the end of the paged message
-            return Destination(SeedSignMessageConfirmAddressView)
-        else:
-            return Destination(SeedSignMessageConfirmMessageView, view_args=dict(page_num=self.page_num + 1))
+        return Destination(SeedSignMessageConfirmAddressView)
 
 
 

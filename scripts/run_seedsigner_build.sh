@@ -9,6 +9,7 @@ APP_SETTINGS_TEMPLATE="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/default-settin
 APP_SETTINGS_TARGET="$APP_DIR/src/settings.json"
 L10N_SRC="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/app-assets/seedsigner-translations/l10n"
 L10N_DST="$APP_DIR/src/seedsigner/resources/seedsigner-translations/l10n"
+ZH_PO_REL="seedsigner-os/opt/rootfs-overlay/opt/src/seedsigner/resources/seedsigner-translations/l10n/zh_Hans_CN/LC_MESSAGES/messages.po"
 ZH_MO_REL="seedsigner-os/opt/rootfs-overlay/opt/src/seedsigner/resources/seedsigner-translations/l10n/zh_Hans_CN/LC_MESSAGES/messages.mo"
 ASCII_BASE="${TP_ASCII_BASE:-$HOME/satochip-signer-ascii}"
 ASCII_ROOT="${TP_ASCII_ROOT:-$ASCII_BASE/root}"
@@ -73,11 +74,16 @@ cd "$APP_DIR"
 )
 else
   echo "Skipping compile_catalog: $APP_DIR/setup.py not found"
-  # Keep the tracked compiled Chinese catalog in place when the upstream
-  # compile step is unavailable; otherwise every build dirties the repo and
-  # the target may silently lose translated UI strings.
-  if git -C "$ROOT_DIR" ls-files --error-unmatch "$ZH_MO_REL" >/dev/null 2>&1; then
-    git -C "$ROOT_DIR" show "HEAD:$ZH_MO_REL" > "$ROOT_DIR/$ZH_MO_REL"
+  ZH_PO_PATH="$ROOT_DIR/$ZH_PO_REL"
+  ZH_MO_PATH="$ROOT_DIR/$ZH_MO_REL"
+  if command -v pybabel >/dev/null 2>&1 && [[ -f "$ZH_PO_PATH" ]]; then
+    pybabel compile --statistics --use-fuzzy -D messages -l zh_Hans_CN -i "$ZH_PO_PATH" -o "$ZH_MO_PATH"
+  else
+    # Fall back to the tracked compiled catalog when pybabel is unavailable;
+    # otherwise the target may silently lose translated UI strings.
+    if git -C "$ROOT_DIR" ls-files --error-unmatch "$ZH_MO_REL" >/dev/null 2>&1; then
+      git -C "$ROOT_DIR" show "HEAD:$ZH_MO_REL" > "$ZH_MO_PATH"
+    fi
   fi
 fi
 

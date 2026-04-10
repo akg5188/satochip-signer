@@ -10,7 +10,7 @@ from seedsigner.helpers import mnemonic_generation
 from seedsigner.gui.renderer import Renderer
 from seedsigner.hardware.camera import Camera
 from seedsigner.helpers.qr import QR
-from seedsigner.gui.components import FontAwesomeIconConstants, Fonts, GUIConstants, IconTextLine, SeedSignerIconConstants, TextArea, Button, IconButton, CheckboxButton, load_image, resize_image_to_fit
+from seedsigner.gui.components import FontAwesomeIconConstants, Fonts, GUIConstants, IconTextLine, SeedSignerIconConstants, TextArea, ScrollableTextArea, Button, IconButton, CheckboxButton, load_image, resize_image_to_fit
 from seedsigner.gui.keyboard import Keyboard, TextEntryDisplay
 from seedsigner.gui.screens.screen import RET_CODE__BACK_BUTTON, BaseScreen, BaseTopNavScreen, ButtonListScreen, KeyboardScreen, WarningEdgesMixin, ButtonOption, LoadingScreenThread
 from seedsigner.hardware.buttons import HardwareButtonsConstants
@@ -93,6 +93,216 @@ class ToolsFormattedTextScreen(ButtonListScreen):
             screen_y=start_y,
             height=end_y - start_y,
         ))
+
+
+@dataclass
+class ToolsScrollableTextScreen(ButtonListScreen):
+    text: str = ""
+    text_font_name: str = GUIConstants.FIXED_WIDTH_FONT_NAME
+    text_font_size: int = None
+    text_is_centered: bool = False
+    initial_text_scroll_y: int = 0
+
+    def __post_init__(self):
+        self.is_bottom_list = True
+        if not self.button_data:
+            self.button_data = [ButtonOption(_("Done"))]
+        super().__post_init__()
+
+        inner_padding = max(4, int(GUIConstants.COMPONENT_PADDING / 2))
+        edge_padding = max(6, GUIConstants.EDGE_PADDING - 2)
+        start_y = self.top_nav.height + inner_padding
+        end_y = self.buttons[0].screen_y - inner_padding
+        self.body_box = (
+            edge_padding,
+            start_y,
+            self.canvas_width - edge_padding,
+            end_y,
+        )
+        self.text_component = ScrollableTextArea(
+            text=self.text,
+            is_text_centered=self.text_is_centered,
+            font_name=self.text_font_name,
+            font_size=self.text_font_size,
+            screen_x=self.body_box[0],
+            screen_y=self.body_box[1],
+            width=self.body_box[2] - self.body_box[0],
+            height=self.body_box[3] - self.body_box[1],
+            edge_padding=max(4, edge_padding - 2),
+            vertical_scroll_y=self.initial_text_scroll_y,
+        )
+        self.components.append(self.text_component)
+        self.body_selected = True
+        self.text_scroll_step = max(
+            GUIConstants.COMPONENT_PADDING + 10,
+            (self.text_component.font_size or GUIConstants.get_body_font_size()) + GUIConstants.BODY_LINE_SPACING,
+        )
+        for button in self.buttons:
+            button.is_selected = False
+
+        self.arrow_half_width = 6
+        self.body_arrow_center_x = self.body_box[2] - 10
+        self.body_up_arrow_y = self.body_box[1] + 8
+        self.body_down_arrow_y = self.body_box[3] - 14
+
+    def _clamp_text_scroll(self, scroll_y: int) -> int:
+        return max(0, min(int(scroll_y), self.text_component.max_vertical_scroll))
+
+    def _set_text_scroll(self, scroll_y: int) -> bool:
+        clamped = self._clamp_text_scroll(scroll_y)
+        if clamped == self.text_component.vertical_scroll_y:
+            return False
+        self.text_component.set_vertical_scroll_y(clamped)
+        return True
+
+    def _select_body(self):
+        self.top_nav.is_selected = False
+        for button in self.buttons:
+            button.is_selected = False
+        self.body_selected = True
+
+    def _select_top_nav(self):
+        self.body_selected = False
+        for button in self.buttons:
+            button.is_selected = False
+        self.top_nav.is_selected = True
+
+    def _select_button(self, index: int):
+        self.top_nav.is_selected = False
+        self.body_selected = False
+        self.selected_button = max(0, min(index, len(self.buttons) - 1))
+        for i, button in enumerate(self.buttons):
+            button.is_selected = i == self.selected_button
+
+    def _render_body_frame(self):
+        outline_color = GUIConstants.ACCENT_COLOR if self.body_selected else GUIConstants.INACTIVE_COLOR
+        self.renderer.draw.rounded_rectangle(
+            self.body_box,
+            radius=8,
+            outline=outline_color,
+            width=2,
+        )
+
+        if self.text_component.max_vertical_scroll <= 0:
+            return
+
+        if self.text_component.vertical_scroll_y > 0:
+            self.renderer.draw.line(
+                (
+                    self.body_arrow_center_x,
+                    self.body_up_arrow_y,
+                    self.body_arrow_center_x - self.arrow_half_width,
+                    self.body_up_arrow_y + 6,
+                ),
+                fill=GUIConstants.BODY_FONT_COLOR,
+                width=1,
+            )
+            self.renderer.draw.line(
+                (
+                    self.body_arrow_center_x,
+                    self.body_up_arrow_y,
+                    self.body_arrow_center_x + self.arrow_half_width,
+                    self.body_up_arrow_y + 6,
+                ),
+                fill=GUIConstants.BODY_FONT_COLOR,
+                width=1,
+            )
+
+        if self.text_component.vertical_scroll_y < self.text_component.max_vertical_scroll:
+            self.renderer.draw.line(
+                (
+                    self.body_arrow_center_x,
+                    self.body_down_arrow_y + 6,
+                    self.body_arrow_center_x - self.arrow_half_width,
+                    self.body_down_arrow_y,
+                ),
+                fill=GUIConstants.BODY_FONT_COLOR,
+                width=1,
+            )
+            self.renderer.draw.line(
+                (
+                    self.body_arrow_center_x,
+                    self.body_down_arrow_y + 6,
+                    self.body_arrow_center_x + self.arrow_half_width,
+                    self.body_down_arrow_y,
+                ),
+                fill=GUIConstants.BODY_FONT_COLOR,
+                width=1,
+            )
+
+    def _render(self):
+        BaseScreen._render(self)
+        self._render_visible_buttons()
+        self._render_body_frame()
+        self.renderer.show_image()
+
+    def _run(self):
+        while True:
+            ret = self._run_callback()
+            if ret is not None:
+                return ret
+
+            user_input = self.hw_inputs.wait_for(
+                [
+                    HardwareButtonsConstants.KEY_UP,
+                    HardwareButtonsConstants.KEY_DOWN,
+                    HardwareButtonsConstants.KEY_LEFT,
+                    HardwareButtonsConstants.KEY_RIGHT,
+                ] + HardwareButtonsConstants.KEYS__ANYCLICK
+            )
+
+            with self.renderer.lock:
+                if self.top_nav.is_selected:
+                    if user_input in HardwareButtonsConstants.KEYS__ANYCLICK:
+                        return self.top_nav.selected_button
+                    if user_input in [HardwareButtonsConstants.KEY_DOWN, HardwareButtonsConstants.KEY_RIGHT]:
+                        self._select_body()
+                    else:
+                        continue
+
+                elif self.body_selected:
+                    if user_input == HardwareButtonsConstants.KEY_UP:
+                        if not self._set_text_scroll(self.text_component.vertical_scroll_y - self.text_scroll_step):
+                            if self.top_nav.show_back_button or self.top_nav.show_power_button:
+                                self._select_top_nav()
+                            else:
+                                continue
+                    elif user_input == HardwareButtonsConstants.KEY_DOWN:
+                        if not self._set_text_scroll(self.text_component.vertical_scroll_y + self.text_scroll_step):
+                            self._select_button(0)
+                    elif user_input == HardwareButtonsConstants.KEY_RIGHT:
+                        self._select_button(0)
+                    elif user_input == HardwareButtonsConstants.KEY_LEFT:
+                        if self.top_nav.show_back_button or self.top_nav.show_power_button:
+                            self._select_top_nav()
+                        else:
+                            continue
+                    elif user_input in HardwareButtonsConstants.KEYS__ANYCLICK:
+                        self._select_button(0)
+                    else:
+                        continue
+
+                else:
+                    if user_input == HardwareButtonsConstants.KEY_UP:
+                        if self.selected_button == 0:
+                            self._select_body()
+                        else:
+                            self._select_button(self.selected_button - 1)
+                    elif user_input == HardwareButtonsConstants.KEY_DOWN:
+                        if self.selected_button < len(self.buttons) - 1:
+                            self._select_button(self.selected_button + 1)
+                        else:
+                            continue
+                    elif user_input == HardwareButtonsConstants.KEY_LEFT:
+                        self._select_body()
+                    elif user_input == HardwareButtonsConstants.KEY_RIGHT:
+                        continue
+                    elif user_input in HardwareButtonsConstants.KEYS__ANYCLICK:
+                        return self.selected_button
+                    else:
+                        continue
+
+                self._render()
 
 
 @dataclass
@@ -405,7 +615,7 @@ class ToolsImageEntropyFinalImageScreen(BaseScreen):
                     int(self.renderer.canvas_width/2),
                     self.renderer.canvas_height - GUIConstants.EDGE_PADDING
                 ),
-                text=" < " + reshoot + "  |  " + accept + " > ",
+                text=f"<{reshoot}|{accept}>",
                 fill=GUIConstants.BODY_FONT_COLOR,
                 font=instructions_font,
                 stroke_width=4,
