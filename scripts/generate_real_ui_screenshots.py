@@ -806,10 +806,11 @@ def _build_seed_tools_screens(output_dir: Path, runtime) -> list[Path]:
         ),
         (
             "48-bip39-word-result.png",
-            ToolsFormattedTextScreen(
+            ToolsScrollableTextScreen(
                 title="BIP39 单词自检",
                 text=build_bip39_word_report("abandon"),
                 text_font_name=GUIConstants.get_body_font_name(),
+                text_font_size=max(GUIConstants.get_body_font_size() + 1, 19),
                 button_data=[ButtonOption("重新查询"), ButtonOption("完成")],
             ),
             None,
@@ -1267,7 +1268,7 @@ def _capture_satochip_verification_screens(output_dir: Path) -> list[Path]:
             ],
         )
 
-        summary_lines.extend(["", f"结论: {'可以继续使用' if all_ok else '请不要继续用这张卡保存资金'}"])
+        summary_lines.append(f"结论: {'可以继续使用' if all_ok else '请不要继续用这张卡保存资金'}")
         pages = _paginate_status_lines(summary_lines, lines_per_page=7)
         for section in failed_sections:
             pages.extend(_paginate_status_lines(section, lines_per_page=7))
@@ -1285,7 +1286,7 @@ def _capture_satochip_verification_screens(output_dir: Path) -> list[Path]:
         title="写卡核验",
         text=summary_text,
         text_font_name=GUIConstants.get_body_font_name(),
-        text_font_size=max(GUIConstants.BODY_FONT_MIN_SIZE, GUIConstants.get_body_font_size()),
+        text_font_size=max(GUIConstants.BODY_FONT_MIN_SIZE, GUIConstants.get_body_font_size() - 2),
         button_data=[ButtonOption("完成")],
     )
     offsets = _spread_scroll_offsets(screen.text_component.max_vertical_scroll, 3)
@@ -1535,10 +1536,11 @@ def generate_screenshots(output_dir: Path, venv_root: Path | None) -> list[Path]
         ),
         (
             "28-firmware-self-check.png",
-            ToolsFormattedTextScreen(
+            ToolsScrollableTextScreen(
                 title="固件完整性",
                 text="固件完整性: 通过\n清单文件: 已找到\n运行时文件: 未发现异常\n建议: 可以继续使用",
                 text_font_name=GUIConstants.get_body_font_name(),
+                text_font_size=max(GUIConstants.BODY_FONT_MIN_SIZE, GUIConstants.get_body_font_size() - 2),
                 button_data=[ButtonOption("查看详情"), ButtonOption("重新自检"), ButtonOption("完成")],
             ),
         ),

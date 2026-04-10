@@ -408,11 +408,8 @@ def _build_satochip_import_verification(seed, connector, network: str) -> dict:
             ],
         )
 
-    summary_lines.extend(
-        [
-            "",
-            f"结论: {'可以继续使用' if all_ok else '请不要继续用这张卡保存资金'}",
-        ]
+    summary_lines.append(
+        f"结论: {'可以继续使用' if all_ok else '请不要继续用这张卡保存资金'}"
     )
     pages = _paginate_status_lines(summary_lines, lines_per_page=7)
     for section in failed_sections:
@@ -5134,7 +5131,7 @@ class ToolsSatochipImportVerificationView(View):
             title="写卡核验",
             text="\n\n".join(page for page in self.pages if str(page).strip()),
             text_font_name=GUIConstants.get_body_font_name(),
-            text_font_size=max(GUIConstants.get_body_font_size(), 18),
+            text_font_size=max(GUIConstants.BODY_FONT_MIN_SIZE, GUIConstants.get_body_font_size() - 2),
             button_data=button_data,
         )
 

@@ -4151,10 +4151,11 @@ class ToolsTpFirmwareIntegrityResultView(View):
     def run(self):
         button_data = [self.VIEW_DETAILS, self.RETRY, self.DONE]
         selected_menu_num = self.run_screen(
-            ToolsFormattedTextScreen,
+            ToolsScrollableTextScreen,
             title="固件完整性",
             text=_format_firmware_integrity_summary(self.result),
             text_font_name=GUIConstants.get_body_font_name(),
+            text_font_size=max(GUIConstants.BODY_FONT_MIN_SIZE, GUIConstants.get_body_font_size() - 2),
             button_data=button_data,
         )
 
