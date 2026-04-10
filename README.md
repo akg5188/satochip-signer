@@ -22,7 +22,7 @@
 当前该下载的 release：
 
 - 树莓派当前固件：
-  [offline-signer-firmware-20260408-clean](https://github.com/akg5188/satochip-signer/releases/tag/offline-signer-firmware-20260408-clean)
+  [offline-signer-firmware-20260410-clean](https://github.com/akg5188/satochip-signer/releases/tag/offline-signer-firmware-20260410-clean)
 - 安卓正式钱包：
   [wallet-android-20260408-0.1.4](https://github.com/akg5188/satochip-signer/releases/tag/wallet-android-20260408-0.1.4)
 - 安卓智能卡 App：
@@ -118,18 +118,19 @@ bash scripts/rebuild_official_release.sh wallet-release
 - `dist/system-update-latest.img.xz.sha256`
 - `dist/system-update-latest.build-info.txt`
 - 固件 release：
-  `offline-signer-firmware-20260408-clean`
+  `offline-signer-firmware-20260410-clean`
 - 源码冻结 tag：
-  `offline-signer-clean-source-20260408`
-- `sha256 = 98ce03bc4e0920e0ac555c851384d623fba9c09da9c19df531c575ac5a450023`
+  `offline-signer-clean-source-20260410`
+- `sha256 = e17fd1eddf22d37afac08184f8468116fd3ad51881cb3c66c41af4cbff5e4020`
 
 这张正式固件已经把这次最重要的修复和验证一起带上：
 
-- `BlueWallet` 扫回已签名 `BTC PSBT` 的二维码兼容性修复
-- 已签名 `PSBT` 按输入格式回传
-- `PSBT / 已签名交易` 自动动画二维码恢复
-- 二维码显示尺寸修正
-- 固件 smoke、桌面模拟、二维码 round-trip、模块导入 smoke
+- 小屏 UI 全面收口，长内容优先改成摇杆上下滚动，不再频繁硬拆分页
+- 签名后先看人能读懂的摘要，再决定是否显示二维码
+- 写卡后自动回读核验，检查指纹、`xpub / zpub`、首个地址和测试签名
+- 修复 `查看助记词` 滚到底部容易贴住按钮的问题
+- 修复 `拍照创建助记词` 后查看原始熵不显示的问题
+- 固件 smoke、桌面模拟、真实 UI 截图和模块导入检查一起补齐
 
 怎么对应源码，看这里：
 

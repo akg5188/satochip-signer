@@ -3,8 +3,8 @@
   "profiles": {
     "firmware-clean": {
       "title": "当前 clean 正式树莓派固件",
-      "release_tag": "offline-signer-firmware-20260408-clean",
-      "source_tag": "offline-signer-clean-source-20260408",
+      "release_tag": "offline-signer-firmware-20260410-clean",
+      "source_tag": "offline-signer-clean-source-20260410",
       "artifact_type": "firmware_xz",
       "artifact_path": "dist/system-update-latest.img.xz",
       "sha_path": "dist/system-update-latest.img.xz.sha256",
@@ -20,8 +20,8 @@
         "XZ_THREADS": "1"
       },
       "expected": {
-        "repo_head": "8a87ae5d1d19d3a7a2809a2b13327afee490364f",
-        "compressed_image_sha256": "98ce03bc4e0920e0ac555c851384d623fba9c09da9c19df531c575ac5a450023",
+        "repo_head": "039bf72a4639e8620903e74a63518c4ecd61b838",
+        "compressed_image_sha256": "e17fd1eddf22d37afac08184f8468116fd3ad51881cb3c66c41af4cbff5e4020",
         "repo_dirty": "0",
         "build_clean_mode": "clean"
       }
