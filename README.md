@@ -22,7 +22,7 @@
 当前该下载的 release：
 
 - 树莓派当前固件：
-  [offline-signer-firmware-20260410-clean](https://github.com/akg5188/satochip-signer/releases/tag/offline-signer-firmware-20260410-clean)
+  [offline-signer-firmware-20260410b-clean](https://github.com/akg5188/satochip-signer/releases/tag/offline-signer-firmware-20260410b-clean)
 - 安卓正式钱包：
   [wallet-android-20260408-0.1.4](https://github.com/akg5188/satochip-signer/releases/tag/wallet-android-20260408-0.1.4)
 - 安卓智能卡 App：
@@ -118,10 +118,10 @@ bash scripts/rebuild_official_release.sh wallet-release
 - `dist/system-update-latest.img.xz.sha256`
 - `dist/system-update-latest.build-info.txt`
 - 固件 release：
-  `offline-signer-firmware-20260410-clean`
+  `offline-signer-firmware-20260410b-clean`
 - 源码冻结 tag：
-  `offline-signer-clean-source-20260410`
-- `sha256 = e17fd1eddf22d37afac08184f8468116fd3ad51881cb3c66c41af4cbff5e4020`
+  `offline-signer-clean-source-20260410b`
+- `sha256 = 0a522a4329d476b9bb431b7197d6af07d3dd88feb1fa0e93ed97bf0fb66c6055`
 
 这张正式固件已经把这次最重要的修复和验证一起带上：
 
