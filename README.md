@@ -155,8 +155,8 @@ bash scripts/rebuild_official_release.sh wallet-release
 
 - `扫码签名`
 - `助记词工具`
-- `固件完整性自检`
 - `智能卡工具`
+- `固件自检`
 
 ## 三条常用使用链路
 
@@ -165,16 +165,18 @@ bash scripts/rebuild_official_release.sh wallet-release
 1. 手机生成待签名二维码
 2. 树莓派进 `扫码签名`
 3. 输入智能卡 `PIN`
-4. 树莓派显示签名结果
-5. 手机扫回并人工确认广播
+4. 树莓派先显示签名摘要
+5. 确认后点 `显示签名二维码`
+6. 手机扫回并人工确认广播
 
 ### 2. `BlueWallet`
 
 1. `BlueWallet` 显示 `BTC PSBT` 动态二维码
 2. 树莓派进 `扫码签名`
 3. 输入智能卡 `PIN`
-4. 树莓派回显结果二维码
-5. `BlueWallet` 扫回并广播
+4. 树莓派先显示签名摘要
+5. 确认后点 `显示签名二维码`
+6. `BlueWallet` 扫回并广播
 
 当前固件已接入：
 
