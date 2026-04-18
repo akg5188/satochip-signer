@@ -22,6 +22,8 @@ require_file "$DIST_SUM"
 require_file "$DIST_INFO"
 require_file "$MANIFEST_PATH"
 
+bash "$ROOT_DIR/scripts/check_repo_guardrails.sh" >/dev/null
+
 python3 -m json.tool "$MANIFEST_PATH" >/dev/null
 while IFS= read -r tag; do
   [[ -n "$tag" ]] || continue
@@ -91,5 +93,9 @@ grep -q 'rebuild_official_release.sh' "$ROOT_DIR/README.md" || \
   fail "Missing canonical rebuild_official_release.sh entry in README"
 grep -q 'rebuild_official_release.sh' "$ROOT_DIR/docs/长期维护总入口.zh-CN.md" || \
   fail "Missing canonical rebuild_official_release.sh entry in maintenance guide"
+
+if ! bash "$ROOT_DIR/scripts/check_named_release.sh" firmware-clean >/dev/null 2>&1; then
+  echo "WARN: dist/system-update-latest.* is not currently a clean HEAD build; rebuild firmware-clean if you need the canonical latest artifact." >&2
+fi
 
 echo "Repository consistency checks passed."

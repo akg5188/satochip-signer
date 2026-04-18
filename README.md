@@ -58,15 +58,20 @@ bash scripts/build_current_firmware.sh
 
 这条命令会直接刷新：
 
-- `dist/system-update-latest.img.xz`
-- `dist/system-update-latest.img.xz.sha256`
-- `dist/system-update-latest.build-info.txt`
+- `dist/system-update-worktree-latest.img.xz`
+- `dist/system-update-worktree-latest.img.xz.sha256`
+- `dist/system-update-worktree-latest.build-info.txt`
 
 并清掉旧的 `system-update-current-test-*` / `system-update-current-latest*` 测试包，避免再混到老产物。
 
+注意：
+
+- `dist/system-update-latest.*` 现在只留给 `firmware-clean` 这种 clean `HEAD` 基线包
+- `build_current_firmware.sh` 默认只写 `system-update-worktree-latest.*`，不再拿测试包覆盖 clean 基线名
+
 区别一句话记住：
 
-- `bash scripts/build_current_firmware.sh`：当前工作区最新，允许带未提交改动
+- `bash scripts/build_current_firmware.sh`：当前工作区最新，默认输出 `system-update-worktree-latest.*`
 - `bash scripts/rebuild_official_release.sh firmware-clean`：当前 `HEAD` 的 clean 固件
 - 如果 `firmware-clean` 提示“还有未提交的构建相关改动”，那就说明它在帮你拦截“误编成旧版本”
 
@@ -153,13 +158,15 @@ bash scripts/build_current_firmware.sh
   `bash scripts/rebuild_official_release.sh firmware-clean`
 - 当前最新工作区入口：
   `bash scripts/build_current_firmware.sh`
+- 当前工作区测试包名：
+  `dist/system-update-worktree-latest.img.xz`
 - 历史 `20260410b` 冻结固件入口：
   `bash scripts/rebuild_official_release.sh firmware-public-20260410b-clean`
 
 默认规则现在是：
 
 - `firmware-clean` 跟随当前 `HEAD`
-- `build_current_firmware.sh` 跟随当前工作区，允许带未提交改动
+- `build_current_firmware.sh` 跟随当前工作区，允许带未提交改动，但默认只写 `system-update-worktree-latest.*`
 - 旧的 `20260410b` 只有在显式选择历史 profile 时才会重建
 
 当前主线固件已经把这次最重要的修复和验证一起带上：
@@ -285,7 +292,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 - `--list`
   先列出当前官方正式发布件和对应源码冻结 tag
 - `firmware-clean`
-  用官方固定源码重建当前正式固件，并自动验包
+  用当前 `HEAD` 重建 clean 基线固件，并自动验包
 - `wallet-release`
   用官方固定源码重建当前正式钱包 APK，并自动验包
 
@@ -301,7 +308,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 bash scripts/build_current_firmware.sh
 ```
 
-它会把 `dist/system-update-latest.img.xz` 更新成当前工作区最新固件。
+它会把 `dist/system-update-worktree-latest.img.xz` 更新成当前工作区最新测试固件。
 
 ### 树莓派固件
 
