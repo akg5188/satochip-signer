@@ -1108,7 +1108,7 @@ class PSBTFinalizeView(View):
             return Destination(BackStackView)
 
         if getattr(self.controller, "psbt_external_signer_flow", False):
-            from seedsigner.views.tp_views import ToolsTpSignerPinEntryView
+            from seedsigner.views.tp_views import ToolsTpSignerMethodSelectView
 
             try:
                 unsigned_psbt_base64 = base64.b64encode(psbt.serialize()).decode("ascii")
@@ -1117,7 +1117,7 @@ class PSBTFinalizeView(View):
                 return Destination(PSBTFinalizeView)
 
             return Destination(
-                ToolsTpSignerPinEntryView,
+                ToolsTpSignerMethodSelectView,
                 view_args=dict(
                     psbt_base64=unsigned_psbt_base64,
                     psbt_input_qr_type=getattr(self.controller, "psbt_input_qr_type", None),
@@ -1144,7 +1144,10 @@ class PSBTFinalizeView(View):
                 sign_psbt_with_satochip(psbt, connector)
             else:
                 psbt.sign_with(psbt_parser.root)
-            if isinstance(self.controller.psbt_seed, WIFKey):
+            if (
+                isinstance(self.controller.psbt_seed, WIFKey)
+                or getattr(self.controller, "psbt_response_mode", None) == "btctx"
+            ):
                 tx = finalize_psbt(psbt)
                 self.controller.signed_tx_hex = tx.serialize().hex() if tx else None
             else:
@@ -1191,6 +1194,7 @@ class PSBTSignedQRDisplayView(View):
         return (
             id(getattr(self.controller, "psbt", None)),
             getattr(self.controller, "psbt_input_qr_type", None),
+            getattr(self.controller, "psbt_response_mode", None),
             getattr(self.controller, "signed_tx_hex", None),
             type(getattr(self.controller, "psbt_seed", None)).__name__,
         )
@@ -1206,7 +1210,10 @@ class PSBTSignedQRDisplayView(View):
             if cached_encoder is not None:
                 return cached_encoder
 
-        if isinstance(self.controller.psbt_seed, WIFKey) and getattr(self.controller, "signed_tx_hex", None):
+        response_mode = getattr(self.controller, "psbt_response_mode", None)
+        if response_mode == "btctx" and getattr(self.controller, "signed_tx_hex", None):
+            qr_encoder = GenericStringEncoder(f"btctx:{self.controller.signed_tx_hex}")
+        elif isinstance(self.controller.psbt_seed, WIFKey) and getattr(self.controller, "signed_tx_hex", None):
             qr_encoder = GenericStringEncoder(self.controller.signed_tx_hex)
         else:
             loading = LoadingScreenThread(text=_("Encoding PSBT..."))

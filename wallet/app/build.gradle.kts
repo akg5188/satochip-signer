@@ -202,6 +202,8 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     implementation("org.msgpack:msgpack-core:0.9.11")
+    implementation("com.sparrowwallet:hummingbird:1.7.4")
+    implementation("co.nstant.in:cbor:0.9")
 
     implementation(platform("com.reown:android-bom:1.4.1"))
     implementation("com.reown:android-core")

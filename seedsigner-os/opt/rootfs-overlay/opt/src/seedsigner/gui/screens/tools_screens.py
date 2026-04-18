@@ -113,6 +113,7 @@ class ToolsScrollableTextScreen(ButtonListScreen):
         edge_padding = max(6, GUIConstants.EDGE_PADDING - 2)
         start_y = self.top_nav.height + inner_padding
         end_y = self.buttons[0].screen_y - inner_padding
+        text_top_padding = max(8, inner_padding + 2)
         self.body_box = (
             edge_padding,
             start_y,
@@ -125,9 +126,9 @@ class ToolsScrollableTextScreen(ButtonListScreen):
             font_name=self.text_font_name,
             font_size=self.text_font_size,
             screen_x=self.body_box[0],
-            screen_y=self.body_box[1],
+            screen_y=self.body_box[1] + text_top_padding,
             width=self.body_box[2] - self.body_box[0],
-            height=self.body_box[3] - self.body_box[1],
+            height=self.body_box[3] - self.body_box[1] - text_top_padding,
             edge_padding=max(4, edge_padding - 2),
             vertical_scroll_y=self.initial_text_scroll_y,
         )

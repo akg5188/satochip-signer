@@ -52,7 +52,7 @@ class FountainDecoder:
         self.queued_parts = []
 
     def expected_part_count(self):
-        return len(self.expected_part_indexes)  # TODO: Handle None?
+        return len(self.expected_part_indexes) if self.expected_part_indexes is not None else 0
 
     def is_success(self):
         result = self.result

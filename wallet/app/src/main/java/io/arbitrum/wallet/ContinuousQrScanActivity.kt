@@ -14,6 +14,8 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.sparrowwallet.hummingbird.ResultType
+import com.sparrowwallet.hummingbird.URDecoder
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.DecodeHintType
 import com.journeyapps.barcodescanner.BarcodeCallback
@@ -36,6 +38,7 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
     private lateinit var titleView: TextView
     private lateinit var statusView: TextView
     private val assembler = MultiFragmentAssembler()
+    private val urDecoder = URDecoder()
     private var hasReturned = false
     private var lastText = ""
     private var lastReadAt = 0L
@@ -176,6 +179,10 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
             returnPayload(wcUri)
             return
         }
+        if (text.startsWith("ur:", ignoreCase = true)) {
+            handleUrRequestPart(text)
+            return
+        }
         runCatching { TpQrCodec.parseInput(text) }
             .onSuccess { parsed ->
                 when (parsed) {
@@ -197,6 +204,26 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
                 val reason = error.message ?: "二维码解析失败"
                 updateStatus("$reason，请继续扫描")
             }
+    }
+
+    private fun handleUrRequestPart(text: String) {
+        val accepted = runCatching { urDecoder.receivePart(text) }.getOrDefault(false)
+        if (!accepted) {
+            updateStatus("Web3 请求分片无效，请继续扫描")
+            return
+        }
+
+        when (val result = urDecoder.result) {
+            null -> {
+                val percent = (urDecoder.estimatedPercentComplete * 100).toInt().coerceIn(0, 99)
+                updateStatus("已接收 Web3 请求分片 ${percent}%，请继续扫描")
+            }
+            else -> when (result.type) {
+                ResultType.SUCCESS -> returnPayload(result.ur.toString())
+                ResultType.FAILURE -> updateStatus(result.error.ifBlank { "Web3 请求解析失败，请重试" })
+                else -> updateStatus("Web3 请求解析状态未知，请重试")
+            }
+        }
     }
 
     private fun returnPayload(payload: String) {

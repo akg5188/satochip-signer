@@ -23,6 +23,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "seedsigner-os" / "opt" / "rootfs-overlay" / "opt" / "src"
+VENDOR_ROOT = REPO_ROOT / "pi-signer-py" / "vendor"
 DEFAULT_VENV = Path("/tmp/satochip-desktop-smoke-venv")
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "docs" / "assets" / "real-ui-screenshot-guide"
 SIGNED_TX_SAMPLE_HEX = (
@@ -46,6 +47,8 @@ SIGNED_TX_SAMPLE_HEX = (
 
 def _add_python_paths(venv_root: Path | None) -> None:
     sys.path.insert(0, str(SRC_ROOT))
+    if VENDOR_ROOT.is_dir():
+        sys.path.insert(0, str(VENDOR_ROOT))
 
     candidate_roots: list[Path] = []
     if venv_root:
@@ -344,6 +347,25 @@ def _capture_qr_screen(path: Path, runtime) -> None:
     image.save(path)
 
 
+def _capture_web3_connect_qr_screen(path: Path, runtime) -> None:
+    from seedsigner.models.encode_qr import GenericStaticQrEncoder
+    from seedsigner.models.seed import Seed
+    from seedsigner.views.tp_views import (
+        DEFAULT_DERIVATION_PATH,
+        WEB3_WALLET_PROFILE_OKX,
+        _build_web3_connect_qr_pages,
+        _export_web3_account_from_seed,
+    )
+
+    seed = Seed("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".split())
+    account = _export_web3_account_from_seed(seed, DEFAULT_DERIVATION_PATH)
+    pages = _build_web3_connect_qr_pages(account, WEB3_WALLET_PROFILE_OKX)
+    image = GenericStaticQrEncoder(
+        data=pages[0]
+    ).next_part_image(width=240, height=240, border=2, background_color="ffffff")
+    image.save(path)
+
+
 def _create_entropy_demo_image(runtime, label: str) -> object:
     Image = runtime["Image"]
     ImageDraw = runtime["ImageDraw"]
@@ -521,11 +543,19 @@ def _build_seed_tools_screens(output_dir: Path, runtime) -> list[Path]:
     seed_words_text = "\n".join(
         f"{index:02d}. abandon  0000" for index in range(1, 25)
     )
+    seed_words_top_screen = ToolsScrollableTextScreen(
+        title="BIP39 序号",
+        text=seed_words_text,
+        text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+        text_font_size=max(GUIConstants.get_body_font_size(), 22),
+        text_is_centered=False,
+        button_data=[ButtonOption("完成")],
+    )
     seed_words_bottom_screen = ToolsScrollableTextScreen(
         title="BIP39 序号",
         text=seed_words_text,
         text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
-        text_font_size=max(GUIConstants.get_body_font_size(), 19),
+        text_font_size=max(GUIConstants.get_body_font_size(), 22),
         text_is_centered=False,
         button_data=[ButtonOption("完成")],
     )
@@ -539,14 +569,10 @@ def _build_seed_tools_screens(output_dir: Path, runtime) -> list[Path]:
                 is_button_text_centered=False,
                 selected_button=0,
                 button_data=[
-                    ButtonOption("卡上真随机创建"),
-                    ButtonOption("拍照创建"),
-                    ButtonOption("骰子创建"),
-                    ButtonOption("扑克牌创建"),
-                    ButtonOption("16进制创建"),
+                    ButtonOption("创建助记词"),
                     ButtonOption("导入助记词"),
-                    ButtonOption("BIP39 单词自检"),
-                    ButtonOption("已加载助记词"),
+                    ButtonOption("BIP39 查询"),
+                    ButtonOption("管理助记词"),
                 ],
             ),
             None,
@@ -556,16 +582,28 @@ def _build_seed_tools_screens(output_dir: Path, runtime) -> list[Path]:
             ButtonListScreen(
                 title="助记词工具",
                 is_button_text_centered=False,
-                selected_button=7,
+                selected_button=0,
                 button_data=[
-                    ButtonOption("卡上真随机创建"),
-                    ButtonOption("拍照创建"),
-                    ButtonOption("骰子创建"),
+                    ButtonOption("创建助记词"),
+                    ButtonOption("导入助记词"),
+                    ButtonOption("BIP39 查询"),
+                    ButtonOption("管理助记词"),
+                ],
+            ),
+            None,
+        ),
+        (
+            "03-create-mnemonic.png",
+            ButtonListScreen(
+                title="创建助记词",
+                is_button_text_centered=False,
+                selected_button=0,
+                button_data=[
                     ButtonOption("扑克牌创建"),
                     ButtonOption("16进制创建"),
-                    ButtonOption("导入助记词"),
-                    ButtonOption("BIP39 单词自检"),
-                    ButtonOption("已加载助记词"),
+                    ButtonOption("骰子创建"),
+                    ButtonOption("拍照创建"),
+                    ButtonOption("智能卡创建"),
                 ],
             ),
             None,
@@ -573,7 +611,7 @@ def _build_seed_tools_screens(output_dir: Path, runtime) -> list[Path]:
         (
             "29-seedkeeper-rng-length.png",
             ButtonListScreen(
-                title="卡上真随机创建",
+                title="智能卡创建",
                 is_button_text_centered=False,
                 button_data=[
                     ButtonOption("12 个单词"),
@@ -807,7 +845,7 @@ def _build_seed_tools_screens(output_dir: Path, runtime) -> list[Path]:
         (
             "48-bip39-word-result.png",
             ToolsScrollableTextScreen(
-                title="BIP39 单词自检",
+                title="BIP39 查询",
                 text=build_bip39_word_report("abandon"),
                 text_font_name=GUIConstants.get_body_font_name(),
                 text_font_size=max(GUIConstants.get_body_font_size() + 1, 19),
@@ -828,7 +866,7 @@ def _build_seed_tools_screens(output_dir: Path, runtime) -> list[Path]:
         (
             "50-bip39-index-result.png",
             ToolsScrollableTextScreen(
-                title="BIP39 单词自检",
+                title="BIP39 查询",
                 text="\n\n".join(page for page in bip39_index_pages if str(page).strip()),
                 text_font_name=GUIConstants.get_body_font_name(),
                 text_font_size=max(GUIConstants.get_body_font_size(), 19),
@@ -839,7 +877,7 @@ def _build_seed_tools_screens(output_dir: Path, runtime) -> list[Path]:
         (
             "50b-bip39-index-result-2.png",
             ToolsScrollableTextScreen(
-                title="BIP39 单词自检",
+                title="BIP39 查询",
                 text="\n\n".join(page for page in bip39_index_pages if str(page).strip()),
                 text_font_name=GUIConstants.get_body_font_name(),
                 text_font_size=max(GUIConstants.get_body_font_size(), 19),
@@ -919,6 +957,11 @@ def _build_seed_tools_screens(output_dir: Path, runtime) -> list[Path]:
             "53b-seed-words-bottom.png",
             seed_words_bottom_screen,
             lambda screen: screen.text_component.set_vertical_scroll_y(seed_words_bottom_scroll),
+        ),
+        (
+            "53c-seed-words-top.png",
+            seed_words_top_screen,
+            None,
         ),
     ]
 
@@ -1335,11 +1378,56 @@ def generate_screenshots(output_dir: Path, venv_root: Path | None) -> list[Path]
                 is_button_text_centered=False,
                 button_data=[
                     ButtonOption("扫码签名"),
+                    ButtonOption("连接钱包"),
                     ButtonOption("助记词工具"),
                     ButtonOption("智能卡工具"),
                     ButtonOption("固件自检"),
                 ],
                 show_back_button=False,
+            ),
+        ),
+        (
+            "02a-connect-wallet-menu.png",
+            ButtonListScreen(
+                title="连接钱包",
+                is_button_text_centered=False,
+                button_data=[
+                    ButtonOption("Web3钱包"),
+                    ButtonOption("比特币钱包"),
+                ],
+            ),
+        ),
+        (
+            "02b-web3-wallet-profile.png",
+            ButtonListScreen(
+                title="Web3钱包",
+                is_button_text_centered=False,
+                button_data=[
+                    ButtonOption("OKX钱包"),
+                    ButtonOption("Bitget钱包"),
+                ],
+            ),
+        ),
+        (
+            "02c-web3-wallet-source.png",
+            ButtonListScreen(
+                title="OKX Wallet",
+                is_button_text_centered=False,
+                button_data=[
+                    ButtonOption("智能卡账户"),
+                    ButtonOption("已加载助记词"),
+                ],
+            ),
+        ),
+        (
+            "02d-btc-wallet-source.png",
+            ButtonListScreen(
+                title="比特币钱包",
+                is_button_text_centered=False,
+                button_data=[
+                    ButtonOption("智能卡账户"),
+                    ButtonOption("已加载助记词"),
+                ],
             ),
         ),
         (
@@ -1387,8 +1475,6 @@ def generate_screenshots(output_dir: Path, venv_root: Path | None) -> list[Path]
                     ButtonOption("查看助记词"),
                     ButtonOption("查看原始熵"),
                     ButtonOption("按路径算地址"),
-                    ButtonOption("导出 Blue zpub"),
-                    ButtonOption("导出 Blue xpub"),
                     ButtonOption("BIP85 子助记词"),
                     ButtonOption("写入到 SeedKeeper"),
                     ButtonOption("写入到智能卡"),
@@ -1404,13 +1490,11 @@ def generate_screenshots(output_dir: Path, venv_root: Path | None) -> list[Path]
             ButtonListScreen(
                 title="助记词 73c5da0a",
                 is_button_text_centered=False,
-                selected_button=11,
+                selected_button=9,
                 button_data=[
                     ButtonOption("查看助记词"),
                     ButtonOption("查看原始熵"),
                     ButtonOption("按路径算地址"),
-                    ButtonOption("导出 Blue zpub"),
-                    ButtonOption("导出 Blue xpub"),
                     ButtonOption("BIP85 子助记词"),
                     ButtonOption("写入到 SeedKeeper"),
                     ButtonOption("写入到智能卡"),
@@ -1436,8 +1520,13 @@ def generate_screenshots(output_dir: Path, venv_root: Path | None) -> list[Path]
         ),
         (
             "07-sign-psbt.png",
-            PSBTFinalizeScreen(
-                button_data=[ButtonOption("输入 PIN 并签名")],
+            ButtonListScreen(
+                title="选择签名方式",
+                is_button_text_centered=False,
+                button_data=[
+                    ButtonOption("智能卡签名"),
+                    ButtonOption("已加载助记词签名"),
+                ],
             ),
         ),
         (
@@ -1448,8 +1537,6 @@ def generate_screenshots(output_dir: Path, venv_root: Path | None) -> list[Path]
                 selected_button=0,
                 button_data=[
                     ButtonOption("按路径看地址"),
-                    ButtonOption("导出 Blue zpub"),
-                    ButtonOption("导出 Blue xpub"),
                     ButtonOption("写入助记词"),
                     ButtonOption("更改卡 PIN"),
                     ButtonOption("重置卡"),
@@ -1462,11 +1549,9 @@ def generate_screenshots(output_dir: Path, venv_root: Path | None) -> list[Path]
             ButtonListScreen(
                 title="Satochip 功能",
                 is_button_text_centered=False,
-                selected_button=6,
+                selected_button=4,
                 button_data=[
                     ButtonOption("按路径看地址"),
-                    ButtonOption("导出 Blue zpub"),
-                    ButtonOption("导出 Blue xpub"),
                     ButtonOption("写入助记词"),
                     ButtonOption("更改卡 PIN"),
                     ButtonOption("重置卡"),
@@ -1481,7 +1566,7 @@ def generate_screenshots(output_dir: Path, venv_root: Path | None) -> list[Path]
                 is_button_text_centered=False,
                 selected_button=0,
                 button_data=[
-                    ButtonOption("卡上真随机创建"),
+                    ButtonOption("智能卡创建"),
                     ButtonOption("写入到 SeedKeeper"),
                     ButtonOption("保存二次加密"),
                     ButtonOption("加载二次加密"),
@@ -1498,7 +1583,7 @@ def generate_screenshots(output_dir: Path, venv_root: Path | None) -> list[Path]
                 is_button_text_centered=False,
                 selected_button=6,
                 button_data=[
-                    ButtonOption("卡上真随机创建"),
+                    ButtonOption("智能卡创建"),
                     ButtonOption("写入到 SeedKeeper"),
                     ButtonOption("保存二次加密"),
                     ButtonOption("加载二次加密"),
@@ -1621,7 +1706,7 @@ def generate_screenshots(output_dir: Path, venv_root: Path | None) -> list[Path]
                 title="SeedKeeper",
                 is_button_text_centered=False,
                 button_data=[
-                    ButtonOption("卡上真随机创建"),
+                    ButtonOption("智能卡创建"),
                     ButtonOption("管理卡内助记词"),
                     ButtonOption("保存密码到卡片"),
                     ButtonOption("加载多签描述符"),
@@ -1778,6 +1863,10 @@ def generate_screenshots(output_dir: Path, venv_root: Path | None) -> list[Path]
     _capture_qr_screen(qr_path, runtime)
     generated_files.append(qr_path)
 
+    web3_connect_qr_path = output_dir / "02d-web3-keystone-connect-qr.png"
+    _capture_web3_connect_qr_screen(web3_connect_qr_path, runtime)
+    generated_files.append(web3_connect_qr_path)
+
     contact_sheet_path = _generate_contact_sheet(output_dir, generated_files)
     generated_files.append(contact_sheet_path)
 
@@ -1803,7 +1892,10 @@ def main() -> int:
 
     generated_files = generate_screenshots(output_dir=output_dir, venv_root=venv_root)
     for file_path in generated_files:
-        print(file_path.relative_to(REPO_ROOT))
+        try:
+            print(file_path.relative_to(REPO_ROOT))
+        except ValueError:
+            print(file_path)
     print(f"generated_real_ui_screenshots={len(generated_files)}")
     return 0
 

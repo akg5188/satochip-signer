@@ -12,6 +12,7 @@ data class ParsedResponse(
     val bitcoinTxHex: String?,
     val signature: String?,
     val address: String?,
+    val web3Account: Web3BridgeAccount? = null,
     val isError: Boolean = false,
 )
 
@@ -47,8 +48,15 @@ object TpResponseParser {
         val rawTx = dataObj["rawTransaction"]?.jsonPrimitive?.content
         val sig = dataObj["signature"]?.jsonPrimitive?.content
         val addr = dataObj["address"]?.jsonPrimitive?.content
+        val web3Account = dataObj["web3Account"]?.jsonObject?.let(::parseWeb3Account)
 
-        return ParsedResponse(rawTransaction = rawTx, bitcoinTxHex = null, signature = sig, address = addr)
+        return ParsedResponse(
+            rawTransaction = rawTx,
+            bitcoinTxHex = null,
+            signature = sig,
+            address = addr,
+            web3Account = web3Account,
+        )
     }
 
     private fun parseQuery(queryRaw: String): Map<String, String> {
@@ -73,5 +81,25 @@ object TpResponseParser {
         val normalized = value.trim()
         if (normalized.length < 120 || normalized.length % 2 != 0) return false
         return normalized.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+    }
+
+    private fun parseWeb3Account(obj: kotlinx.serialization.json.JsonObject): Web3BridgeAccount {
+        fun required(key: String): String =
+            obj[key]?.jsonPrimitive?.content?.trim().orEmpty()
+                .ifBlank { throw IllegalArgumentException("web3Account 缺少 $key") }
+
+        return Web3BridgeAccount(
+            address = required("address"),
+            addressPath = required("addressPath"),
+            accountPath = required("accountPath"),
+            masterFingerprint = required("masterFingerprint"),
+            compressedPubKeyHex = required("compressedPubKeyHex"),
+            chainCodeHex = required("chainCodeHex"),
+            xpub = required("xpub"),
+            sourceLabel = required("sourceLabel"),
+            importedAt = obj["importedAt"]?.jsonPrimitive?.content?.toLongOrNull() ?: System.currentTimeMillis(),
+            label = obj["label"]?.jsonPrimitive?.content?.trim().orEmpty().ifBlank { "Web3 账户" },
+            childrenPath = obj["childrenPath"]?.jsonPrimitive?.content?.trim().orEmpty().ifBlank { "0/*" },
+        )
     }
 }

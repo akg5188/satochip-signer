@@ -17,11 +17,13 @@ import com.journeyapps.barcodescanner.DefaultDecoderFactory
 class ContinuousQrScanActivity : ComponentActivity() {
     companion object {
         const val EXTRA_QR_RESULT = "qr_result"
+        const val EXTRA_SCAN_WALLET = "scan_wallet"
     }
 
     private lateinit var barcodeView: DecoratedBarcodeView
     private val assembler = MultiFragmentAssembler()
     private var hasReturned = false
+    private var scanWallet = RelayWallet.TOKENPOCKET
     private var lastText = ""
     private var lastReadAt = 0L
     private val cameraPermissionLauncher =
@@ -37,10 +39,19 @@ class ContinuousQrScanActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_continuous_qr_scan)
+        scanWallet = runCatching {
+            RelayWallet.valueOf(intent.getStringExtra(EXTRA_SCAN_WALLET).orEmpty())
+        }.getOrDefault(RelayWallet.TOKENPOCKET)
 
         barcodeView = findViewById(R.id.barcode_scanner)
         barcodeView.decoderFactory = DefaultDecoderFactory(listOf(BarcodeFormat.QR_CODE))
-        barcodeView.setStatusText("请连续扫描 TP 动态二维码")
+        barcodeView.setStatusText(
+            if (scanWallet == RelayWallet.TOKENPOCKET) {
+                "请连续扫描 TP 动态二维码"
+            } else {
+                "请扫描 ${scanWallet.displayName} 的 Keystone/硬件钱包二维码"
+            }
+        )
     }
 
     override fun onResume() {
@@ -83,6 +94,16 @@ class ContinuousQrScanActivity : ComponentActivity() {
     }
 
     private fun handleScanText(text: String) {
+        if (scanWallet != RelayWallet.TOKENPOCKET) {
+            runCatching { Web3RelayCodec.parse(scanWallet, text) }
+                .onSuccess { returnPayload(text) }
+                .onFailure { error ->
+                    val reason = error.message ?: "Web3 二维码解析失败"
+                    barcodeView.setStatusText("$reason，请继续扫描")
+                }
+            return
+        }
+
         runCatching { TpQrCodec.parseInput(text) }
             .onSuccess { parsed ->
                 when (parsed) {

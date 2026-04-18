@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-MANIFEST_PATH="$ROOT_DIR/release-manifest.json"
+SCRIPT_ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="${TP_RELEASE_ROOT_DIR:-$SCRIPT_ROOT_DIR}"
+MANIFEST_PATH="${TP_RELEASE_MANIFEST_PATH:-$ROOT_DIR/release-manifest.json}"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -19,6 +20,7 @@ usage() {
 用法:
   bash scripts/check_named_release.sh --list
   bash scripts/check_named_release.sh firmware-clean
+  bash scripts/check_named_release.sh firmware-public-20260410b-clean
   bash scripts/check_named_release.sh wallet-release
 EOF
 }
@@ -106,10 +108,18 @@ case "$ARTIFACT_TYPE" in
     [[ "$info_sha" == "$actual_sha" ]] || fail "build-info compressed_image_sha256 mismatch for $PROFILE"
     [[ "$info_raw_sha" == "$raw_sha" ]] || fail "build-info raw_image_sha256 mismatch for $PROFILE"
     [[ "$info_repo_head" == "$SOURCE_TAG_COMMIT" ]] || fail "build-info repo_head does not match source_tag for $PROFILE"
-    [[ "$info_repo_head" == "${EXPECTED_REPO_HEAD:-}" ]] || fail "build-info repo_head does not match manifest expected repo_head for $PROFILE"
-    [[ "$actual_sha" == "${EXPECTED_COMPRESSED_IMAGE_SHA256:-}" ]] || fail "artifact sha256 does not match manifest expected compressed image sha for $PROFILE"
-    [[ "$info_repo_dirty" == "${EXPECTED_REPO_DIRTY:-}" ]] || fail "repo_dirty does not match manifest for $PROFILE"
-    [[ "$info_build_clean_mode" == "${EXPECTED_BUILD_CLEAN_MODE:-}" ]] || fail "build_clean_mode does not match manifest for $PROFILE"
+    if [[ -n "${EXPECTED_REPO_HEAD:-}" ]]; then
+      [[ "$info_repo_head" == "$EXPECTED_REPO_HEAD" ]] || fail "build-info repo_head does not match manifest expected repo_head for $PROFILE"
+    fi
+    if [[ -n "${EXPECTED_COMPRESSED_IMAGE_SHA256:-}" ]]; then
+      [[ "$actual_sha" == "$EXPECTED_COMPRESSED_IMAGE_SHA256" ]] || fail "artifact sha256 does not match manifest expected compressed image sha for $PROFILE"
+    fi
+    if [[ -n "${EXPECTED_REPO_DIRTY:-}" ]]; then
+      [[ "$info_repo_dirty" == "$EXPECTED_REPO_DIRTY" ]] || fail "repo_dirty does not match manifest for $PROFILE"
+    fi
+    if [[ -n "${EXPECTED_BUILD_CLEAN_MODE:-}" ]]; then
+      [[ "$info_build_clean_mode" == "$EXPECTED_BUILD_CLEAN_MODE" ]] || fail "build_clean_mode does not match manifest for $PROFILE"
+    fi
     ;;
   apk)
     info_sha="$(awk -F= '/^artifact_sha256=/{print $2}' "$BUILD_INFO")"
@@ -118,9 +128,15 @@ case "$ARTIFACT_TYPE" in
 
     [[ "$info_sha" == "$actual_sha" ]] || fail "build-info artifact_sha256 mismatch for $PROFILE"
     [[ "$info_repo_head" == "$SOURCE_TAG_COMMIT" ]] || fail "build-info repo_head does not match source_tag for $PROFILE"
-    [[ "$info_repo_head" == "${EXPECTED_REPO_HEAD:-}" ]] || fail "build-info repo_head does not match manifest expected repo_head for $PROFILE"
-    [[ "$actual_sha" == "${EXPECTED_ARTIFACT_SHA256:-}" ]] || fail "artifact sha256 does not match manifest for $PROFILE"
-    [[ "$info_version_name" == "${EXPECTED_VERSION_NAME:-}" ]] || fail "version_name does not match manifest for $PROFILE"
+    if [[ -n "${EXPECTED_REPO_HEAD:-}" ]]; then
+      [[ "$info_repo_head" == "$EXPECTED_REPO_HEAD" ]] || fail "build-info repo_head does not match manifest expected repo_head for $PROFILE"
+    fi
+    if [[ -n "${EXPECTED_ARTIFACT_SHA256:-}" ]]; then
+      [[ "$actual_sha" == "$EXPECTED_ARTIFACT_SHA256" ]] || fail "artifact sha256 does not match manifest for $PROFILE"
+    fi
+    if [[ -n "${EXPECTED_VERSION_NAME:-}" ]]; then
+      [[ "$info_version_name" == "$EXPECTED_VERSION_NAME" ]] || fail "version_name does not match manifest for $PROFILE"
+    fi
     ;;
   *)
     fail "Unsupported artifact_type in manifest: $ARTIFACT_TYPE"

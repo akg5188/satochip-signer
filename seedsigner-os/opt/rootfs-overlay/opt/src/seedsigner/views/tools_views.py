@@ -2305,7 +2305,7 @@ class ToolsSeedkeeperGenerateMnemonicView(View):
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title="卡上真随机创建",
+            title="智能卡创建",
             is_button_text_centered=False,
             button_data=button_data,
         )
@@ -2363,7 +2363,7 @@ class ToolsSeedkeeperGenerateMnemonicView(View):
             if pending_seed is not None:
                 entropy_display_text, entropy_qr_text = _format_entropy_hex_profile(entropy_bytes)
                 pending_seed.set_entropy_display_profile(
-                    source_label="卡上真随机",
+                    source_label="智能卡创建",
                     input_format_label="Hex",
                     display_text=entropy_display_text,
                     qr_text=entropy_qr_text,
@@ -3522,7 +3522,7 @@ class ToolsSatochipChangeLabelView(View):
         return Destination(MainMenuView)
 
 class ToolsSeedkeeperView(View):
-    GENERATE_MNEMONIC = ButtonOption("卡上真随机创建")
+    GENERATE_MNEMONIC = ButtonOption("智能卡创建")
     VIEW_FREE_SPACE = ButtonOption("剩余空间")
     VIEW_SECRETS = ButtonOption("管理卡内助记词")
     IMPORT_PASSWORD = ButtonOption("保存密码到卡片")
@@ -8222,7 +8222,9 @@ class ToolsGPGLoadBip85DataView(View):
 
         if choice == self.FROM_QR:
             decoder = DecodeQR()
-            ScanScreen(decoder=decoder, instructions_text="Scan BIP85 data").display()
+            ret = ScanScreen(decoder=decoder, instructions_text="Scan BIP85 data").display()
+            if ret == RET_CODE__BACK_BUTTON:
+                return Destination(BackStackView)
             self.controller.reset_screensaver_timeout()
             time.sleep(0.1)
             if not decoder.is_complete:
@@ -9866,7 +9868,9 @@ class ToolsGPGEncryptMessageView(View):
             message = ret_dict["textToEncode"]
         elif src_buttons[src_selected] == SRC_SCAN:
             decoder = DecodeQR(is_text=True)
-            ScanScreen(decoder=decoder, instructions_text="Scan message").display()
+            ret = ScanScreen(decoder=decoder, instructions_text="Scan message").display()
+            if ret == RET_CODE__BACK_BUTTON:
+                return Destination(BackStackView)
             self.controller.reset_screensaver_timeout()
             time.sleep(0.1)
             if not decoder.is_complete:
@@ -10235,7 +10239,9 @@ class ToolsGPGDecryptMessageView(View):
                     return Destination(BackStackView)
             else:
                 decoder = DecodeQR()
-                ScanScreen(decoder=decoder, instructions_text="Scan secure message").display()
+                ret = ScanScreen(decoder=decoder, instructions_text="Scan secure message").display()
+                if ret == RET_CODE__BACK_BUTTON:
+                    return Destination(BackStackView)
                 self.controller.reset_screensaver_timeout()
                 time.sleep(0.1)
                 if not decoder.is_complete:
@@ -11861,7 +11867,9 @@ class ToolsGPGLoadPubkeyQRView(View):
         import time
 
         decoder = DecodeQR()
-        ScanScreen(decoder=decoder, instructions_text="Scan public key").display()
+        ret = ScanScreen(decoder=decoder, instructions_text="Scan public key").display()
+        if ret == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
         self.controller.reset_screensaver_timeout()
         time.sleep(0.1)
         if not decoder.is_complete:
@@ -12144,7 +12152,9 @@ class ToolsGPGLoadPrivkeyQRView(View):
         import time
 
         decoder = DecodeQR()
-        ScanScreen(decoder=decoder, instructions_text="Scan private key").display()
+        ret = ScanScreen(decoder=decoder, instructions_text="Scan private key").display()
+        if ret == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
         self.controller.reset_screensaver_timeout()
         time.sleep(0.1)
         if not decoder.is_complete:
@@ -15396,10 +15406,12 @@ class ToolsTranscribeTextQRConfirmScanView(View):
 
     def run(self):
         decoder = DecodeQR(is_text=True)
-        ScanScreen(
+        ret = ScanScreen(
             instructions_text=_("Scan text QR code"),
             decoder=decoder
         ).display()
+        if ret == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
 
         self.controller.reset_screensaver_timeout()
         time.sleep(0.1)
@@ -15444,7 +15456,9 @@ class ToolsTextQRScanQRCodeView(View):
     def run(self):
 
         decoder = DecodeQR(is_text=True)
-        ScanScreen(decoder=decoder, instructions_text=_("Scan text QR code")).display()
+        ret = ScanScreen(decoder=decoder, instructions_text=_("Scan text QR code")).display()
+        if ret == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
 
         self.controller.reset_screensaver_timeout()
         time.sleep(0.1)
@@ -16191,7 +16205,9 @@ class ToolsPasswordGenerateView(View):
         words = []
         for i in range(word_count):
             idx = int(bit_string[i * 11 : (i + 1) * 11], 2)
-            words.append(wordlist[idx])
+            # Keep a private string copy so secure wiping generated words cannot
+            # mutate shared global wordlist string objects.
+            words.append("".join(wordlist[idx]))
         return words
 
     def _dice_length_for_charset(self, alphabet_size: int) -> int:

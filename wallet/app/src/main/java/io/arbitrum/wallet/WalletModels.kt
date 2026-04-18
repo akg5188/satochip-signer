@@ -14,6 +14,14 @@ enum class PendingResponseType {
     SHOW_SIGNATURE,
     RETURN_RAW_TRANSACTION,
     IMPORT_WATCH_ADDRESS,
+    IMPORT_WEB3_ACCOUNT,
+    RETURN_WEB3_SIGNATURE,
+}
+
+enum class PreparedQrKind {
+    PI_REQUEST,
+    WEB3_CONNECT,
+    WEB3_SIGNATURE,
 }
 
 const val DEFAULT_EVM_DERIVATION_PATH = "m/44'/60'/0'/0/0"
@@ -117,6 +125,7 @@ data class WalletUiState(
     val addressNotes: Map<String, String> = emptyMap(),
     val selectedAddress: String = "",
     val evmDerivationPath: String = DEFAULT_EVM_DERIVATION_PATH,
+    val web3BridgeAccounts: List<Web3BridgeAccount> = emptyList(),
     val bitcoinImportInput: String = "",
     val bitcoinWatchAccounts: List<BitcoinWatchAccount> = emptyList(),
     val bitcoinPrototypeStatus: String = defaultBitcoinPrototypeStatus(0),
@@ -148,7 +157,9 @@ data class WalletUiState(
     val signQrPages: List<String> = emptyList(),
     val signQrPageIndex: Int = 0,
     val signQrBitmap: Bitmap? = null,
+    val preparedQrKind: PreparedQrKind = PreparedQrKind.PI_REQUEST,
     val pendingResponseType: PendingResponseType? = null,
+    val pendingWeb3Request: Web3EthSignRequest? = null,
     val preparedBitcoinAccountId: String? = null,
     val pendingBroadcastRawTransaction: String = "",
     val pendingBroadcastBitcoinTxHex: String = "",

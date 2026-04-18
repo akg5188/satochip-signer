@@ -3242,6 +3242,7 @@ class SeedWordsView(View):
             title=title,
             text=formatted_text,
             text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+            text_font_size=max(GUIConstants.get_body_font_size(), 22),
             button_data=[self.DONE],
         )
 
@@ -3350,6 +3351,7 @@ class SeedWordIndexView(View):
                 show_index_placeholders=True,
             ),
             text_font_name=GUIConstants.FIXED_WIDTH_FONT_NAME,
+            text_font_size=max(GUIConstants.get_body_font_size(), 22),
             button_data=[self.DONE],
         )
 

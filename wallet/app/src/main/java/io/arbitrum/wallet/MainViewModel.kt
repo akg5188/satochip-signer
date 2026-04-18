@@ -211,6 +211,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         WalletStorage.writeEvmDerivationPath(prefs, path)
     }
 
+    fun prepareWeb3AccountImport() {
+        val state = _uiState.value
+        val selectedAddress = normalizeAddress(state.selectedAddress)
+            ?: return setError("请先在首页添加并选择一个 EVM 观察地址，再绑定 Web3 桥接")
+        val path = normalizeDerivationPath(state.evmDerivationPath)
+            ?: return setError("派生路径格式错误，请使用 m/44'/60'/0'/0/0 这种格式")
+        val chain = WalletChains.require(state.selectedChainId)
+        val payload = TpRequestBuilder.buildExportWeb3AccountRequest(
+            addressPath = path,
+            expectedAddress = selectedAddress,
+            chain = chain,
+            requestId = "web3-account-${System.currentTimeMillis()}",
+        )
+        viewModelScope.launch {
+            runCatching {
+                val bundle = RelayQrCodec.buildRelayPayloads(payload)
+                showPreparedQrPages(
+                    title = "绑定当前观察地址",
+                    summary = buildString {
+                        appendLine("观察地址: $selectedAddress")
+                        appendLine("路径: $path")
+                        appendLine("链: ${chain.displayName}")
+                    }.trim(),
+                    transferInfo = "",
+                    dappInfo = "",
+                    relayHint = if (bundle.payloads.size > 1) {
+                        "已生成 ${bundle.payloads.size} 张二维码，将自动轮播给树莓派扫描。"
+                    } else {
+                        "已生成 1 张二维码，让树莓派直接扫描。"
+                    },
+                    pages = bundle.payloads,
+                    preparedQrKind = PreparedQrKind.PI_REQUEST,
+                    pendingResponseType = PendingResponseType.IMPORT_WEB3_ACCOUNT,
+                    focusTab = WalletTab.DISCOVER,
+                    infoMessage = "请让树莓派扫描当前二维码，并选择和首页观察地址对应的来源。",
+                )
+            }.onFailure { error ->
+                setError("绑定 Web3 观察地址二维码生成失败: ${error.message}")
+            }
+        }
+    }
+
+    fun showSelectedWeb3ConnectQr() {
+        val account = currentWeb3BridgeAccount()
+            ?: return setError("当前首页观察地址还没有绑定 Web3 桥接，请先点「绑定当前观察地址」")
+        viewModelScope.launch {
+            runCatching {
+                val pages = Web3UrCodec.buildConnectQrPages(account)
+                showPreparedQrPages(
+                    title = "连接硬件钱包",
+                    summary = buildString {
+                        appendLine("地址: ${account.address}")
+                        appendLine("路径: ${account.addressPath}")
+                        appendLine("来源: ${account.sourceLabel}")
+                    }.trim(),
+                    transferInfo = "",
+                    dappInfo = "",
+                    relayHint = if (pages.size > 1) {
+                        "这是动态连接二维码，请让钱包持续扫描直到导入完成。"
+                    } else {
+                        "这是单张连接二维码，请直接让钱包扫描。"
+                    },
+                    pages = pages,
+                    preparedQrKind = PreparedQrKind.WEB3_CONNECT,
+                    pendingResponseType = null,
+                    focusTab = WalletTab.DISCOVER,
+                    infoMessage = "已生成连接二维码。",
+                )
+            }.onFailure { error ->
+                setError("生成 Web3 连接二维码失败: ${error.message}")
+            }
+        }
+    }
+
     fun selectAddress(address: String) {
         if (_uiState.value.selectedAddress != address) {
             clearSensitiveSessionState()
@@ -436,7 +510,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 signQrPages = emptyList(),
                 signQrPageIndex = 0,
                 signQrBitmap = null,
+                preparedQrKind = PreparedQrKind.PI_REQUEST,
                 pendingResponseType = null,
+                pendingWeb3Request = null,
                 pendingBroadcastRawTransaction = "",
                 pendingBroadcastBitcoinTxHex = "",
                 requestInput = "",
@@ -511,7 +587,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         signQrPages = bundle.payloads,
                         signQrPageIndex = 0,
                         signQrBitmap = qr,
+                        preparedQrKind = PreparedQrKind.PI_REQUEST,
                         pendingResponseType = PendingResponseType.BROADCAST_BTC_TX,
+                        pendingWeb3Request = null,
                         preparedBitcoinAccountId = accountId,
                         preparedRequestChainId = null,
                         pendingBroadcastRawTransaction = "",
@@ -932,12 +1010,135 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onResponseScanResult(payload: String) {
         val parsed = TpResponseParser.parse(payload)
-        if (parsed.isError || (parsed.rawTransaction == null && parsed.signature == null && parsed.bitcoinTxHex == null)) {
+        if (
+            parsed.isError ||
+            (
+                parsed.rawTransaction == null &&
+                    parsed.signature == null &&
+                    parsed.bitcoinTxHex == null &&
+                    parsed.web3Account == null
+                )
+        ) {
             return setError("无法解析树莓派结果")
         }
 
         viewModelScope.launch {
+            val currentState = _uiState.value
+            val currentResponseType = currentState.pendingResponseType
+            val pendingWeb3Request = currentState.pendingWeb3Request
             when {
+                parsed.web3Account != null -> {
+                    val importedAccount = parsed.web3Account.copy(
+                        importedAt = parsed.web3Account.importedAt.takeIf { it > 0L } ?: System.currentTimeMillis(),
+                    )
+                    val selectedAddress = normalizeAddress(currentState.selectedAddress)
+                    val importedAddress = normalizeAddress(importedAccount.address)
+                    if (
+                        currentResponseType == PendingResponseType.IMPORT_WEB3_ACCOUNT &&
+                        selectedAddress != null &&
+                        importedAddress != null &&
+                        !selectedAddress.equals(importedAddress, ignoreCase = true)
+                    ) {
+                        return@launch setError(
+                            "树莓派返回地址 ${shortAddress(importedAddress)} 与首页当前观察地址 ${shortAddress(selectedAddress)} 不一致，请检查派生路径或账户来源"
+                        )
+                    }
+                    upsertWeb3BridgeAccount(importedAccount)
+                    val normalizedAddress = importedAddress
+                    if (normalizedAddress != null) {
+                        _uiState.update { state ->
+                            val updatedAddresses = if (state.addresses.any { it.equals(normalizedAddress, ignoreCase = true) }) {
+                                state.addresses
+                            } else {
+                                state.addresses + normalizedAddress
+                            }
+                            state.copy(
+                                addresses = updatedAddresses,
+                                selectedAddress = if (state.selectedAddress.isBlank()) normalizedAddress else state.selectedAddress,
+                            )
+                        }
+                        persistAddresses()
+                    }
+                    recordLocalActivity(
+                        WalletActivityItem(
+                            id = "web3-account-${importedAccount.address.lowercase()}-${System.currentTimeMillis()}",
+                            chainId = WalletChains.byId(1L)?.chainId ?: _uiState.value.selectedChainId,
+                            kind = WalletActivityKind.SYSTEM,
+                            title = "已保存 Web3 兼容账户",
+                            subtitle = shortAddress(importedAccount.address),
+                            detail = "${importedAccount.sourceLabel} · ${importedAccount.addressPath}",
+                            statusLabel = "兼容连接可用",
+                            timestamp = System.currentTimeMillis(),
+                        )
+                    )
+                    _uiState.update {
+                        it.copy(
+                            signQrBitmap = null,
+                            signQrPages = emptyList(),
+                            signQrPageIndex = 0,
+                            preparedQrKind = PreparedQrKind.PI_REQUEST,
+                            pendingResponseType = null,
+                            pendingWeb3Request = null,
+                            preparedBitcoinAccountId = null,
+                            preparedRequestChainId = null,
+                            requestTitle = "",
+                            requestSummary = "",
+                            transferInfo = "",
+                            dappInfo = "",
+                            relayHint = "",
+                            pendingBroadcastRawTransaction = "",
+                            pendingBroadcastBitcoinTxHex = "",
+                            error = "",
+                            info = "已保存兼容桥接账户：${shortAddress(importedAccount.address)}。优先请用树莓派首页“连接钱包 -> Web3钱包”直连 OKX / Bitget。",
+                            requestInput = "",
+                        )
+                    }
+                }
+
+                currentResponseType == PendingResponseType.RETURN_WEB3_SIGNATURE && pendingWeb3Request != null -> {
+                    runCatching {
+                        val signatureBytes = Web3UrCodec.extractSignatureBytes(pendingWeb3Request, parsed)
+                        val pages = Web3UrCodec.buildEthSignatureQrPages(
+                            requestId = pendingWeb3Request.requestId,
+                            signatureBytes = signatureBytes,
+                            origin = pendingWeb3Request.origin,
+                        )
+                        showPreparedQrPages(
+                            title = "让 OKX / Bitget 扫描签名结果",
+                            summary = Web3UrCodec.buildRequestSummary(pendingWeb3Request),
+                            transferInfo = "",
+                            dappInfo = "树莓派签名结果已经转成 Keystone 兼容二维码，请回到钱包继续扫描。",
+                            relayHint = if (pages.size > 1) {
+                                "这是动态签名结果二维码，请让钱包持续扫描直到回传完成。"
+                            } else {
+                                "这是单张签名结果二维码，请直接让钱包扫描。"
+                            },
+                            pages = pages,
+                            preparedQrKind = PreparedQrKind.WEB3_SIGNATURE,
+                            pendingResponseType = null,
+                            pendingWeb3Request = null,
+                            focusTab = WalletTab.DISCOVER,
+                            preparedRequestChainId = WalletChains.byId(pendingWeb3Request.chainId)?.chainId,
+                            infoMessage = "已生成回传给钱包的签名二维码。",
+                        )
+                    }.onFailure { error ->
+                        setError("生成 Web3 签名回传二维码失败: ${error.message}")
+                        return@launch
+                    }
+                    recordLocalActivity(
+                        WalletActivityItem(
+                            id = "web3-signature-${pendingWeb3Request.requestId ?: System.currentTimeMillis()}",
+                            chainId = WalletChains.byId(pendingWeb3Request.chainId)?.chainId ?: _uiState.value.selectedChainId,
+                            kind = WalletActivityKind.SIGNATURE,
+                            title = "Web3 签名结果已生成",
+                            subtitle = pendingWeb3Request.origin ?: "OKX / Bitget / Keystone",
+                            detail = "${pendingWeb3Request.dataType.name} · ${pendingWeb3Request.derivationPath}",
+                            statusLabel = "待钱包扫码",
+                            timestamp = System.currentTimeMillis(),
+                        )
+                    )
+                }
+
                 parsed.bitcoinTxHex != null -> {
                     if (_uiState.value.preparedBitcoinAccountId == null) {
                         return@launch setError("当前没有待广播的 BTC 请求")
@@ -947,7 +1148,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             signQrBitmap = null,
                             signQrPages = emptyList(),
                             signQrPageIndex = 0,
+                            preparedQrKind = PreparedQrKind.PI_REQUEST,
                             pendingResponseType = null,
+                            pendingWeb3Request = null,
                             pendingBroadcastBitcoinTxHex = parsed.bitcoinTxHex,
                             error = "",
                             info = "已收到 BTC 签名交易，请人工核对后再广播。",
@@ -962,7 +1165,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             signQrBitmap = null,
                             signQrPages = emptyList(),
                             signQrPageIndex = 0,
+                            preparedQrKind = PreparedQrKind.PI_REQUEST,
                             pendingResponseType = null,
+                            pendingWeb3Request = null,
                             pendingBroadcastRawTransaction = parsed.rawTransaction,
                             preparedBitcoinAccountId = null,
                             error = "",
@@ -973,7 +1178,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 parsed.signature != null -> {
-                    val currentResponseType = _uiState.value.pendingResponseType
                     val chainId = _uiState.value.preparedRequestChainId ?: _uiState.value.selectedChainId
                     val pendingRequest = _uiState.value.walletConnectPendingRequest
                     if (pendingRequest != null) {
@@ -1000,7 +1204,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             signQrBitmap = null,
                             signQrPages = emptyList(),
                             signQrPageIndex = 0,
+                            preparedQrKind = PreparedQrKind.PI_REQUEST,
                             pendingResponseType = null,
+                            pendingWeb3Request = null,
                             preparedBitcoinAccountId = null,
                             preparedRequestChainId = null,
                             error = "",
@@ -1055,7 +1261,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 signQrPages = emptyList(),
                 signQrPageIndex = 0,
                 signQrBitmap = null,
+                preparedQrKind = PreparedQrKind.PI_REQUEST,
                 pendingResponseType = null,
+                pendingWeb3Request = null,
                 pendingBroadcastRawTransaction = "",
                 pendingBroadcastBitcoinTxHex = "",
                 requestInput = "",
@@ -1087,6 +1295,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 signQrPages = emptyList(),
                 signQrPageIndex = 0,
                 signQrBitmap = null,
+                preparedQrKind = PreparedQrKind.PI_REQUEST,
                 pendingBroadcastRawTransaction = "",
                 pendingBroadcastBitcoinTxHex = "",
                 preparedRequestChainId = null,
@@ -1097,6 +1306,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 dappInfo = "",
                 relayHint = "",
                 pendingResponseType = null,
+                pendingWeb3Request = null,
                 lastSignature = "",
                 lastSignatureAddress = "",
                 info = "已取消广播",
@@ -1444,6 +1654,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         )
         val evmDerivationPath = WalletStorage.readEvmDerivationPath(prefs)
+        val web3BridgeAccounts = WalletStorage.readWeb3BridgeAccounts(prefs)
         val bitcoinWatchAccounts = WalletStorage.readBitcoinWatchAccounts(prefs).map(::enrichBitcoinWatchAccount)
         localActivityItems.clear()
         localActivityItems += WalletStorage.readActivity(prefs)
@@ -1453,6 +1664,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 addressNotes = addressNotes,
                 selectedAddress = effectiveSelected,
                 evmDerivationPath = evmDerivationPath,
+                web3BridgeAccounts = web3BridgeAccounts,
                 bitcoinWatchAccounts = bitcoinWatchAccounts,
                 bitcoinPrototypeStatus = defaultBitcoinPrototypeStatus(bitcoinWatchAccounts.size),
                 selectedChainId = selectedChain,
@@ -1487,6 +1699,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun persistBitcoinWatchAccounts() {
         WalletStorage.writeBitcoinWatchAccounts(prefs, _uiState.value.bitcoinWatchAccounts)
+    }
+
+    private fun persistWeb3BridgeAccounts() {
+        WalletStorage.writeWeb3BridgeAccounts(prefs, _uiState.value.web3BridgeAccounts)
     }
 
     private fun cacheBitcoinSnapshot(accountId: String, snapshot: BitcoinAccountSnapshot, syncedAt: Long) {
@@ -1684,7 +1900,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     signQrPages = bundle.payloads,
                     signQrPageIndex = 0,
                     signQrBitmap = qr,
+                    preparedQrKind = PreparedQrKind.PI_REQUEST,
                     pendingResponseType = explicitResponseType ?: inferResponseType(request),
+                    pendingWeb3Request = null,
                     error = "",
                     info = "请求已准备好，请让树莓派扫描本页二维码。",
                     activeTab = focusTab,
@@ -1704,6 +1922,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun handleIncomingPayload(payload: String, focusTab: WalletTab) {
         val trimmedPayload = payload.trim()
+        if (trimmedPayload.startsWith("ur:", ignoreCase = true)) {
+            viewModelScope.launch {
+                prepareWeb3RelayRequestNow(trimmedPayload, focusTab)
+            }
+            return
+        }
         val walletConnectUri = WalletConnectUriParser.extract(payload)
         if (trimmedPayload.startsWith("wc:", ignoreCase = true) && walletConnectUri == null) {
             setError("仅允许有效的 WalletConnect v2 配对链接，且长度不能过长")
@@ -1736,7 +1960,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        prepareRelayRequest(normalizedPayload, null, null, focusTab)
+        viewModelScope.launch {
+            prepareExternalRelayRequestNow(normalizedPayload, focusTab)
+        }
     }
 
     private suspend fun handleWalletConnectRequest(request: WalletConnectPendingRequest) {
@@ -1971,7 +2197,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 signQrPages = emptyList(),
                 signQrPageIndex = 0,
                 signQrBitmap = null,
+                preparedQrKind = PreparedQrKind.PI_REQUEST,
                 pendingResponseType = null,
+                pendingWeb3Request = null,
                 pendingBroadcastRawTransaction = "",
                 pendingBroadcastBitcoinTxHex = "",
                 preparedRequestChainId = null,
@@ -2229,6 +2457,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         txHashExplorerUrl = "${bitcoinEsploraBaseUrl(account.prefix).removeSuffix("/api")}/tx/$txid",
                         lastSignature = "",
                         lastSignatureAddress = "",
+                        preparedQrKind = PreparedQrKind.PI_REQUEST,
+                        pendingWeb3Request = null,
                         error = "",
                         info = "BTC 交易已广播：$txid",
                     )
@@ -2294,6 +2524,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         transferInfo = "",
                         dappInfo = "",
                         relayHint = "",
+                        preparedQrKind = PreparedQrKind.PI_REQUEST,
+                        pendingWeb3Request = null,
                         error = "",
                         info = if (pendingRequest != null) "交易已广播，并已返回给 WalletConnect" else "交易已广播",
                     )
@@ -2376,6 +2608,163 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?.substringAfter(':')
             ?.trim()
             .orEmpty()
+    }
+
+    private suspend fun showPreparedQrPages(
+        title: String,
+        summary: String,
+        transferInfo: String,
+        dappInfo: String,
+        relayHint: String,
+        pages: List<String>,
+        preparedQrKind: PreparedQrKind,
+        pendingResponseType: PendingResponseType?,
+        focusTab: WalletTab,
+        infoMessage: String,
+        preparedRequestChainId: Long? = null,
+        pendingWeb3Request: Web3EthSignRequest? = null,
+    ) {
+        val filteredPages = pages.filter { it.isNotBlank() }
+        require(filteredPages.isNotEmpty()) { "二维码内容为空" }
+        val qr = generateQrBitmap(filteredPages.first())
+        _uiState.update {
+            it.copy(
+                preparingRequest = false,
+                requestTitle = title,
+                requestSummary = summary,
+                transferInfo = transferInfo,
+                dappInfo = dappInfo,
+                relayHint = relayHint,
+                preparedRequestChainId = preparedRequestChainId,
+                preparedBitcoinAccountId = null,
+                signQrPages = filteredPages,
+                signQrPageIndex = 0,
+                signQrBitmap = qr,
+                preparedQrKind = preparedQrKind,
+                pendingResponseType = pendingResponseType,
+                pendingWeb3Request = pendingWeb3Request,
+                pendingBroadcastRawTransaction = "",
+                pendingBroadcastBitcoinTxHex = "",
+                requestInput = "",
+                lastSignature = "",
+                lastSignatureAddress = "",
+                txHash = "",
+                txHashChainId = null,
+                txHashExplorerUrl = "",
+                error = "",
+                info = infoMessage,
+                activeTab = focusTab,
+            )
+        }
+    }
+
+    private suspend fun prepareWeb3RelayRequestNow(payload: String, focusTab: WalletTab): Boolean {
+        return try {
+            val request = Web3UrCodec.parseEthSignRequestUr(payload)
+            val tpPayload = Web3UrCodec.buildTpRequest(request, currentWeb3BridgeAccount(request))
+            val relayWallet = Web3RelayWallet.detect(request.origin)
+            val bundle = Web3RelayCodec.buildNativeRelayPayloads(request, tpPayload)
+            showPreparedQrPages(
+                title = when (request.dataType) {
+                    Web3RequestDataType.TRANSACTION,
+                    Web3RequestDataType.TYPED_TRANSACTION -> "${relayWallet.displayName} 交易待树莓派签名"
+                    Web3RequestDataType.PERSONAL_MESSAGE -> "${relayWallet.displayName} 消息待树莓派签名"
+                    Web3RequestDataType.TYPED_DATA -> "${relayWallet.displayName} TypedData 待树莓派签名"
+                },
+                summary = Web3UrCodec.buildRequestSummary(request),
+                transferInfo = "",
+                dappInfo = "",
+                relayHint = if (bundle.payloads.size > 1) {
+                    "已生成 ${bundle.payloads.size} 张中转二维码，将自动轮播给树莓派扫描。"
+                } else {
+                    "已生成 1 张中转二维码，让树莓派直接扫描。"
+                },
+                pages = bundle.payloads,
+                preparedQrKind = PreparedQrKind.PI_REQUEST,
+                pendingResponseType = null,
+                pendingWeb3Request = null,
+                focusTab = focusTab,
+                preparedRequestChainId = WalletChains.byId(request.chainId)?.chainId,
+                infoMessage = "钱包请求已转成低密度二维码，请让树莓派扫描。",
+            )
+            true
+        } catch (e: Exception) {
+            setError("钱包二维码中转失败: ${e.message}")
+            false
+        }
+    }
+
+    private suspend fun prepareExternalRelayRequestNow(payload: String, focusTab: WalletTab): Boolean {
+        return try {
+            val request = TpQrCodec.parseSignRequest(payload)
+            val chain = WalletChains.byId(request.chainId)
+                ?: throw IllegalArgumentException("当前不支持链 ${request.chainId}")
+            val bundle = RelayQrCodec.buildRelayPayloads(payload)
+            showPreparedQrPages(
+                title = "${chain.shortName} ${requestTitle(request)}",
+                summary = buildRequestSummary(request),
+                transferInfo = buildTransferInfo(request),
+                dappInfo = "",
+                relayHint = if (bundle.payloads.size > 1) {
+                    "已生成 ${bundle.payloads.size} 张中转二维码，将自动轮播给树莓派扫描。"
+                } else {
+                    "已生成 1 张中转二维码，让树莓派直接扫描。"
+                },
+                pages = bundle.payloads,
+                preparedQrKind = PreparedQrKind.PI_REQUEST,
+                pendingResponseType = null,
+                focusTab = focusTab,
+                infoMessage = "外部钱包请求已准备好，请让树莓派扫描当前二维码。",
+                preparedRequestChainId = chain.chainId,
+            )
+            true
+        } catch (e: Exception) {
+            setError("解析请求失败: ${e.message}")
+            false
+        }
+    }
+
+    private fun currentWeb3BridgeAccount(
+        request: Web3EthSignRequest? = null,
+        state: WalletUiState = _uiState.value,
+    ): Web3BridgeAccount? {
+        val accounts = state.web3BridgeAccounts.sortedByDescending { it.importedAt }
+        if (accounts.isEmpty()) return null
+        val selectedAddress = normalizeAddress(state.selectedAddress)
+        val selectedAccount = selectedAddress?.let { selected ->
+            accounts.firstOrNull { it.address.equals(selected, ignoreCase = true) }
+        }
+        if (request == null) return selectedAccount
+
+        val requestAddress = normalizeAddress(request.address)
+        fun matchesRequest(account: Web3BridgeAccount): Boolean {
+            return account.addressPath.equals(request.derivationPath, ignoreCase = true) &&
+                (requestAddress == null || account.address.equals(requestAddress, ignoreCase = true))
+        }
+
+        if (selectedAccount != null) {
+            return selectedAccount.takeIf(::matchesRequest)
+        }
+        if (selectedAddress != null) return null
+
+        return accounts.firstOrNull { account ->
+            matchesRequest(account)
+        } ?: accounts.firstOrNull { account ->
+            requestAddress != null && account.address.equals(requestAddress, ignoreCase = true)
+        } ?: accounts.firstOrNull { account ->
+            account.addressPath.equals(request.derivationPath, ignoreCase = true)
+        }
+    }
+
+    private fun upsertWeb3BridgeAccount(account: Web3BridgeAccount) {
+        _uiState.update { state ->
+            val deduped = state.web3BridgeAccounts.filterNot {
+                it.address.equals(account.address, ignoreCase = true) &&
+                    it.addressPath.equals(account.addressPath, ignoreCase = true)
+            }
+            state.copy(web3BridgeAccounts = listOf(account) + deduped)
+        }
+        persistWeb3BridgeAccounts()
     }
 }
 

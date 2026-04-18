@@ -351,6 +351,7 @@ class HardwareButtons(Singleton):
                             self.cur_input = key
                             self.cur_input_started = cur_time
                             self.last_input_time = cur_time
+                            self._low_since_ms[key] = None
                             return key
                         else:
                             if cur_time - self.last_input_time > self.next_repeat_threshold:
@@ -358,11 +359,13 @@ class HardwareButtons(Singleton):
                                     HardwareButtonsConstants.release_lock = False
                                 self.cur_input_started = cur_time
                                 self.last_input_time = cur_time
+                                self._low_since_ms[key] = None
                                 return key
                             elif cur_time - self.cur_input_started > self.first_repeat_threshold:
                                 if check_release and key in release_keys:
                                     HardwareButtonsConstants.release_lock = False
                                 self.last_input_time = cur_time
+                                self._low_since_ms[key] = None
                                 return key
                     else:
                         if check_release and key in release_keys:
@@ -452,7 +455,8 @@ class HardwareButtons(Singleton):
                         continue
                     self.update_last_input_time()
                     return True
-                self._low_since_ms[key] = None
+                else:
+                    self._low_since_ms[key] = None
             return False
 
         pygame.event.pump()

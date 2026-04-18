@@ -7,6 +7,11 @@ LOG_FILE="${TP_BUILD_LOG_FILE:-$LOG_DIR/seedsigner-build-live.log}"
 APP_DIR="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt"
 APP_SETTINGS_TEMPLATE="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/default-settings.json"
 APP_SETTINGS_TARGET="$APP_DIR/src/settings.json"
+SNAPSHOT_DIR="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt"
+SNAPSHOT_DIR_REL="seedsigner-os/opt/rootfs-overlay/opt"
+GENERATED_MANIFEST_REL="seedsigner-os/opt/rootfs-overlay/opt/src/seedsigner/resources/offline-signer-firmware-integrity.json"
+SNAPSHOT_TIME_FILE="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt/src/.build_commit_time"
+NFC_BINDINGS_FILE="$ROOT_DIR/seedsigner-os/opt/external-packages/nfc-bindings/nfc-bindings.mk"
 L10N_SRC="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/app-assets/seedsigner-translations/l10n"
 L10N_DST="$APP_DIR/src/seedsigner/resources/seedsigner-translations/l10n"
 ZH_PO_REL="seedsigner-os/opt/rootfs-overlay/opt/src/seedsigner/resources/seedsigner-translations/l10n/zh_Hans_CN/LC_MESSAGES/messages.po"
@@ -17,6 +22,8 @@ ASCII_BUILD_DIR="${TP_BUILD_DIR:-$ASCII_BASE/output}"
 ASCII_IMAGE_DIR="${TP_IMAGE_DIR:-$ASCII_BASE/images}"
 ASCII_CCACHE_DIR="${TP_CCACHE_DIR:-$ASCII_BASE/ccache}"
 ASCII_CCACHE_TEMPDIR="${TP_CCACHE_TEMPDIR:-$ASCII_BASE/ccache-tmp}"
+RAW_IMG_PATH="${TP_RAW_IMG_PATH:-$ASCII_IMAGE_DIR/seedsigner_os.dev_.pi0-smartcard.img}"
+RAW_BUILD_INFO="${TP_RAW_BUILD_INFO:-$RAW_IMG_PATH.build-info.txt}"
 BR2_JLEVEL="${BR2_JLEVEL:-4}"
 TP_BUILD_CPUSET="${TP_BUILD_CPUSET:-0,1,2,3}"
 TP_BUILD_NICE="${TP_BUILD_NICE:-19}"
@@ -118,3 +125,73 @@ echo "  log=$LOG_FILE"
 
 nice -n "$TP_BUILD_NICE" ionice -c "$TP_BUILD_IONICE_CLASS" \
   "${BUILD_PREFIX[@]}" "${BUILD_ARGS[@]}" 2>&1 | tee "$LOG_FILE"
+
+if [[ ! -f "$RAW_IMG_PATH" ]]; then
+  echo "Expected raw image not found after build: $RAW_IMG_PATH" >&2
+  exit 1
+fi
+
+raw_sha="$(sha256sum "$RAW_IMG_PATH" | awk '{print $1}')"
+zimage_path="$ASCII_BUILD_DIR/images/zImage"
+rootfs_cpio_path="$ASCII_BUILD_DIR/images/rootfs.cpio"
+zimage_sha=""
+rootfs_cpio_sha=""
+if [[ -f "$zimage_path" ]]; then
+  zimage_sha="$(sha256sum "$zimage_path" | awk '{print $1}')"
+fi
+if [[ -f "$rootfs_cpio_path" ]]; then
+  rootfs_cpio_sha="$(sha256sum "$rootfs_cpio_path" | awk '{print $1}')"
+fi
+
+snapshot_time=""
+if [[ -f "$SNAPSHOT_TIME_FILE" ]]; then
+  snapshot_time="$(cat "$SNAPSHOT_TIME_FILE")"
+fi
+
+snapshot_tree_sha=""
+if [[ -d "$SNAPSHOT_DIR" ]]; then
+  snapshot_tree_sha="$(
+    (
+      cd "$SNAPSHOT_DIR"
+      while IFS= read -r -d '' file; do
+        rel_path="${file#$SNAPSHOT_DIR_REL/}"
+        if [[ "$rel_path" == "${GENERATED_MANIFEST_REL#$SNAPSHOT_DIR_REL/}" ]]; then
+          continue
+        fi
+        sha256sum "./$rel_path"
+      done < <(git -C "$ROOT_DIR" ls-files -z -- "$SNAPSHOT_DIR_REL")
+    ) | sha256sum | awk '{print $1}'
+  )"
+fi
+
+nfc_bindings_sha=""
+if [[ -f "$NFC_BINDINGS_FILE" ]]; then
+  nfc_bindings_sha="$(sha256sum "$NFC_BINDINGS_FILE" | awk '{print $1}')"
+fi
+
+repo_head="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+repo_dirty=0
+if [[ -n "$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || true)" ]]; then
+  repo_dirty=1
+fi
+build_time_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+mkdir -p "$(dirname "$RAW_BUILD_INFO")"
+{
+  printf 'raw_image_path=%q\n' "$RAW_IMG_PATH"
+  printf 'raw_image_sha256=%q\n' "$raw_sha"
+  printf 'build_output_zimage_path=%q\n' "$zimage_path"
+  printf 'build_output_zimage_sha256=%q\n' "$zimage_sha"
+  printf 'build_output_rootfs_cpio_path=%q\n' "$rootfs_cpio_path"
+  printf 'build_output_rootfs_cpio_sha256=%q\n' "$rootfs_cpio_sha"
+  printf 'source_snapshot_build_commit_time=%q\n' "$snapshot_time"
+  printf 'runtime_snapshot_tree_sha256=%q\n' "$snapshot_tree_sha"
+  printf 'nfc_bindings_mk_sha256=%q\n' "$nfc_bindings_sha"
+  printf 'repo_head=%q\n' "$repo_head"
+  printf 'repo_dirty=%q\n' "$repo_dirty"
+  printf 'build_clean_mode=%q\n' "$TP_BUILD_CLEAN_MODE"
+  printf 'build_time_utc=%q\n' "$build_time_utc"
+  printf 'build_script=%q\n' "scripts/run_seedsigner_build.sh"
+} > "$RAW_BUILD_INFO"
+
+echo "Raw build info:  $RAW_BUILD_INFO"

@@ -21,7 +21,7 @@ except Exception:
     Picamera2 = None
 
 try:
-    from picamera.array import PiRGBArray
+    from picamera.array import PiRGBArray, PiYUVArray
     from picamera import PiCamera
     from picamera.exc import PiCameraMMALError
 
@@ -29,6 +29,7 @@ try:
 except Exception:
     PICAMERA_AVAILABLE = False
     PiRGBArray = None
+    PiYUVArray = None
     PiCamera = None
     PiCameraMMALError = None
 
@@ -54,6 +55,7 @@ class VideoStream:
         device_index=0,
         camera_config=None,
         prefer_v4l2=False,
+        prefer_greyscale=False,
         **kwargs,
     ):
         self.should_stop = False
@@ -79,12 +81,17 @@ class VideoStream:
         self._v4l2_decode_as_grey = False
         self._camera_config = camera_config or {}
         self._prefer_v4l2 = bool(prefer_v4l2)
+        self._prefer_greyscale = bool(prefer_greyscale)
         self._picamera2_has_lores = False
+        self._picamera2_main_is_yuv420 = False
+        self._picamera_output_is_yuv = False
 
         if PICAMERA2_AVAILABLE and not self._prefer_v4l2:
             self.camera = Picamera2()
+            main_format = "YUV420" if self._prefer_greyscale else "RGB888"
+            self._picamera2_main_is_yuv420 = main_format == "YUV420"
             config_kwargs = {
-                "main": {"size": resolution, "format": "RGB888"},
+                "main": {"size": resolution, "format": main_format},
                 "controls": {"FrameRate": float(framerate)},
             }
             if resolution[0] >= PICAMERA2_PREVIEW_RESOLUTION[0] and resolution[1] >= PICAMERA2_PREVIEW_RESOLUTION[1]:
@@ -117,10 +124,15 @@ class VideoStream:
                 logger.warning("PiCamera init failed; retrying once after brief delay")
                 time.sleep(0.5)
                 self.camera = PiCamera(resolution=resolution, framerate=framerate, **kwargs)
+            # Legacy PiCamera with OV5647 tends to scan dense phone QRs more
+            # reliably via the established RGB video-port path than the direct
+            # YUV capture path we tested here.
+            self._picamera_output_is_yuv = False
             self.raw_capture = PiRGBArray(self.camera, size=resolution)
+            capture_format = "rgb"
             self.stream = self.camera.capture_continuous(
                 self.raw_capture,
-                format="rgb",
+                format=capture_format,
                 use_video_port=True,
             )
             self.use_picamera = True
@@ -655,15 +667,18 @@ class VideoStream:
                         ):
                             arrays = captured[0]
                         if isinstance(arrays, (list, tuple)) and len(arrays) >= 2:
-                            self.display_frame = arrays[0]
-                            self.frame = self._picamera2_main_to_greyscale(self.display_frame)
+                            grey_frame = self._picamera2_main_to_greyscale(arrays[0])
+                            self.display_frame = grey_frame if self._prefer_greyscale else arrays[0]
+                            self.frame = grey_frame
                             self.preview_frame = self._picamera2_lores_to_image(arrays[1])
                             continue
                     except Exception:
                         self._picamera2_has_lores = False
                         logger.exception("Picamera2 lores capture failed; falling back to main stream only")
-                self.display_frame = self.camera.capture_array()
-                self.frame = self._picamera2_main_to_greyscale(self.display_frame)
+                captured = self.camera.capture_array()
+                grey_frame = self._picamera2_main_to_greyscale(captured)
+                self.display_frame = grey_frame if self._prefer_greyscale else captured
+                self.frame = grey_frame
                 self.preview_frame = None
             self.camera.stop()
             self.camera.close()
@@ -673,7 +688,14 @@ class VideoStream:
 
         if self.use_picamera:
             for f in self.stream:
-                self.frame = f.array
+                if self._picamera_output_is_yuv:
+                    luminance = self._extract_y_plane(f.array, *self.resolution)
+                    self.frame = luminance
+                    self.display_frame = luminance
+                else:
+                    self.frame = f.array
+                    self.display_frame = f.array
+                self.preview_frame = None
                 self.raw_capture.truncate(0)
                 if self.should_stop:
                     self.stream.close()
@@ -718,7 +740,22 @@ class VideoStream:
                 return None
         return Image.fromarray(luminance.astype("uint8"), "L").convert("RGB")
 
+    def _extract_y_plane(self, frame_data, width: int, height: int):
+        try:
+            if getattr(frame_data, "ndim", 0) >= 3:
+                return frame_data[:height, :width, 0]
+            return frame_data[:height, :width]
+        except Exception:
+            try:
+                expected = width * height
+                return frame_data.reshape(-1)[:expected].reshape((height, width))
+            except Exception:
+                logger.exception("Unable to extract luminance plane from YUV420 frame")
+                return frame_data
+
     def _picamera2_main_to_greyscale(self, frame_data):
+        if self._picamera2_main_is_yuv420:
+            return self._extract_y_plane(frame_data, *self.resolution)
         try:
             if len(frame_data.shape) >= 3:
                 # Use a single channel to avoid extra per-frame math on slow Pi models.

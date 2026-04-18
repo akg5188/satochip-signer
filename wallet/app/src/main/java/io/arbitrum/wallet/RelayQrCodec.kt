@@ -1,11 +1,11 @@
 package io.arbitrum.wallet
 
-import android.util.Base64
 import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
 import java.util.zip.CRC32
 import java.util.zip.Deflater
 import java.util.zip.DeflaterOutputStream
+import java.util.Base64
 import kotlin.math.ceil
 import kotlin.math.min
 
@@ -26,10 +26,7 @@ object RelayQrCodec {
         require(payload.isNotBlank()) { "请求为空" }
 
         val compressed = deflateUtf8(payload)
-        val encoded = Base64.encodeToString(
-            compressed,
-            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
-        )
+        val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(compressed)
         val crc = crc32Decimal(encoded)
         val chunkChars = when {
             encoded.length <= SINGLE_PAGE_THRESHOLD -> encoded.length
@@ -52,7 +49,7 @@ object RelayQrCodec {
         return out.toByteArray()
     }
 
-    private fun crc32Decimal(value: String): String {
+    fun crc32Decimal(value: String): String {
         val crc = CRC32()
         crc.update(value.toByteArray(StandardCharsets.UTF_8))
         return (crc.value and 0xFFFFFFFFL).toString()

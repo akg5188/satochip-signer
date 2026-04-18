@@ -1,6 +1,7 @@
 import math
 import os
 import time
+from threading import Lock
 
 from dataclasses import dataclass
 from gettext import gettext as _
@@ -14,7 +15,7 @@ from seedsigner.hardware.camera import Camera
 from seedsigner.models.decode_qr import DecodeQR, DecodeQRStatus
 from seedsigner.models.threads import BaseThread, ThreadsafeCounter
 
-from .screen import BaseScreen, BaseTopNavScreen, ButtonListScreen, LoadingScreenThread
+from .screen import RET_CODE__BACK_BUTTON, BaseTopNavScreen, ButtonListScreen, LoadingScreenThread
 from ..components import GUIConstants, Fonts, SeedSignerIconConstants, Button, IconButton, TextArea
 
 from seedsigner.gui.components import GUIConstants, Fonts, resize_image_to_fit
@@ -22,13 +23,8 @@ from seedsigner.gui.components import GUIConstants, Fonts, resize_image_to_fit
 from seedsigner.models.decode_qr import DecodeQR
 from seedsigner.models.threads import BaseThread, ThreadsafeCounter
 
-from .screen import BaseScreen
-
-
-
-
 @dataclass
-class ScanScreen(BaseScreen):
+class ScanScreen(BaseTopNavScreen):
     """
     Live preview has to balance three competing threads:
     * Camera capturing frames and making them available to read.
@@ -58,6 +54,9 @@ class ScanScreen(BaseScreen):
     resolution: tuple[int,int] = (480, 480)
     framerate: int = 6  # TODO: alternate optimization for Pi Zero 2W?
     render_rect: tuple[int,int,int,int] = None
+    show_top_nav: bool = False
+    show_status_overlay: bool = True
+    exit_on_any_button: bool = False
 
     FRAME__ADDED_PART = 1
     FRAME__REPEATED_PART = 2
@@ -65,15 +64,28 @@ class ScanScreen(BaseScreen):
 
     def __post_init__(self):
         from seedsigner.hardware.camera import Camera
-        # Initialize the base class
+        self.title = _("Scan") if self.show_top_nav else ""
+        self.show_back_button = self.show_top_nav
         super().__post_init__()
 
+        if not self.show_top_nav:
+            if self.top_nav in self.components:
+                self.components.remove(self.top_nav)
+            self.top_nav = None
+
         tp_only_mode = os.environ.get("TP_ONLY_MODE") == "1"
-        if tp_only_mode or not self.instructions_text:
+        if tp_only_mode or not self.instructions_text or not self.show_status_overlay:
             self.instructions_text = ""
         else:
-            # TODO: Arrange this with UI elements rather than text
-            self.instructions_text = "< " + _("back") + "  |  " + _(self.instructions_text)
+            translated_instructions = _(self.instructions_text)
+            if self.show_top_nav:
+                self.instructions_text = translated_instructions
+            else:
+                self.instructions_text = "< " + _("back") + "  |  " + translated_instructions
+
+        if not self.render_rect:
+            render_top = self.top_nav.height if self.top_nav else 0
+            self.render_rect = (0, render_top, self.canvas_width, self.canvas_height)
 
         self.camera = Camera.get_instance()
         loading_screen = LoadingScreenThread(text="" if tp_only_mode else _("Starting camera..."))
@@ -94,20 +106,30 @@ class ScanScreen(BaseScreen):
             decoder=self.decoder,
             renderer=self.renderer,
             instructions_text=self.instructions_text,
+            top_nav=self.top_nav,
+            show_status_overlay=self.show_status_overlay,
             render_rect=self.render_rect,
             frame_decode_status=self.frames_decode_status,
             frames_decoded_counter=self.frames_decoded_counter,
         ))
+        self.threads.append(
+            ScanScreen.HardwareInputThread(
+                hw_inputs=self.hw_inputs,
+                keys=HardwareButtonsConstants.ALL_KEYS,
+            )
+        )
 
 
     class LivePreviewThread(BaseThread):
-        def __init__(self, decoder: DecodeQR, renderer: renderer.Renderer, instructions_text: str, render_rect: tuple[int,int,int,int], frame_decode_status: ThreadsafeCounter, frames_decoded_counter: ThreadsafeCounter):
+        def __init__(self, decoder: DecodeQR, renderer: renderer.Renderer, instructions_text: str, top_nav, show_status_overlay: bool, render_rect: tuple[int,int,int,int], frame_decode_status: ThreadsafeCounter, frames_decoded_counter: ThreadsafeCounter):
             from seedsigner.hardware.camera import Camera
 
             self.camera = Camera.get_instance()
             self.decoder = decoder
             self.renderer = renderer
             self.instructions_text = instructions_text
+            self.top_nav = top_nav
+            self.show_status_overlay = show_status_overlay
             if render_rect:
                 self.render_rect = render_rect            
             else:
@@ -117,6 +139,10 @@ class ScanScreen(BaseScreen):
             self.last_frame_decoded_count = self.frames_decoded_counter.cur_count
             self.render_width = self.render_rect[2] - self.render_rect[0]
             self.render_height = self.render_rect[3] - self.render_rect[1]
+            self.use_direct_render = (
+                self.top_nav is None
+                and self.render_rect == (0, 0, self.renderer.canvas_width, self.renderer.canvas_height)
+            )
             self.decoder_fps = "0.0"
 
             super().__init__()
@@ -160,14 +186,19 @@ class ScanScreen(BaseScreen):
                     with self.renderer.lock:
                         # Use nearest neighbor resizing for max speed
                         frame = resize_image_to_fit(frame, self.render_width, self.render_height, sampling_method=Image.Resampling.NEAREST)
+                        if self.use_direct_render:
+                            display_frame = frame
+                        else:
+                            display_frame = Image.new("RGB", (self.renderer.canvas_width, self.renderer.canvas_height), "black")
+                            display_frame.paste(frame, (self.render_rect[0], self.render_rect[1]))
 
-                        if scan_text:
+                        if self.show_status_overlay and scan_text:
                             # Note: shadowed text (adding a 'stroke' outline) can
                             # significantly slow down the rendering.
                             # Temp solution: render a slight 1px shadow behind the text
                             # TODO: Replace the instructions_text with a disappearing
                             # toast/popup (see: QR Brightness UI)?
-                            draw = ImageDraw.Draw(frame)
+                            draw = ImageDraw.Draw(display_frame)
                             draw.text(xy=(
                                         int(self.renderer.canvas_width/2 + 2),
                                         self.renderer.canvas_height - GUIConstants.EDGE_PADDING + 2
@@ -187,7 +218,7 @@ class ScanScreen(BaseScreen):
                                      font=instructions_font,
                                      anchor="ms")
 
-                        else:
+                        elif self.show_status_overlay:
                             # Render the progress bar
                             rectangle = Image.new('RGBA', (self.renderer.canvas_width - 2*GUIConstants.EDGE_PADDING, GUIConstants.BUTTON_HEIGHT), (0, 0, 0, 0))
                             draw = ImageDraw.Draw(rectangle)
@@ -238,7 +269,7 @@ class ScanScreen(BaseScreen):
                                 anchor="rm",  # right-justified, middle
                             )
 
-                            frame.paste(rectangle, (GUIConstants.EDGE_PADDING, self.renderer.canvas_height - GUIConstants.EDGE_PADDING - rectangle.height), rectangle)
+                            display_frame.paste(rectangle, (GUIConstants.EDGE_PADDING, self.renderer.canvas_height - GUIConstants.EDGE_PADDING - rectangle.height), rectangle)
 
                             # Render the dot to indicate successful QR frame read
                             indicator_size = 10
@@ -252,7 +283,7 @@ class ScanScreen(BaseScreen):
                             if status_color:
                                 # Good! Most recent frame successfully decoded.
                                 # Draw the onscreen indicator dot
-                                draw = ImageDraw.Draw(frame)
+                                draw = ImageDraw.Draw(display_frame)
                                 draw.ellipse(
                                     (
                                         (self.renderer.canvas_width - GUIConstants.EDGE_PADDING - indicator_size, self.renderer.canvas_height - GUIConstants.EDGE_PADDING - GUIConstants.BUTTON_HEIGHT - GUIConstants.COMPONENT_PADDING - indicator_size),
@@ -263,10 +294,49 @@ class ScanScreen(BaseScreen):
                                     width=1,
                                 )
 
-                        self.renderer.show_image(frame, show_direct=True)
+                        if self.use_direct_render:
+                            self.renderer.show_image(display_frame, show_direct=True)
+                        else:
+                            self.renderer.canvas.paste(display_frame)
+                            if self.top_nav:
+                                self.top_nav.render()
+                            self.renderer.show_image()
 
                 if self.camera._video_stream is None:
                     break
+
+
+    class HardwareInputThread(BaseThread):
+        def __init__(self, hw_inputs, keys):
+            self.hw_inputs = hw_inputs
+            self.keys = keys
+            self._pending_input = None
+            self._lock = Lock()
+            super().__init__()
+
+        def stop(self):
+            super().stop()
+            self.hw_inputs.trigger_override(force_release=True)
+
+        def pop_pending_input(self):
+            with self._lock:
+                pending_input = self._pending_input
+                self._pending_input = None
+            return pending_input
+
+        def run(self):
+            while self.keep_running:
+                user_input = self.hw_inputs.wait_for(
+                    self.keys,
+                    check_release=True,
+                    release_keys=self.keys,
+                )
+                if not self.keep_running:
+                    break
+                if user_input == HardwareButtonsConstants.OVERRIDE:
+                    continue
+                with self._lock:
+                    self._pending_input = user_input
 
 
     def _run(self):
@@ -278,9 +348,46 @@ class ScanScreen(BaseScreen):
         from seedsigner.hardware.buttons import HardwareButtonsConstants
         from seedsigner.models.decode_qr import DecodeQRStatus
 
+        def update_top_nav_selection(is_selected: bool):
+            if self.top_nav.is_selected == is_selected:
+                return
+            with self.renderer.lock:
+                self.top_nav.is_selected = is_selected
+                self.top_nav.render_buttons()
+                self.renderer.show_image()
+
         num_frames = 0
         start_time = time.time()
+        input_thread = None
+        for thread in self.threads:
+            if isinstance(thread, ScanScreen.HardwareInputThread):
+                input_thread = thread
+                break
+
         while True:
+            user_input = input_thread.pop_pending_input() if input_thread else None
+            if user_input is not None:
+                if self.exit_on_any_button:
+                    self.camera.stop_video_stream_mode()
+                    return RET_CODE__BACK_BUTTON
+
+                if self.top_nav is None and user_input in [HardwareButtonsConstants.KEY_LEFT, HardwareButtonsConstants.KEY_RIGHT]:
+                    self.camera.stop_video_stream_mode()
+                    return RET_CODE__BACK_BUTTON
+
+                if user_input == HardwareButtonsConstants.KEY_LEFT:
+                    self.camera.stop_video_stream_mode()
+                    return RET_CODE__BACK_BUTTON
+
+                if self.top_nav and self.top_nav.is_selected:
+                    if user_input in HardwareButtonsConstants.KEYS__ANYCLICK:
+                        self.camera.stop_video_stream_mode()
+                        return RET_CODE__BACK_BUTTON
+                    if user_input in [HardwareButtonsConstants.KEY_DOWN, HardwareButtonsConstants.KEY_RIGHT]:
+                        update_top_nav_selection(False)
+                elif self.top_nav and user_input == HardwareButtonsConstants.KEY_UP:
+                    update_top_nav_selection(True)
+
             frame = self.camera.read_video_stream()
             if frame is not None:
                 status = self.decoder.add_image(frame)
@@ -308,9 +415,6 @@ class ScanScreen(BaseScreen):
                         # We received a valid frame, but we've already seen in
                         self.frames_decode_status.set_value(self.FRAME__REPEATED_PART)
                 
-                if self.hw_inputs.check_for_low(HardwareButtonsConstants.KEY_RIGHT) or self.hw_inputs.check_for_low(HardwareButtonsConstants.KEY_LEFT):
-                    self.camera.stop_video_stream_mode()
-                    break
 
 
 

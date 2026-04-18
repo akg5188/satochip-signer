@@ -1,4 +1,5 @@
 import base64
+import json
 import zlib
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
@@ -61,11 +62,38 @@ class RelayAssembler:
 
 
 def parse_tp_relay_fragment(raw: str) -> TpRelayFragment:
-    normalized = raw.strip()
-    if not normalized.lower().startswith("tpr1:"):
-        raise RelayParseError("不是 tpr1 中转分片")
+    return _parse_relay_fragment(raw, prefix="tpr1:", label="tpr1")
 
-    body = normalized[5:]
+
+def parse_web3_relay_fragment(raw: str) -> TpRelayFragment:
+    return _parse_relay_fragment(raw, prefix="w3r1:", label="w3r1")
+
+
+def unwrap_web3_relay_payload(payload: str) -> tuple[str, dict]:
+    try:
+        envelope = json.loads(payload)
+    except Exception as error:
+        raise RelayParseError(f"Web3 中转 JSON 无效: {error}") from error
+
+    if not isinstance(envelope, dict):
+        raise RelayParseError("Web3 中转数据不是对象")
+
+    version = envelope.get("version")
+    if version not in (1, "1", None):
+        raise RelayParseError(f"Web3 中转版本不支持: {version}")
+
+    raw_payload = str(envelope.get("payload") or "").strip()
+    if not raw_payload:
+        raise RelayParseError("Web3 中转缺少 payload")
+    return raw_payload, envelope
+
+
+def _parse_relay_fragment(raw: str, prefix: str, label: str) -> TpRelayFragment:
+    normalized = raw.strip()
+    if not normalized.lower().startswith(prefix):
+        raise RelayParseError(f"不是 {label} 中转分片")
+
+    body = normalized[len(prefix):]
     first_dot = body.find(".")
     second_dot = body.find(".", first_dot + 1)
     if first_dot <= 0 or second_dot <= first_dot + 1:

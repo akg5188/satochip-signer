@@ -12,7 +12,7 @@
 
 - `README.md`
 - `docs/快速开始.zh-CN.md`
-- `docs/当前正式发布说明.zh-CN.md`
+- `docs/版本时间线与发布入口.zh-CN.md`
 - `docs/真机全套回归清单.zh-CN.md`
 
 已知事项：

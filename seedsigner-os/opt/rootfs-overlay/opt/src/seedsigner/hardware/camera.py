@@ -109,7 +109,14 @@ class Camera(Singleton):
         cls._instance._hardware_camera_config = cls._get_hardware_camera_config()
         return cls._instance
 
-    def start_video_stream_mode(self, resolution=(512, 384), framerate=12, format="bgr"):
+    def start_video_stream_mode(
+        self,
+        resolution=(512, 384),
+        framerate=12,
+        format="bgr",
+        use_board_settings=True,
+        prefer_greyscale=False,
+    ):
         """Begin streaming frames from the active backend."""
         from seedsigner.hardware.pivideostream import VideoStream
 
@@ -120,12 +127,18 @@ class Camera(Singleton):
         stream_resolution = resolution
         stream_framerate = framerate
         stream_camera_config = dict(self._hardware_camera_config or {})
-        # Prefer board-specific io_config camera settings over generic caller
-        # defaults when present so profile tuning stays centralized.
-        if stream_camera_config.get("resolution"):
-            stream_resolution = tuple(stream_camera_config["resolution"])
-        if stream_camera_config.get("framerate"):
-            stream_framerate = int(stream_camera_config["framerate"])
+        if use_board_settings:
+            # Prefer board-specific io_config camera settings over generic caller
+            # defaults when present so profile tuning stays centralized.
+            if stream_camera_config.get("resolution"):
+                stream_resolution = tuple(stream_camera_config["resolution"])
+            if stream_camera_config.get("framerate"):
+                stream_framerate = int(stream_camera_config["framerate"])
+        else:
+            # Keep device/pixel-format hints, but let the caller override the
+            # scan profile's resolution/fps.
+            stream_camera_config.pop("resolution", None)
+            stream_camera_config.pop("framerate", None)
         if prefer_v4l2:
             stream_camera_config["resolution"] = tuple(stream_resolution)
 
@@ -136,6 +149,7 @@ class Camera(Singleton):
             device_index=self._camera_index,
             camera_config=stream_camera_config,
             prefer_v4l2=prefer_v4l2,
+            prefer_greyscale=prefer_greyscale,
         )
         self._video_stream.start()
 

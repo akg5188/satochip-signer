@@ -21,6 +21,7 @@ object WalletStorage {
     private const val KEY_TRUSTED_DAPP_HOSTS = "trusted_dapp_hosts"
     private const val LEGACY_KEY_HYPERLIQUID_AGENTS = "hyperliquid_agents"
     private const val KEY_BITCOIN_WATCH_ACCOUNTS = "bitcoin_watch_accounts"
+    private const val KEY_WEB3_BRIDGE_ACCOUNTS = "web3_bridge_accounts"
 
     fun openSecurePreferences(context: Context): SharedPreferences {
         val appContext = context.applicationContext
@@ -71,6 +72,9 @@ object WalletStorage {
         }
         if (legacyPrefs.contains(KEY_BITCOIN_WATCH_ACCOUNTS)) {
             editor.putString(KEY_BITCOIN_WATCH_ACCOUNTS, legacyPrefs.getString(KEY_BITCOIN_WATCH_ACCOUNTS, null))
+        }
+        if (legacyPrefs.contains(KEY_WEB3_BRIDGE_ACCOUNTS)) {
+            editor.putString(KEY_WEB3_BRIDGE_ACCOUNTS, legacyPrefs.getString(KEY_WEB3_BRIDGE_ACCOUNTS, null))
         }
         editor.putBoolean(KEY_MIGRATED_FROM_LEGACY, true).apply()
         legacyPrefs.edit().clear().apply()
@@ -314,6 +318,80 @@ object WalletStorage {
                 .forEach(::put)
         }
         prefs.edit().putString(KEY_TRUSTED_DAPP_HOSTS, array.toString()).apply()
+    }
+
+    fun readWeb3BridgeAccounts(prefs: SharedPreferences): List<Web3BridgeAccount> {
+        val raw = prefs.getString(KEY_WEB3_BRIDGE_ACCOUNTS, null)
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            buildList {
+                val array = JSONArray(raw)
+                for (index in 0 until array.length()) {
+                    val obj = array.optJSONObject(index) ?: continue
+                    val address = obj.optString("address").trim()
+                    val addressPath = obj.optString("addressPath").trim()
+                    val accountPath = obj.optString("accountPath").trim()
+                    val masterFingerprint = obj.optString("masterFingerprint").trim()
+                    val compressedPubKeyHex = obj.optString("compressedPubKeyHex").trim()
+                    val chainCodeHex = obj.optString("chainCodeHex").trim()
+                    val xpub = obj.optString("xpub").trim()
+                    val sourceLabel = obj.optString("sourceLabel").trim()
+                    if (
+                        address.isBlank() ||
+                        addressPath.isBlank() ||
+                        accountPath.isBlank() ||
+                        masterFingerprint.isBlank() ||
+                        compressedPubKeyHex.isBlank() ||
+                        chainCodeHex.isBlank() ||
+                        xpub.isBlank() ||
+                        sourceLabel.isBlank()
+                    ) {
+                        continue
+                    }
+                    add(
+                        Web3BridgeAccount(
+                            address = address,
+                            addressPath = addressPath,
+                            accountPath = accountPath,
+                            masterFingerprint = masterFingerprint,
+                            compressedPubKeyHex = compressedPubKeyHex,
+                            chainCodeHex = chainCodeHex,
+                            xpub = xpub,
+                            sourceLabel = sourceLabel,
+                            importedAt = obj.optLong("importedAt", 0L),
+                            label = obj.optString("label").ifBlank { "Web3 账户" },
+                            childrenPath = obj.optString("childrenPath").ifBlank { "0/*" },
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun writeWeb3BridgeAccounts(prefs: SharedPreferences, accounts: List<Web3BridgeAccount>) {
+        val array = JSONArray().apply {
+            accounts
+                .sortedByDescending { it.importedAt }
+                .distinctBy { it.address.lowercase() }
+                .forEach { account ->
+                    put(
+                        JSONObject().apply {
+                            put("address", account.address)
+                            put("addressPath", account.addressPath)
+                            put("accountPath", account.accountPath)
+                            put("masterFingerprint", account.masterFingerprint)
+                            put("compressedPubKeyHex", account.compressedPubKeyHex)
+                            put("chainCodeHex", account.chainCodeHex)
+                            put("xpub", account.xpub)
+                            put("sourceLabel", account.sourceLabel)
+                            put("importedAt", account.importedAt)
+                            put("label", account.label)
+                            put("childrenPath", account.childrenPath)
+                        }
+                    )
+                }
+        }
+        prefs.edit().putString(KEY_WEB3_BRIDGE_ACCOUNTS, array.toString()).apply()
     }
 
     fun readBitcoinWatchAccounts(prefs: SharedPreferences): List<BitcoinWatchAccount> {

@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -185,7 +186,6 @@ class MainActivity : BiometricGateActivity() {
                     onPrepareTransferRequest = viewModel::prepareTransferRequest,
                     onRequestInputChange = viewModel::setRequestInput,
                     onImportRawRequest = viewModel::importRawRequest,
-                    onImportRequestFromClipboard = ::importRequestFromClipboard,
                     onApproveWalletConnectProposal = ::approveWalletConnectProposalWithBiometric,
                     onRejectWalletConnectProposal = viewModel::rejectWalletConnectProposal,
                     onApproveWalletConnectRequest = ::approveWalletConnectRequestWithBiometric,
@@ -307,7 +307,6 @@ private fun WalletScreen(
     onPrepareTransferRequest: (String, String, String) -> Unit,
     onRequestInputChange: (String) -> Unit,
     onImportRawRequest: () -> Unit,
-    onImportRequestFromClipboard: () -> Unit,
     onApproveWalletConnectProposal: () -> Unit,
     onRejectWalletConnectProposal: () -> Unit,
     onApproveWalletConnectRequest: () -> Unit,
@@ -332,7 +331,7 @@ private fun WalletScreen(
     if (state.signQrPages.size > 1 && state.signQrBitmap != null) {
         LaunchedEffect(state.signQrPages) {
             while (true) {
-                delay(1000)
+                delay(1800)
                 onAutoAdvanceRelayPage()
             }
         }
@@ -370,7 +369,13 @@ private fun WalletScreen(
     LaunchedEffect(state.preparingRequest, hasPreparedRequest, hasPendingBroadcast) {
         if (state.preparingRequest || hasPreparedRequest || hasPendingBroadcast) {
             homeSelectedAssetId = null
-            onSelectTab(WalletTab.HOME)
+            onSelectTab(
+                if (hasPreparedRequest && state.preparedQrKind != PreparedQrKind.PI_REQUEST) {
+                    WalletTab.DISCOVER
+                } else {
+                    WalletTab.HOME
+                }
+            )
             pageScrollState.scrollTo(0)
         }
     }
@@ -514,7 +519,6 @@ private fun WalletScreen(
                 )
             }
             WalletTab.DISCOVER -> {
-                CoordinatorModeSection()
                 WalletConnectSection(
                     state = state,
                     onApproveWalletConnectProposal = onApproveWalletConnectProposal,
@@ -527,7 +531,6 @@ private fun WalletScreen(
                     state = state,
                     onRequestInputChange = onRequestInputChange,
                     onImportRawRequest = onImportRawRequest,
-                    onImportRequestFromClipboard = onImportRequestFromClipboard,
                     onScanRequest = onScanRequest,
                     onPickRequestFromGallery = onPickRequestFromGallery,
                 )
@@ -572,21 +575,6 @@ private fun PendingBroadcastSection(
                 TextButton(onClick = onCancelPendingBroadcast) { Text("取消") }
             }
         }
-    }
-}
-
-@Composable
-private fun CoordinatorModeSection() {
-    WalletSectionCard {
-        SectionHeader(
-            title = "高安全 DApp 协调器",
-            subtitle = "手机只负责观察、导入请求、显示待签名内容、接收树莓派结果，并在你确认后广播。",
-        )
-        Text(
-            "已禁用内置 DApp 浏览器和系统剪贴板自动读取，降低网页注入和剪贴板污染带来的攻击面。",
-            fontSize = 12.sp,
-            color = Color(0xFF475467),
-        )
     }
 }
 
@@ -2878,40 +2866,34 @@ private fun DappToolsSection(
     state: WalletUiState,
     onRequestInputChange: (String) -> Unit,
     onImportRawRequest: () -> Unit,
-    onImportRequestFromClipboard: () -> Unit,
     onScanRequest: () -> Unit,
     onPickRequestFromGallery: () -> Unit,
 ) {
     var showManualTools by rememberSaveable { mutableStateOf(false) }
 
     WalletSectionCard {
-        SectionHeader(
-            title = "DApp 签名工具",
-            subtitle = "优先使用扫码导入 WalletConnect 或原始请求，减少本机敏感数据暴露面。",
-        )
+        SectionHeader(title = "WalletConnect / DApp")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = onScanRequest, modifier = Modifier.weight(1f)) { Text("扫码连接", fontSize = 12.sp) }
-            OutlinedButton(onClick = onPickRequestFromGallery, modifier = Modifier.weight(1f)) { Text("相册二维码", fontSize = 12.sp) }
-            OutlinedButton(onClick = { showManualTools = !showManualTools }, modifier = Modifier.weight(1f)) {
-                Text(if (showManualTools) "收起高级" else "高级导入", fontSize = 12.sp)
+            Button(onClick = onScanRequest, modifier = Modifier.weight(1f)) {
+                Text("扫描二维码", fontSize = 13.sp)
+            }
+            OutlinedButton(onClick = onPickRequestFromGallery, modifier = Modifier.weight(1f)) {
+                Text("相册导入", fontSize = 12.sp)
             }
         }
-        Text(
-            "高安全模式已禁用系统剪贴板自动导入，请手动粘贴到下方输入框，或直接扫码。",
-            fontSize = 12.sp,
-            color = Color(0xFF667085),
-        )
+        TextButton(onClick = { showManualTools = !showManualTools }) {
+            Text(if (showManualTools) "收起文本导入" else "文本导入")
+        }
         if (showManualTools) {
             OutlinedTextField(
                 value = state.requestInput,
                 onValueChange = onRequestInputChange,
-                label = { Text("手动粘贴 WalletConnect 连接 / DApp 原始请求") },
+                label = { Text("粘贴 WalletConnect / 原始请求") },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 2,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = onImportRawRequest, modifier = Modifier.weight(1f)) { Text("解析文本", fontSize = 12.sp) }
-                OutlinedButton(onClick = onImportRequestFromClipboard, modifier = Modifier.weight(1f)) { Text("剪贴板已禁用", fontSize = 12.sp) }
+            OutlinedButton(onClick = onImportRawRequest, modifier = Modifier.fillMaxWidth()) {
+                Text("解析文本", fontSize = 12.sp)
             }
         }
     }
@@ -3010,11 +2992,6 @@ private fun WalletConnectSection(
             Text("WalletConnect", fontWeight = FontWeight.Bold)
             Text(
                 state.walletConnectStatus.ifBlank { "尚未建立 WalletConnect 会话" },
-                fontSize = 12.sp,
-                color = Color(0xFF475467),
-            )
-            Text(
-                "高安全模式仅允许已验证、HTTPS 且主机合法的 DApp，并且只授权当前手动选中的观察地址与链。请求阶段还必须命中当前地址/链的可信范围，超出最小方法集或多链提案会被自动拒绝。",
                 fontSize = 12.sp,
                 color = Color(0xFF475467),
             )
@@ -3207,6 +3184,11 @@ private fun PreparedRequestSection(
     onPickResponseFromGallery: () -> Unit,
     onClearPreparedRequest: () -> Unit,
 ) {
+    val qrPagerLabel = when (state.preparedQrKind) {
+        PreparedQrKind.PI_REQUEST -> "动态中转"
+        PreparedQrKind.WEB3_CONNECT -> "动态连接码"
+        PreparedQrKind.WEB3_SIGNATURE -> "动态签名码"
+    }
     Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Column(
             modifier = Modifier.padding(14.dp),
@@ -3249,13 +3231,40 @@ private fun PreparedRequestSection(
                 bitmap = state.signQrBitmap!!,
                 pageIndex = state.signQrPageIndex,
                 pageCount = state.signQrPages.size,
-                qrSize = if (state.signQrPages.size > 1) 312.dp else 320.dp,
+                qrSize = if (state.signQrPages.size > 1) 318.dp else 326.dp,
+                labelPrefix = qrPagerLabel,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = onScanResponse, modifier = Modifier.weight(1f)) { Text("扫码结果", fontSize = 12.sp) }
-                OutlinedButton(onClick = onPickResponseFromGallery, modifier = Modifier.weight(1f)) { Text("相册导入", fontSize = 12.sp) }
+            when (state.preparedQrKind) {
+                PreparedQrKind.PI_REQUEST -> {
+                    if (state.pendingResponseType == null) {
+                        Text(
+                            "树莓派签名后，请直接让原钱包扫描树莓派屏幕上的结果二维码，不需要再扫回手机。",
+                            fontSize = 11.sp,
+                            color = Color(0xFF667085),
+                        )
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(onClick = onScanResponse, modifier = Modifier.weight(1f)) {
+                                Text("扫码结果", fontSize = 12.sp)
+                            }
+                            OutlinedButton(onClick = onPickResponseFromGallery, modifier = Modifier.weight(1f)) {
+                                Text("相册导入", fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+
+                PreparedQrKind.WEB3_CONNECT -> {
+                    Spacer(modifier = Modifier.height(0.dp))
+                }
+
+                PreparedQrKind.WEB3_SIGNATURE -> {
+                    Spacer(modifier = Modifier.height(0.dp))
+                }
             }
-            TextButton(onClick = onClearPreparedRequest) { Text("取消") }
+            TextButton(onClick = onClearPreparedRequest) {
+                Text(if (state.preparedQrKind == PreparedQrKind.PI_REQUEST) "取消" else "关闭")
+            }
         }
     }
 }
@@ -3293,7 +3302,13 @@ private fun assetAmountLooksZero(value: String): Boolean {
 }
 
 @Composable
-private fun RelayQrFrame(bitmap: Bitmap, pageIndex: Int, pageCount: Int, qrSize: Dp) {
+private fun RelayQrFrame(
+    bitmap: Bitmap,
+    pageIndex: Int,
+    pageCount: Int,
+    qrSize: Dp,
+    labelPrefix: String = "动态中转",
+) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
         modifier = Modifier.fillMaxWidth(),
@@ -3311,7 +3326,7 @@ private fun RelayQrFrame(bitmap: Bitmap, pageIndex: Int, pageCount: Int, qrSize:
                     shape = RectangleShape,
                 ) {
                     Text(
-                        text = "动态中转 ${pageIndex + 1}/$pageCount · 1 秒轮播",
+                        text = "$labelPrefix ${pageIndex + 1}/$pageCount · 1 秒轮播",
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                         color = Color.White,
                         fontSize = 12.sp,

@@ -3,17 +3,19 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 from gettext import gettext as _
 
 from seedsigner.gui.components import GUIConstants
@@ -29,10 +31,21 @@ from seedsigner.helpers.signature_health import (
 )
 from seedsigner.helpers.firmware_integrity import DEFAULT_MANIFEST_PATH, verify_runtime_manifest
 from seedsigner.helpers.tp_fragment import FragmentParseError, MultiFragmentAssembler, parse_tp_multi_fragment
-from seedsigner.helpers.tp_relay import RelayAssembler, RelayParseError, parse_tp_relay_fragment
+from seedsigner.helpers.tp_relay import (
+    RelayAssembler,
+    RelayParseError,
+    parse_tp_relay_fragment,
+    parse_web3_relay_fragment,
+    unwrap_web3_relay_payload,
+)
 from seedsigner.helpers import embit_utils, seedkeeper_utils
+from seedsigner.helpers.ur2.cbor_lite import CBOREncoder, Tag_Major_semantic
+from seedsigner.helpers.ur2.ur import UR
+from seedsigner.helpers.ur2.ur_decoder import URDecoder
+from seedsigner.helpers.ur2.ur_encoder import UREncoder
+from seedsigner.hardware.microsd import MicroSD
 from seedsigner.models.decode_qr import DecodeQR, DecodeQRStatus
-from seedsigner.models.encode_qr import GenericStaticQrEncoder
+from seedsigner.models.encode_qr import BaseSimpleAnimatedQREncoder, GenericStaticQrEncoder
 from seedsigner.models.mnemonic_steel import (
     DEFAULT_SHIFT_OPERATOR,
     OPERATOR_LABELS,
@@ -54,11 +67,39 @@ from seedsigner.models.seed import InvalidSeedException, Seed, TransientWordSeed
 from seedsigner.models.settings import Settings, SettingsConstants
 from seedsigner.hardware.buttons import HardwareButtonsConstants
 
-from .view import Destination, ErrorView, View
+from .view import BackStackView, Destination, ErrorView, View
 
 
 DEFAULT_DERIVATION_PATH = "m/44'/60'/0'/0/0"
 DEFAULT_BTC_ADDRESS_PATH = "m/84'/0'/0'/0/0"
+WEB3_WALLET_PROFILE_OKX = "okx"
+WEB3_WALLET_PROFILE_BITGET = "bitget"
+WEB3_WALLET_PROFILE_METAMASK = "metamask"
+WEB3_WALLET_PROFILE_RABBY = "rabby"
+WEB3_WALLET_PROFILE_TOKENPOCKET = "tokenpocket"
+WEB3_WALLET_PROFILE_LABELS = {
+    WEB3_WALLET_PROFILE_OKX: "OKX Wallet",
+    WEB3_WALLET_PROFILE_BITGET: "Bitget Wallet",
+    WEB3_WALLET_PROFILE_METAMASK: "MetaMask",
+    WEB3_WALLET_PROFILE_RABBY: "Rabby Wallet",
+    WEB3_WALLET_PROFILE_TOKENPOCKET: "TokenPocket",
+}
+WEB3_OKX_DEVICE_TYPE = "Keystone 3 Pro"
+WEB3_KEYSTONE_DEVICE_TYPE = "Keystone 3 Pro"
+WEB3_KEYSTONE_DEVICE_VERSION = "1.0.4"
+WEB3_ETH_COIN_TYPE = 0x3C
+WEB3_BTC_COIN_TYPE = 0
+WEB3_MAINNET_NETWORK = 0
+WEB3_OKX_LEDGER_LIVE_ACCOUNT_COUNT = 10
+WEB3_OKX_BTC_ACCOUNT_PATHS = (
+    "m/49'/0'/0'",
+    "m/84'/0'/0'",
+)
+WEB3_OKX_CONNECT_QR_MAX_FRAGMENT_LEN = 160
+WEB3_OKX_CONNECT_QR_FRAME_REPEAT = 1
+WEB3_BITKEEP_BTC_ACCOUNT_PATHS = (
+    "m/84'/0'/0'",
+)
 DEFAULT_SCREENSAVER_MS = 2 * 60 * 1000
 TP_MODE_SCREENSAVER_MS = 10 * 365 * 24 * 60 * 60 * 1000
 TP_BTC_XPUB_EXPORTS = {
@@ -81,6 +122,11 @@ _TP_UI_LOCK_CACHE_INITIALIZED = False
 
 logger = logging.getLogger(__name__)
 _SIGNER_PREVIEW_MODULE = None
+WEB3_ETH_SIGNATURE_QR_MAX_FRAGMENT_LEN = 260
+WEB3_ETH_SIGNATURE_QR_FRAME_REPEAT = 1
+WEB3_ETH_SIGNATURE_LEGACY_V_MODE = os.environ.get("WEB3_ETH_SIGNATURE_LEGACY_V_MODE", "recovery_id")
+WEB3_ETH_SIGNATURE_INCLUDE_ORIGIN = os.environ.get("WEB3_ETH_SIGNATURE_INCLUDE_ORIGIN", "1").strip().lower() in {"1", "true", "yes", "on"}
+_WEB3_ETH_SIGNATURE_DEBUG_CACHE: dict[str, dict] = {}
 
 
 def _tp_bluewallet_export_script_type(xtype: str) -> str:
@@ -611,6 +657,13 @@ def _to_eip55_address(address_hex: str) -> str:
     return f"0x{encoded}"
 
 
+def _normalize_evm_address_for_compare(address: str) -> str:
+    normalized = str(address or "").strip().lower().removeprefix("0x")
+    if len(normalized) != 40 or not re.fullmatch(r"[0-9a-f]{40}", normalized):
+        raise ValueError("观察地址格式错误，请使用 0x 开头的 EVM 地址。")
+    return _to_eip55_address(normalized)
+
+
 def _to_uncompressed_secp256k1_pubkey(pubkey: bytes | str) -> bytes:
     if isinstance(pubkey, str):
         pubkey = bytes.fromhex(pubkey)
@@ -823,7 +876,7 @@ def _derive_btc_address_from_seed(seed: Seed, derivation_path: str, current_netw
     }
 
 
-def _extract_requested_derivation_path(payload: str) -> str:
+def _extract_requested_derivation_path_from_standard_payload(payload: str) -> str:
     normalized = (payload or "").strip()
     if not normalized or ":" not in normalized or "-" not in normalized:
         return DEFAULT_DERIVATION_PATH
@@ -836,11 +889,1172 @@ def _extract_requested_derivation_path(payload: str) -> str:
     return candidate if _is_valid_bip32_path(candidate) else DEFAULT_DERIVATION_PATH
 
 
+@dataclass
+class Web3EthSignRequest:
+    request_id: str | None
+    sign_data: bytes
+    data_type: int
+    chain_id: int
+    derivation_path: str
+    address: str | None
+    origin: str | None
+    request_id_cbor: object | None = None
+
+
+def _is_web3_eth_sign_request_payload(payload: str) -> bool:
+    return str(payload or "").strip().lower().startswith("ur:eth-sign-request/")
+
+
+def _read_cbor_length(buf: bytes, additional: int, pos: int) -> tuple[int, int]:
+    if additional < 24:
+        return additional, pos
+    if additional == 24:
+        return buf[pos], pos + 1
+    if additional == 25:
+        return int.from_bytes(buf[pos:pos + 2], "big"), pos + 2
+    if additional == 26:
+        return int.from_bytes(buf[pos:pos + 4], "big"), pos + 4
+    if additional == 27:
+        return int.from_bytes(buf[pos:pos + 8], "big"), pos + 8
+    raise ValueError("暂不支持的 CBOR 长度编码")
+
+
+def _parse_cbor_item(buf: bytes, pos: int = 0) -> tuple[object, int]:
+    if pos >= len(buf):
+        raise ValueError("CBOR 数据不完整")
+
+    first = buf[pos]
+    pos += 1
+    major = first >> 5
+    additional = first & 0x1F
+
+    if major in (0, 1):
+        value, pos = _read_cbor_length(buf, additional, pos)
+        return (value if major == 0 else -1 - value), pos
+
+    if major == 2:
+        length, pos = _read_cbor_length(buf, additional, pos)
+        return bytes(buf[pos:pos + length]), pos + length
+
+    if major == 3:
+        length, pos = _read_cbor_length(buf, additional, pos)
+        return bytes(buf[pos:pos + length]).decode("utf-8"), pos + length
+
+    if major == 4:
+        length, pos = _read_cbor_length(buf, additional, pos)
+        items = []
+        for _ in range(length):
+            item, pos = _parse_cbor_item(buf, pos)
+            items.append(item)
+        return items, pos
+
+    if major == 5:
+        length, pos = _read_cbor_length(buf, additional, pos)
+        items: dict[object, object] = {}
+        for _ in range(length):
+            key, pos = _parse_cbor_item(buf, pos)
+            value, pos = _parse_cbor_item(buf, pos)
+            items[key] = value
+        return items, pos
+
+    if major == 6:
+        tag, pos = _read_cbor_length(buf, additional, pos)
+        value, pos = _parse_cbor_item(buf, pos)
+        return {"tag": tag, "value": value}, pos
+
+    if major == 7:
+        if additional == 20:
+            return False, pos
+        if additional == 21:
+            return True, pos
+        if additional == 22:
+            return None, pos
+        raise ValueError("暂不支持的 CBOR simple 类型")
+
+    raise ValueError("暂不支持的 CBOR major 类型")
+
+
+def _decode_cbor_root_map(cbor_bytes: bytes) -> dict:
+    value, next_pos = _parse_cbor_item(cbor_bytes, 0)
+    if next_pos != len(cbor_bytes):
+        raise ValueError("CBOR 数据存在多余字节")
+    if not isinstance(value, dict):
+        raise ValueError("CBOR 顶层不是对象")
+    return value
+
+
+def _tagged_value(value: object, expected_tag: int | None = None) -> object:
+    if not isinstance(value, dict) or "tag" not in value or "value" not in value:
+        return value
+    tag_value = int(value["tag"])
+    if expected_tag is not None and tag_value != expected_tag:
+        raise ValueError(f"CBOR 标签不匹配: 需要 {expected_tag}，实际 {tag_value}")
+    return value["value"]
+
+
+def _canonicalize_request_id_cbor(value: object) -> object | None:
+    if value is None:
+        return None
+
+    if isinstance(value, dict) and "tag" in value and "value" in value:
+        try:
+            tag = int(value["tag"])
+        except Exception:
+            tag = None
+        inner = _canonicalize_request_id_cbor(value["value"])
+        if inner is None:
+            return None
+        if tag == 37:
+            if isinstance(inner, bytes) and len(inner) == 16:
+                return {"tag": 37, "value": bytes(inner)}
+            if isinstance(inner, str):
+                try:
+                    return {"tag": 37, "value": uuid.UUID(inner).bytes}
+                except Exception:
+                    return inner
+            return inner
+        if tag is None:
+            return inner
+        if isinstance(inner, (bytes, str, int)):
+            return {"tag": tag, "value": inner}
+        return inner
+
+    if isinstance(value, (bytes, bytearray)):
+        raw = bytes(value)
+        if len(raw) == 16:
+            try:
+                uuid.UUID(bytes=raw)
+                return raw
+            except Exception:
+                pass
+        try:
+            decoded = raw.decode("utf-8").strip()
+        except Exception:
+            decoded = ""
+        if decoded:
+            return decoded
+        return raw if raw else None
+
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+
+    if isinstance(value, int):
+        return int(value)
+
+    text = str(value).strip()
+    return text or None
+
+
+def _request_id_from_cbor(value: object) -> tuple[str | None, object | None]:
+    canonical = _canonicalize_request_id_cbor(value)
+    if canonical is None:
+        return None, None
+
+    if isinstance(canonical, dict) and canonical.get("tag") == 37 and isinstance(canonical.get("value"), bytes):
+        return str(uuid.UUID(bytes=bytes(canonical["value"]))), canonical
+
+    if isinstance(canonical, bytes):
+        raw = bytes(canonical)
+        if len(raw) == 16:
+            try:
+                return str(uuid.UUID(bytes=raw)), canonical
+            except Exception:
+                pass
+        try:
+            decoded = raw.decode("utf-8").strip()
+        except Exception:
+            decoded = ""
+        return (decoded or raw.hex()), canonical
+
+    if isinstance(canonical, str):
+        return canonical, canonical
+
+    if isinstance(canonical, int):
+        return str(canonical), canonical
+
+    text = str(canonical).strip()
+    return (text or None), canonical
+
+
+def _uuid_from_cbor(value: object) -> str | None:
+    request_id, _request_id_cbor = _request_id_from_cbor(value)
+    return request_id
+
+
+def _encode_request_id_cbor_value(cbor: CBOREncoder, value: object) -> None:
+    if isinstance(value, dict) and "tag" in value and "value" in value:
+        cbor.encodeTagAndValue(Tag_Major_semantic, int(value["tag"]))
+        _encode_request_id_cbor_value(cbor, value["value"])
+        return
+
+    if isinstance(value, (bytes, bytearray)):
+        cbor.encodeBytes(bytes(value))
+        return
+
+    if isinstance(value, str):
+        cbor.encodeText(value)
+        return
+
+    if isinstance(value, int) and value >= 0:
+        cbor.encodeUnsigned(value)
+        return
+
+    cbor.encodeText(str(value))
+
+
+def _request_id_response_cbor(request_id: str | None, request_id_cbor: object | None = None) -> object | None:
+    canonical = _canonicalize_request_id_cbor(request_id_cbor)
+    if canonical is not None:
+        return canonical
+
+    request_text = str(request_id or "").strip()
+    if not request_text:
+        return None
+    try:
+        return {"tag": 37, "value": uuid.UUID(request_text).bytes}
+    except Exception:
+        return request_text
+
+
+def _web3_address_from_cbor(value: object) -> str | None:
+    if value is None:
+        return None
+    raw = value if isinstance(value, bytes) else _tagged_value(value)
+    if raw in (None, b""):
+        return None
+    if not isinstance(raw, bytes) or len(raw) != 20:
+        raise ValueError("Web3 地址长度不正确")
+    return "0x" + raw.hex()
+
+
+def _keypath_component_to_str(component: object, hardened: bool) -> str:
+    suffix = "'" if hardened else ""
+    if isinstance(component, int):
+        return f"{component}{suffix}"
+    if isinstance(component, list) and len(component) == 0:
+        return f"*{suffix}"
+    raise ValueError("当前暂不支持的 Web3 派生路径组件")
+
+
+def _web3_keypath_to_bip32_path(value: object) -> str:
+    raw = _tagged_value(value, expected_tag=304)
+    if not isinstance(raw, dict):
+        raise ValueError("Web3 派生路径不是对象")
+    components = raw.get(1) or []
+    if not isinstance(components, list):
+        raise ValueError("Web3 派生路径组件格式错误")
+    if len(components) % 2 != 0:
+        raise ValueError("Web3 派生路径组件数量不合法")
+
+    path_parts: list[str] = []
+    index = 0
+    while index < len(components):
+        component = components[index]
+        hardened = bool(components[index + 1])
+        path_parts.append(_keypath_component_to_str(component, hardened))
+        index += 2
+    return "m" if not path_parts else "m/" + "/".join(path_parts)
+
+
+def _parse_web3_eth_sign_request_cbor(cbor_bytes: bytes) -> Web3EthSignRequest:
+    root = _decode_cbor_root_map(cbor_bytes)
+    sign_data = root.get(2)
+    if not isinstance(sign_data, bytes) or not sign_data:
+        raise ValueError("签名请求缺少 signData")
+
+    data_type = int(root.get(3) or 1)
+    chain_id = int(root.get(4) or 1)
+    derivation_path = _web3_keypath_to_bip32_path(root.get(5))
+    origin = root.get(7)
+    if origin is not None and not isinstance(origin, str):
+        raise ValueError("origin 字段格式错误")
+    request_id, request_id_cbor = _request_id_from_cbor(root.get(1))
+
+    return Web3EthSignRequest(
+        request_id=request_id,
+        sign_data=sign_data,
+        data_type=data_type,
+        chain_id=chain_id,
+        derivation_path=derivation_path,
+        address=_web3_address_from_cbor(root.get(6)),
+        origin=origin.strip() if isinstance(origin, str) and origin.strip() else None,
+        request_id_cbor=request_id_cbor,
+    )
+
+
+def _web3_wallet_meta(origin: str | None) -> tuple[str, str]:
+    normalized = str(origin or "").strip().lower()
+    if "bitget" in normalized or "bitkeep" in normalized:
+        return "BITGET", "Bitget Wallet"
+    if "okx" in normalized or "okex" in normalized:
+        return "OKX", "OKX Wallet"
+    return "KEYSTONE", "Keystone"
+
+
+def _web3_wallet_support_note(origin: str | None, chain_id: int) -> str | None:
+    wallet_code, wallet_name = _web3_wallet_meta(origin)
+    if wallet_code in {"OKX", "BITGET"} and int(chain_id or 0) != 1:
+        return f"{wallet_name} 官方当前只标注支持 BTC/ETH；当前链 ID {int(chain_id)} 很可能在钱包端失败。"
+    return None
+
+
+def _web3_request_type_label(data_type: int) -> str:
+    return {
+        1: "TRANSACTION",
+        2: "TYPED_DATA",
+        3: "PERSONAL_MESSAGE",
+        4: "TYPED_TRANSACTION",
+    }.get(int(data_type), f"TYPE_{int(data_type)}")
+
+
+def _build_tp_query(pairs: list[tuple[str, object | None]]) -> str:
+    return "&".join(
+        f"{key}={quote(str(value), safe='')}"
+        for key, value in pairs
+        if value is not None and str(value).strip()
+    )
+
+
+def _build_tp_sign_transaction_request(
+    *,
+    address: str | None,
+    tx_data: dict,
+    chain_id: int,
+    request_id: str,
+    derivation_path: str,
+) -> str:
+    data_obj = {"txData": dict(tx_data or {})}
+    if address:
+        data_obj["address"] = address
+    data_json = json.dumps(data_obj, ensure_ascii=True, separators=(",", ":"))
+    query = _build_tp_query(
+        [
+            ("version", "1.0"),
+            ("protocol", "ArbitrumWallet"),
+            ("network", "evm"),
+            ("chain_id", str(chain_id)),
+            ("requestId", request_id),
+            ("path", derivation_path),
+            ("data", data_json),
+        ]
+    )
+    return f"tp:signTransaction-{query}"
+
+
+def _build_tp_personal_sign_request(
+    *,
+    address: str | None,
+    message: str,
+    chain_id: int,
+    request_id: str,
+    derivation_path: str,
+) -> str:
+    data_obj = {"message": message}
+    if address:
+        data_obj["address"] = address
+    data_json = json.dumps(data_obj, ensure_ascii=True, separators=(",", ":"))
+    query = _build_tp_query(
+        [
+            ("version", "1.0"),
+            ("protocol", "ArbitrumWallet"),
+            ("network", "evm"),
+            ("chain_id", str(chain_id)),
+            ("requestId", request_id),
+            ("path", derivation_path),
+            ("data", data_json),
+        ]
+    )
+    return f"tp:personalSign-{query}"
+
+
+def _build_tp_sign_typed_data_request(
+    *,
+    address: str | None,
+    typed_data_json: str,
+    chain_id: int,
+    request_id: str,
+    derivation_path: str,
+    origin: str | None,
+) -> str:
+    typed_message = json.loads(typed_data_json)
+    data_obj = {"message": typed_message}
+    if address:
+        data_obj["address"] = address
+    if origin:
+        data_obj["dappName"] = origin
+        data_obj["source"] = origin
+    data_json = json.dumps(data_obj, ensure_ascii=False, separators=(",", ":"))
+    query = _build_tp_query(
+        [
+            ("version", "1.0"),
+            ("protocol", "ArbitrumWallet"),
+            ("network", "evm"),
+            ("chain_id", str(chain_id)),
+            ("requestId", request_id),
+            ("path", derivation_path),
+            ("dappName", origin or ""),
+            ("source", origin or ""),
+            ("data", data_json),
+        ]
+    )
+    return f"tp:signTypeDataV4-{query}"
+
+
+def _parse_web3_access_list(value) -> list[dict]:
+    entries = _rlp_require_list(value, "accessList")
+    parsed_entries = []
+    for item in entries:
+        entry = _rlp_require_list(item, "accessList entry")
+        if len(entry) != 2:
+            raise ValueError("accessList entry 格式错误")
+        address_bytes = _rlp_require_bytes(entry[0], "accessList.address")
+        if len(address_bytes) != 20:
+            raise ValueError("accessList.address 长度不正确")
+        storage_keys = [
+            "0x" + _rlp_require_bytes(storage_key, "storageKey").hex()
+            for storage_key in _rlp_require_list(entry[1], "accessList.storageKeys")
+        ]
+        parsed_entries.append(
+            {
+                "address": "0x" + address_bytes.hex(),
+                "storageKeys": storage_keys,
+            }
+        )
+    return parsed_entries
+
+
+def _parse_web3_typed_unsigned_transaction(sign_data: bytes, address: str | None) -> dict:
+    if not sign_data:
+        raise ValueError("typed transaction 为空")
+    tx_type = sign_data[0]
+    body = sign_data[1:]
+    values = _rlp_require_list(_rlp_decode(body), "Typed unsigned tx")
+
+    if tx_type == 0x01:
+        if len(values) < 8:
+            raise ValueError("EIP-2930 unsigned tx 字段不足")
+        return {
+            "from": address,
+            "to": ("0x" + _rlp_require_bytes(values[4], "to").hex()) if _rlp_require_bytes(values[4], "to") else None,
+            "value": str(_rlp_quantity(values[5], "value")),
+            "data": "0x" + _rlp_require_bytes(values[6], "data").hex(),
+            "gasLimit": str(_rlp_quantity(values[3], "gasLimit")),
+            "nonce": str(_rlp_quantity(values[1], "nonce")),
+            "gasPrice": str(_rlp_quantity(values[2], "gasPrice")),
+            "type": 1,
+            "accessList": _parse_web3_access_list(values[7]),
+        }
+
+    if tx_type == 0x02:
+        if len(values) < 9:
+            raise ValueError("EIP-1559 unsigned tx 字段不足")
+        return {
+            "from": address,
+            "to": ("0x" + _rlp_require_bytes(values[5], "to").hex()) if _rlp_require_bytes(values[5], "to") else None,
+            "value": str(_rlp_quantity(values[6], "value")),
+            "data": "0x" + _rlp_require_bytes(values[7], "data").hex(),
+            "gasLimit": str(_rlp_quantity(values[4], "gasLimit")),
+            "nonce": str(_rlp_quantity(values[1], "nonce")),
+            "maxPriorityFeePerGas": str(_rlp_quantity(values[2], "maxPriorityFeePerGas")),
+            "maxFeePerGas": str(_rlp_quantity(values[3], "maxFeePerGas")),
+            "type": 2,
+            "accessList": _parse_web3_access_list(values[8]),
+        }
+
+    raise ValueError(f"当前暂不支持的 typed transaction 类型: 0x{tx_type:02x}")
+
+
+def _build_tp_payload_from_web3_request(request: Web3EthSignRequest) -> str:
+    request_id = request.request_id or str(uuid.uuid4())
+    if request.data_type == 1:
+        values = _rlp_require_list(_rlp_decode(request.sign_data), "Legacy unsigned tx")
+        if len(values) < 6:
+            raise ValueError("Legacy unsigned tx 字段不足")
+        tx_data = {
+            "to": ("0x" + _rlp_require_bytes(values[3], "to").hex()) if _rlp_require_bytes(values[3], "to") else None,
+            "value": str(_rlp_quantity(values[4], "value")),
+            "data": "0x" + _rlp_require_bytes(values[5], "data").hex(),
+            "gasLimit": str(_rlp_quantity(values[2], "gasLimit")),
+            "nonce": str(_rlp_quantity(values[0], "nonce")),
+            "gasPrice": str(_rlp_quantity(values[1], "gasPrice")),
+            "type": 0,
+        }
+        if request.address:
+            tx_data["from"] = request.address
+        return _build_tp_sign_transaction_request(
+            address=request.address,
+            tx_data=tx_data,
+            chain_id=request.chain_id,
+            request_id=request_id,
+            derivation_path=request.derivation_path,
+        )
+
+    if request.data_type == 4:
+        return _build_tp_sign_transaction_request(
+            address=request.address,
+            tx_data=_parse_web3_typed_unsigned_transaction(request.sign_data, request.address),
+            chain_id=request.chain_id,
+            request_id=request_id,
+            derivation_path=request.derivation_path,
+        )
+
+    if request.data_type == 3:
+        return _build_tp_personal_sign_request(
+            address=request.address,
+            message="0x" + request.sign_data.hex(),
+            chain_id=request.chain_id,
+            request_id=request_id,
+            derivation_path=request.derivation_path,
+        )
+
+    if request.data_type == 2:
+        return _build_tp_sign_typed_data_request(
+            address=request.address,
+            typed_data_json=request.sign_data.decode("utf-8"),
+            chain_id=request.chain_id,
+            request_id=request_id,
+            derivation_path=request.derivation_path,
+            origin=request.origin,
+        )
+
+    raise ValueError(f"暂不支持的 Web3 请求类型: {request.data_type}")
+
+
+def _build_web3_native_payload_from_ur(ur: UR) -> str:
+    if not isinstance(ur, UR) or ur.type != "eth-sign-request":
+        raise ValueError("当前只支持 eth-sign-request")
+
+    request = _parse_web3_eth_sign_request_cbor(ur.cbor)
+    tp_payload = _build_tp_payload_from_web3_request(request)
+    wallet_code, wallet_name = _web3_wallet_meta(request.origin)
+    return _build_web3_native_relay_payload(
+        tp_payload,
+        {
+            "version": "1",
+            "wallet": wallet_code,
+            "wallet_name": wallet_name,
+            "format": "Keystone / AirGap UR",
+            "qr_type": "eth-sign-request",
+            "action": "EVM 签名请求",
+            "response_protocol": "eth-signature",
+            "request_id": request.request_id or "",
+            "origin": request.origin or "",
+            "data_type": _web3_request_type_label(request.data_type),
+            "request_data_type_id": str(request.data_type),
+            "request_sign_data_hex": request.sign_data.hex(),
+            "chain_id": str(request.chain_id),
+            "address": request.address or "",
+            "expected_address": request.address or "",
+            "address_path": request.derivation_path,
+        },
+    )
+
+
+def _build_web3_native_payload_from_ur_text(ur_text: str) -> str:
+    decoder = URDecoder()
+    if not decoder.receive_part(str(ur_text or "").strip()) or not decoder.is_complete():
+        raise ValueError("Web3 UR 请求未收齐")
+    return _build_web3_native_payload_from_ur(decoder.result_message())
+
+
+def _parse_web3_eth_sign_request_from_payload(payload: str) -> Web3EthSignRequest:
+    normalized = str(payload or "").strip()
+    if not _is_web3_eth_sign_request_payload(normalized):
+        raise ValueError("不是 eth-sign-request")
+
+    decoder = URDecoder()
+    if not decoder.receive_part(normalized) or not decoder.is_complete():
+        raise ValueError("Web3 UR 请求未收齐")
+
+    ur = decoder.result_message()
+    if not isinstance(ur, UR) or str(getattr(ur, "type", "")).lower() != "eth-sign-request":
+        raise ValueError("当前只支持 eth-sign-request")
+    return _parse_web3_eth_sign_request_cbor(ur.cbor)
+
+
+def _is_web3_native_relay_payload(payload: str) -> bool:
+    return (payload or "").strip().lower().startswith("tp:web3relaynative-")
+
+
+def _extract_web3_native_relay_request(payload: str) -> dict:
+    normalized = (payload or "").strip()
+    if not _is_web3_native_relay_payload(normalized):
+        raise ValueError("不是 Web3 原生回传请求")
+
+    query = normalized.split("-", 1)[1].lstrip("?")
+    params = {key: values[-1] for key, values in parse_qs(query, keep_blank_values=True).items()}
+    relay_payload = str(params.get("payload") or "").strip()
+    if not relay_payload.startswith(("ethereum:", "tp:")):
+        raise ValueError("Web3 原生回传请求缺少可签名载荷")
+
+    derivation_path = str(params.get("path") or "").strip() or _extract_requested_derivation_path_from_standard_payload(
+        relay_payload
+    )
+    if not _is_valid_bip32_path(derivation_path):
+        derivation_path = DEFAULT_DERIVATION_PATH
+
+    request_data_type_id = str(params.get("request_data_type_id") or "").strip()
+    request_sign_data_hex = str(params.get("request_sign_data_hex") or "").strip().lower()
+
+    return {
+        "version": str(params.get("version") or "1").strip() or "1",
+        "wallet": str(params.get("wallet") or "").strip(),
+        "wallet_name": str(params.get("wallet_name") or params.get("wallet") or "Web3 钱包").strip() or "Web3 钱包",
+        "format": str(params.get("format") or "Keystone / AirGap UR").strip() or "Keystone / AirGap UR",
+        "qr_type": str(params.get("qr_type") or "eth-sign-request").strip() or "eth-sign-request",
+        "action": str(params.get("action") or "EVM 签名请求").strip() or "EVM 签名请求",
+        "response_protocol": str(params.get("response_protocol") or "").strip().lower(),
+        "request_id": str(params.get("request_id") or "").strip(),
+        "origin": str(params.get("origin") or "").strip(),
+        "data_type": str(params.get("data_type") or "").strip(),
+        "request_data_type_id": request_data_type_id,
+        "request_sign_data_hex": request_sign_data_hex,
+        "chain_id": str(params.get("chain_id") or "").strip(),
+        "address": str(params.get("address") or "").strip(),
+        "expected_address": str(params.get("expected_address") or "").strip(),
+        "derivation_path": derivation_path,
+        "payload": relay_payload,
+    }
+
+
+def _build_web3_native_relay_payload(relay_payload: str, envelope: dict) -> str:
+    derivation_path = str(envelope.get("address_path") or "").strip() or _extract_requested_derivation_path_from_standard_payload(
+        relay_payload
+    )
+    request_data_type_id = str(envelope.get("request_data_type_id") or "").strip()
+    request_sign_data_hex = str(envelope.get("request_sign_data_hex") or "").strip().lower()
+    if not request_data_type_id or not request_sign_data_hex:
+        derived_type_id, derived_sign_data = _derive_web3_native_request_sign_data(relay_payload)
+        if not request_data_type_id and derived_type_id is not None:
+            request_data_type_id = str(derived_type_id)
+        if not request_sign_data_hex and isinstance(derived_sign_data, (bytes, bytearray)) and derived_sign_data:
+            request_sign_data_hex = bytes(derived_sign_data).hex()
+    query_pairs = [
+        ("version", str(envelope.get("version") or "1")),
+        ("wallet", str(envelope.get("wallet") or "")),
+        ("wallet_name", str(envelope.get("wallet_name") or envelope.get("wallet") or "Web3 钱包")),
+        ("format", str(envelope.get("format") or "Keystone / AirGap UR")),
+        ("qr_type", str(envelope.get("qr_type") or "eth-sign-request")),
+        ("action", str(envelope.get("action") or "EVM 签名请求")),
+        ("response_protocol", str(envelope.get("response_protocol") or "")),
+        ("request_id", str(envelope.get("request_id") or "")),
+        ("origin", str(envelope.get("origin") or "")),
+        ("data_type", str(envelope.get("data_type") or "")),
+        ("request_data_type_id", request_data_type_id),
+        ("request_sign_data_hex", request_sign_data_hex),
+        ("chain_id", str(envelope.get("chain_id") or "")),
+        ("address", str(envelope.get("address") or "")),
+        ("expected_address", str(envelope.get("expected_address") or "")),
+        ("path", derivation_path),
+        ("payload", relay_payload),
+    ]
+    query = "&".join(
+        f"{key}={quote(value, safe='')}" for key, value in query_pairs if str(value).strip() or key in ("path", "payload")
+    )
+    return f"tp:web3RelayNative-{query}"
+
+
+def _extract_requested_derivation_path(payload: str) -> str:
+    normalized = (payload or "").strip()
+    if _is_web3_native_relay_payload(normalized):
+        try:
+            candidate = _extract_web3_native_relay_request(normalized).get("derivation_path", DEFAULT_DERIVATION_PATH)
+        except Exception:
+            return DEFAULT_DERIVATION_PATH
+        return candidate if _is_valid_bip32_path(candidate) else DEFAULT_DERIVATION_PATH
+    if _is_web3_eth_sign_request_payload(normalized):
+        try:
+            candidate = _parse_web3_eth_sign_request_from_payload(normalized).derivation_path
+        except Exception:
+            return DEFAULT_DERIVATION_PATH
+        return candidate if _is_valid_bip32_path(candidate) else DEFAULT_DERIVATION_PATH
+    return _extract_requested_derivation_path_from_standard_payload(normalized)
+
+
+def _derive_web3_native_request_sign_data(relay_payload: str) -> tuple[int | None, bytes | None]:
+    signer = _load_signer_preview_module()
+    try:
+        request = signer.parse_sign_request((relay_payload or "").strip())
+    except Exception:
+        return None, None
+
+    if isinstance(request, signer.TpSignTransactionRequest):
+        try:
+            tx = signer.EvmTxEncoder.from_tp_request(request)
+            tx_type = int(getattr(tx, "tx_type", 0) or 0)
+            return (1 if tx_type == 0 else 4), bytes(signer.EvmTxEncoder.unsigned_payload(tx))
+        except Exception:
+            return None, None
+
+    if isinstance(request, signer.TpSignPersonalMessageRequest):
+        try:
+            return 3, bytes(signer.decode_personal_message(request.message))
+        except Exception:
+            return None, None
+
+    if isinstance(request, signer.TpSignTypedDataRequest):
+        if request.is_legacy or request.typed_data_json.strip().startswith("["):
+            return None, None
+        return 2, request.typed_data_json.encode("utf-8")
+
+    return None, None
+
+
+def _extract_web3_export_request(payload: str) -> dict:
+    normalized = (payload or "").strip()
+    if not normalized.lower().startswith("tp:exportweb3account-"):
+        raise ValueError("不是 Web3 账户导出请求")
+
+    query = normalized.split("-", 1)[1].lstrip("?")
+    params = parse_qs(query, keep_blank_values=True)
+    data_raw = params.get("data", [""])[0].strip()
+    data = {}
+    if data_raw:
+        try:
+            parsed_data = json.loads(data_raw)
+        except Exception as exc:
+            raise ValueError(f"Web3 绑定 data JSON 无效: {exc}") from exc
+        if not isinstance(parsed_data, dict):
+            raise ValueError("Web3 绑定 data 不是对象")
+        data = parsed_data
+
+    derivation_path = _normalize_bip32_path(params.get("path", [DEFAULT_DERIVATION_PATH])[0].strip())
+    data_path = str(data.get("path") or "").strip()
+    if data_path:
+        derivation_path = _normalize_bip32_path(data_path)
+    if not _is_valid_bip32_path(derivation_path) or not _is_evm_derivation_path(derivation_path):
+        raise ValueError("只支持 EVM 地址路径，例如 m/44'/60'/0'/0/0。")
+
+    expected_address = str(data.get("expectedAddress") or data.get("address") or "").strip()
+    if expected_address:
+        expected_address = _normalize_evm_address_for_compare(expected_address)
+
+    return {
+        "version": params.get("version", ["1.0"])[0].strip() or "1.0",
+        "protocol": params.get("protocol", ["ArbitrumWallet"])[0].strip() or "ArbitrumWallet",
+        "network": params.get("network", ["evm"])[0].strip() or "evm",
+        "chain_id": params.get("chain_id", ["1"])[0].strip() or "1",
+        "request_id": params.get("requestId", [""])[0].strip(),
+        "derivation_path": derivation_path,
+        "expected_address": expected_address,
+    }
+
+
+def _split_evm_account_path(derivation_path: str) -> tuple[str, str]:
+    normalized_path = _normalize_bip32_path(derivation_path)
+    parts = normalized_path.split("/")
+    if len(parts) < 6:
+        raise ValueError("EVM 地址路径请完整输入到地址层，例如 m/44'/60'/0'/0/0。")
+    if not all(parts[index].endswith("'") or parts[index].endswith("h") or parts[index].endswith("H") for index in (1, 2, 3)):
+        raise ValueError("EVM 账户路径必须以 m/44'/60'/账户' 开头。")
+    branch = parts[4].removesuffix("'").removesuffix("h").removesuffix("H")
+    if not branch.isdigit():
+        raise ValueError("EVM 路径的 change 分支必须是数字。")
+    account_path = "/".join(parts[:4])
+    children_path = f"{int(branch)}/*"
+    return account_path, children_path
+
+
+def _web3_path_depth(path: str) -> int:
+    return len([segment for segment in _normalize_bip32_path(path).split("/")[1:] if segment])
+
+
+def _web3_evm_coin_path(derivation_path: str) -> str:
+    normalized_path = _normalize_bip32_path(derivation_path)
+    parts = normalized_path.split("/")
+    if len(parts) < 3:
+        raise ValueError("EVM 路径格式不正确。")
+    return "/".join(parts[:3])
+
+
+def _web3_child_path(account_path: str, derivation_path: str, levels: int) -> str:
+    parts = _normalize_bip32_path(derivation_path).split("/")
+    account_parts = _normalize_bip32_path(account_path).split("/")
+    wanted = account_parts + parts[len(account_parts):len(account_parts) + levels]
+    return "/".join(wanted)
+
+
+def _web3_pubkey_fingerprint(pubkey: bytes) -> str:
+    from embit import hashes
+
+    return hashes.hash160(bytes(pubkey))[:4].hex()
+
+
+def _web3_key_entry(
+    *,
+    pubkey_hex: str,
+    origin_path: str,
+    parent_fingerprint: str | None,
+    note: str,
+    chain_code_hex: str | None = None,
+    children_path: str | None = None,
+    children_depth: int | None = None,
+    origin_depth: int | None = None,
+    coin_type: int | None = None,
+    network: int | None = None,
+) -> dict:
+    return {
+        "compressedPubKeyHex": str(pubkey_hex),
+        "chainCodeHex": str(chain_code_hex or ""),
+        "originPath": _normalize_bip32_path(origin_path),
+        "originDepth": origin_depth if origin_depth is not None else _web3_path_depth(origin_path),
+        "parentFingerprint": str(parent_fingerprint or "").strip().lower(),
+        "childrenPath": str(children_path or "").strip(),
+        "childrenDepth": children_depth,
+        "name": "Keystone",
+        "note": str(note),
+        "coinType": coin_type,
+        "network": network,
+    }
+
+
+def _web3_attach_keystone_keys(
+    web3_account: dict,
+    standard: dict,
+    ledger_legacy: dict,
+    ledger_live: dict,
+    okx_ledger_live: list[dict] | None = None,
+    okx_bitcoin: list[dict] | None = None,
+) -> dict:
+    web3_account = dict(web3_account)
+    keystone_keys = {
+        "standard": standard,
+        "ledgerLegacy": ledger_legacy,
+        "ledgerLive": ledger_live,
+    }
+    if okx_ledger_live:
+        keystone_keys["okxLedgerLive"] = [dict(entry) for entry in okx_ledger_live]
+    if okx_bitcoin:
+        keystone_keys["okxBitcoin"] = [dict(entry) for entry in okx_bitcoin]
+    web3_account["keystoneKeys"] = keystone_keys
+    return web3_account
+
+
+def _web3_attach_bitkeep_keys(
+    web3_account: dict,
+    master_fingerprint: str | None,
+    key_entries: list[dict],
+) -> dict:
+    web3_account = dict(web3_account)
+    fingerprint = _web3_valid_fingerprint(master_fingerprint)
+    if fingerprint:
+        web3_account["bitkeepMasterFingerprint"] = fingerprint
+    web3_account["bitkeepKeys"] = [dict(entry) for entry in key_entries if isinstance(entry, dict)]
+    return web3_account
+
+
+def _web3_bitkeep_btc_key_entry(
+    *,
+    pubkey_hex: str,
+    chain_code_hex: str,
+    origin_path: str,
+    parent_fingerprint: str,
+) -> dict:
+    return _web3_key_entry(
+        pubkey_hex=pubkey_hex,
+        chain_code_hex=chain_code_hex,
+        origin_path=origin_path,
+        origin_depth=_web3_path_depth(origin_path),
+        parent_fingerprint=parent_fingerprint,
+        note="",
+        coin_type=WEB3_BTC_COIN_TYPE,
+        network=WEB3_MAINNET_NETWORK,
+    )
+
+
+def _web3_btc_key_entries_from_seed_root(root, account_paths: tuple[str, ...]) -> list[dict]:
+    entries = []
+    for account_path in account_paths:
+        account_root = root.derive(account_path)
+        parent_path = "/".join(account_path.split("/")[:-1]) or "m"
+        parent_root = root.derive(parent_path)
+        entries.append(
+            _web3_bitkeep_btc_key_entry(
+                pubkey_hex=account_root.key.get_public_key().sec().hex(),
+                chain_code_hex=account_root.chain_code.hex(),
+                origin_path=account_path,
+                parent_fingerprint=_web3_pubkey_fingerprint(parent_root.key.get_public_key().sec()),
+            )
+        )
+    return entries
+
+
+def _web3_bitkeep_btc_key_entries_from_seed_root(root) -> list[dict]:
+    return _web3_btc_key_entries_from_seed_root(root, WEB3_BITKEEP_BTC_ACCOUNT_PATHS)
+
+
+def _web3_okx_btc_key_entries_from_seed_root(root) -> list[dict]:
+    return _web3_btc_key_entries_from_seed_root(root, WEB3_OKX_BTC_ACCOUNT_PATHS)
+
+
+def _web3_btc_key_entries_from_satochip(connector, account_paths: tuple[str, ...]) -> list[dict]:
+    from seedsigner.helpers.satochip_signer import format_path_string
+
+    entries = []
+    for account_path in account_paths:
+        key, chaincode = connector.card_bip32_get_extendedkey(format_path_string(account_path))
+        parent_path = "/".join(account_path.split("/")[:-1]) or "m"
+        parent_key, _parent_chaincode = connector.card_bip32_get_extendedkey(format_path_string(parent_path))
+        entries.append(
+            _web3_bitkeep_btc_key_entry(
+                pubkey_hex=key.get_public_key_bytes(compressed=True).hex(),
+                chain_code_hex=chaincode.hex(),
+                origin_path=account_path,
+                parent_fingerprint=_web3_pubkey_fingerprint(parent_key.get_public_key_bytes(compressed=True)),
+            )
+        )
+    return entries
+
+
+def _web3_bitkeep_btc_key_entries_from_satochip(connector) -> list[dict]:
+    return _web3_btc_key_entries_from_satochip(connector, WEB3_BITKEEP_BTC_ACCOUNT_PATHS)
+
+
+def _web3_okx_btc_key_entries_from_satochip(connector) -> list[dict]:
+    return _web3_btc_key_entries_from_satochip(connector, WEB3_OKX_BTC_ACCOUNT_PATHS)
+
+
+def _web3_bitkeep_master_fingerprint_from_satochip(connector) -> str | None:
+    from embit import bip32
+
+    for path in ("", "m"):
+        try:
+            master_xpub = connector.card_bip32_get_xpub(path, "standard", True)
+            if master_xpub:
+                return bytes(bip32.HDKey.from_base58(master_xpub).my_fingerprint).hex()
+        except Exception:
+            continue
+    logger.info("TP Web3 smartcard master fingerprint export skipped for BitKeep", exc_info=True)
+    return None
+
+
+def _build_web3_account_export_response(request: dict, web3_account: dict) -> str:
+    expected_address = str(request.get("expected_address") or "").strip()
+    if expected_address:
+        actual_address = _normalize_evm_address_for_compare(str(web3_account.get("address") or ""))
+        if actual_address.lower() != expected_address.lower():
+            raise ValueError(
+                "派生地址与手机当前观察地址不一致。\n"
+                f"手机: {expected_address}\n"
+                f"树莓派: {actual_address}\n"
+                "请检查首页观察地址、派生路径和选择的账户来源。"
+            )
+
+    query_pairs = [
+        ("version", request.get("version", "1.0")),
+        ("protocol", request.get("protocol", "ArbitrumWallet")),
+        ("network", request.get("network", "evm")),
+        ("chain_id", request.get("chain_id", "1")),
+    ]
+    request_id = str(request.get("request_id", "") or "").strip()
+    if request_id:
+        query_pairs.append(("requestId", request_id))
+
+    data_json = json.dumps({"web3Account": web3_account}, ensure_ascii=True, separators=(",", ":"))
+    query_pairs.append(("data", data_json))
+
+    query = "&".join(
+        f"{key}={quote(str(value), safe='')}"
+        for key, value in query_pairs
+        if str(value).strip()
+    )
+    return f"tp:exportWeb3AccountResult-{query}"
+
+
+def _export_web3_account_from_seed(seed: Seed, derivation_path: str) -> dict:
+    normalized_path = _normalize_bip32_path(derivation_path)
+    account_path, children_path = _split_evm_account_path(normalized_path)
+    evm_coin_path = _web3_evm_coin_path(normalized_path)
+    root = seed.get_root(SettingsConstants.MAINNET)
+    account_root = root.derive(account_path)
+    parent_path = "/".join(account_path.split("/")[:-1]) or "m"
+    parent_root = root.derive(parent_path)
+    address_info = _derive_evm_address_from_seed(seed, normalized_path)
+
+    master_fingerprint = getattr(root, "my_fingerprint", None)
+    if master_fingerprint is None:
+        master_fingerprint_hex = seed.get_fingerprint(SettingsConstants.MAINNET)
+    else:
+        master_fingerprint_hex = bytes(master_fingerprint).hex()
+
+    xpub_value = account_root.to_public().to_string()
+    if not xpub_value:
+        raise ValueError("当前助记词无法导出 EVM 账户 xpub。")
+
+    account_pubkey = account_root.key.get_public_key().sec()
+    parent_pubkey = parent_root.key.get_public_key().sec()
+    okx_ledger_live_entries = []
+    for index in range(WEB3_OKX_LEDGER_LIVE_ACCOUNT_COUNT):
+        ledger_live_path = f"{evm_coin_path}/{index}'/0/0"
+        ledger_live_root = root.derive(ledger_live_path)
+        live_pubkey = ledger_live_root.key.get_public_key().sec()
+        okx_ledger_live_entries.append(
+            _web3_key_entry(
+                pubkey_hex=live_pubkey.hex(),
+                origin_path=ledger_live_path,
+                origin_depth=_web3_path_depth(ledger_live_path),
+                parent_fingerprint=None,
+                note="account.ledger_live",
+            )
+        )
+
+    standard_entry = _web3_key_entry(
+        pubkey_hex=account_pubkey.hex(),
+        chain_code_hex=account_root.chain_code.hex(),
+        origin_path=account_path,
+        origin_depth=_web3_path_depth(account_path),
+        parent_fingerprint=_web3_pubkey_fingerprint(parent_pubkey),
+        children_path=children_path,
+        children_depth=0,
+        note="account.standard",
+        coin_type=WEB3_ETH_COIN_TYPE,
+        network=WEB3_MAINNET_NETWORK,
+    )
+    ledger_legacy_entry = _web3_key_entry(
+        pubkey_hex=account_pubkey.hex(),
+        chain_code_hex=account_root.chain_code.hex(),
+        origin_path=account_path,
+        origin_depth=_web3_path_depth(account_path),
+        parent_fingerprint=_web3_pubkey_fingerprint(parent_pubkey),
+        children_path="*",
+        children_depth=0,
+        note="account.ledger_legacy",
+        coin_type=WEB3_ETH_COIN_TYPE,
+        network=WEB3_MAINNET_NETWORK,
+    )
+
+    base = {
+        "address": address_info["address"],
+        "addressPath": normalized_path,
+        "accountPath": account_path,
+        "masterFingerprint": master_fingerprint_hex,
+        "parentFingerprint": _web3_pubkey_fingerprint(parent_pubkey),
+        "compressedPubKeyHex": account_pubkey.hex(),
+        "chainCodeHex": account_root.chain_code.hex(),
+        "xpub": xpub_value,
+        "sourceLabel": "已加载助记词",
+        "importedAt": int(time.time() * 1000),
+        "label": "Web3 账户",
+        "childrenPath": children_path,
+    }
+    web3_account = _web3_attach_keystone_keys(
+        base,
+        standard=standard_entry,
+        ledger_legacy=ledger_legacy_entry,
+        ledger_live=dict(okx_ledger_live_entries[0] if okx_ledger_live_entries else standard_entry),
+        okx_ledger_live=okx_ledger_live_entries,
+        okx_bitcoin=_web3_okx_btc_key_entries_from_seed_root(root),
+    )
+    return _web3_attach_bitkeep_keys(
+        web3_account,
+        master_fingerprint_hex,
+        [dict(standard_entry), *_web3_bitkeep_btc_key_entries_from_seed_root(root)],
+    )
+
+
+def _export_web3_account_from_satochip(connector, derivation_path: str) -> dict:
+    from seedsigner.helpers.satochip_signer import format_path_string
+
+    normalized_path = _normalize_bip32_path(derivation_path)
+    account_path, children_path = _split_evm_account_path(normalized_path)
+    evm_coin_path = _web3_evm_coin_path(normalized_path)
+    parent_path = "/".join(account_path.split("/")[:-1]) or "m"
+    account_xpub = ""
+    try:
+        account_xpub = connector.card_bip32_get_xpub(format_path_string(account_path), "standard", True)
+    except Exception:
+        logger.info("TP Web3 smartcard xpub export skipped; Keystone account QR will use raw public key data", exc_info=True)
+    key, chaincode = connector.card_bip32_get_extendedkey(format_path_string(account_path))
+    parent_key, _parent_chaincode = connector.card_bip32_get_extendedkey(format_path_string(parent_path))
+    address_info = _derive_evm_address_from_satochip(connector, normalized_path)
+
+    account_pubkey = key.get_public_key_bytes(compressed=True)
+    parent_pubkey = parent_key.get_public_key_bytes(compressed=True)
+    okx_ledger_live_entries = []
+    for index in range(WEB3_OKX_LEDGER_LIVE_ACCOUNT_COUNT):
+        ledger_live_path = f"{evm_coin_path}/{index}'/0/0"
+        ledger_live_key, _ledger_live_chaincode = connector.card_bip32_get_extendedkey(format_path_string(ledger_live_path))
+        live_pubkey = ledger_live_key.get_public_key_bytes(compressed=True)
+        okx_ledger_live_entries.append(
+            _web3_key_entry(
+                pubkey_hex=live_pubkey.hex(),
+                origin_path=ledger_live_path,
+                origin_depth=_web3_path_depth(ledger_live_path),
+                parent_fingerprint=None,
+                note="account.ledger_live",
+            )
+        )
+
+    standard_entry = _web3_key_entry(
+        pubkey_hex=account_pubkey.hex(),
+        chain_code_hex=chaincode.hex(),
+        origin_path=account_path,
+        origin_depth=_web3_path_depth(account_path),
+        parent_fingerprint=_web3_pubkey_fingerprint(parent_pubkey),
+        children_path=children_path,
+        children_depth=0,
+        note="account.standard",
+        coin_type=WEB3_ETH_COIN_TYPE,
+        network=WEB3_MAINNET_NETWORK,
+    )
+    ledger_legacy_entry = _web3_key_entry(
+        pubkey_hex=account_pubkey.hex(),
+        chain_code_hex=chaincode.hex(),
+        origin_path=account_path,
+        origin_depth=_web3_path_depth(account_path),
+        parent_fingerprint=_web3_pubkey_fingerprint(parent_pubkey),
+        children_path="*",
+        children_depth=0,
+        note="account.ledger_legacy",
+        coin_type=WEB3_ETH_COIN_TYPE,
+        network=WEB3_MAINNET_NETWORK,
+    )
+
+    base = {
+        "address": address_info["address"],
+        "addressPath": normalized_path,
+        "accountPath": account_path,
+        "masterFingerprint": "00000000",
+        "parentFingerprint": _web3_pubkey_fingerprint(parent_pubkey),
+        "compressedPubKeyHex": account_pubkey.hex(),
+        "chainCodeHex": chaincode.hex(),
+        "xpub": account_xpub,
+        "sourceLabel": "智能卡 Satochip",
+        "importedAt": int(time.time() * 1000),
+        "label": "Web3 账户",
+        "childrenPath": children_path,
+    }
+    web3_account = _web3_attach_keystone_keys(
+        base,
+        standard=standard_entry,
+        ledger_legacy=ledger_legacy_entry,
+        ledger_live=dict(okx_ledger_live_entries[0] if okx_ledger_live_entries else standard_entry),
+        okx_ledger_live=okx_ledger_live_entries,
+        okx_bitcoin=_web3_okx_btc_key_entries_from_satochip(connector),
+    )
+    return _web3_attach_bitkeep_keys(
+        web3_account,
+        _web3_bitkeep_master_fingerprint_from_satochip(connector),
+        [dict(standard_entry), *_web3_bitkeep_btc_key_entries_from_satochip(connector)],
+    )
+
+
 def _collect_manual_qr_parts(qr_encoder) -> list[str]:
     part_count = max(1, int(qr_encoder.seq_len()))
     qr_encoder.restart()
     parts = [qr_encoder.next_part() for _ in range(part_count)]
     qr_encoder.restart()
+    return parts
+
+
+def _collect_ur_encoder_parts(ur_encoder: UREncoder) -> list[str]:
+    if ur_encoder.is_single_part():
+        return [ur_encoder.next_part()]
+    part_count = max(1, int(ur_encoder.fountain_encoder.seq_len()))
+    ur_encoder.restart()
+    parts = [ur_encoder.next_part() for _ in range(part_count)]
+    ur_encoder.restart()
     return parts
 
 
@@ -938,6 +2152,8 @@ class TpRequestQrDecoder:
         self._seen = set()
         self._assembler = MultiFragmentAssembler()
         self._relay_assembler = RelayAssembler()
+        self._web3_relay_assembler = RelayAssembler()
+        self._web3_ur_decoder = URDecoder()
         self._psbt_decoder = DecodeQR()
 
     @property
@@ -1010,6 +2226,51 @@ class TpRequestQrDecoder:
             self.collected_segments = self.total_segments
             return DecodeQRStatus.COMPLETE
 
+        if text.lower().startswith("w3r1:"):
+            try:
+                fragment = parse_web3_relay_fragment(text)
+            except RelayParseError as error:
+                self.error = str(error)
+                return DecodeQRStatus.INVALID
+
+            self.total_segments = fragment.total
+            status, detail = self._web3_relay_assembler.accept(fragment)
+            self.collected_segments = len(self._web3_relay_assembler.raw_fragments)
+            if status == "progress":
+                return DecodeQRStatus.PART_COMPLETE
+            if status == "error":
+                self.error = detail or "Web3 中转分片处理失败"
+                return DecodeQRStatus.INVALID
+
+            try:
+                relay_payload, envelope = unwrap_web3_relay_payload(detail or "")
+            except RelayParseError as error:
+                self.error = str(error)
+                self.complete = True
+                self.collected_segments = self.total_segments
+                return DecodeQRStatus.COMPLETE
+
+            if relay_payload.startswith(("ethereum:", "tp:")):
+                response_protocol = str(envelope.get("response_protocol") or "").strip().lower()
+                if response_protocol == "eth-signature":
+                    self.text = _build_web3_native_relay_payload(relay_payload, envelope)
+                else:
+                    self.text = relay_payload
+                self.complete = True
+                self.collected_segments = self.total_segments
+                return DecodeQRStatus.COMPLETE
+
+            wallet = str(envelope.get("wallet_name") or envelope.get("wallet") or "Web3")
+            qr_type = str(envelope.get("qr_type") or "-")
+            action = str(envelope.get("action") or "签名请求")
+            self.error = (
+                f"{wallet} {action} 已收齐，格式 {qr_type} 当前还未接入签名解析；"
+                "请提供原始二维码样本继续兼容。"
+            )
+            self.complete = True
+            self.collected_segments = self.total_segments
+            return DecodeQRStatus.COMPLETE
+
         if text.lower().startswith("tp:multifragment-"):
             try:
                 fragment = parse_tp_multi_fragment(text)
@@ -1027,6 +2288,35 @@ class TpRequestQrDecoder:
                 return DecodeQRStatus.INVALID
 
             self.text = detail or ""
+            self.complete = True
+            self.collected_segments = self.total_segments
+            return DecodeQRStatus.COMPLETE
+
+        if text.lower().startswith("ur:eth-sign-request/"):
+            if not self._web3_ur_decoder.receive_part(text):
+                self.error = "Web3 签名请求二维码格式无效"
+                return DecodeQRStatus.INVALID
+
+            try:
+                expected_parts = self._web3_ur_decoder.expected_part_count()
+            except Exception:
+                expected_parts = None
+            received_indexes_getter = getattr(self._web3_ur_decoder, "received_part_indexes", None)
+            received_indexes = received_indexes_getter() if callable(received_indexes_getter) else set()
+            if received_indexes is None:
+                received_indexes = set()
+            self.total_segments = max(1, int(expected_parts or 1))
+            self.collected_segments = max(1, len(received_indexes)) if self.total_segments > 1 else 1
+
+            if not self._web3_ur_decoder.is_complete():
+                return DecodeQRStatus.PART_COMPLETE
+
+            try:
+                self.text = UREncoder.encode(self._web3_ur_decoder.result_message())
+            except Exception as error:
+                self.error = str(error)
+                return DecodeQRStatus.INVALID
+
             self.complete = True
             self.collected_segments = self.total_segments
             return DecodeQRStatus.COMPLETE
@@ -1172,11 +2462,591 @@ def _format_native_amount_wei(value_wei: int) -> str:
         return "?"
 
 
+def _resolve_sign_execution_payload(payload: str) -> str:
+    normalized = (payload or "").strip()
+    if _is_web3_native_relay_payload(normalized):
+        return _extract_web3_native_relay_request(normalized)["payload"]
+    if _is_web3_eth_sign_request_payload(normalized):
+        return _build_tp_payload_from_web3_request(_parse_web3_eth_sign_request_from_payload(normalized))
+    return normalized
+
+
+def _is_supported_sign_scan_payload(payload: str) -> bool:
+    normalized = str(payload or "").strip()
+    return (
+        normalized.startswith(("ethereum:", "tp:"))
+        or _is_web3_native_relay_payload(normalized)
+        or _is_web3_eth_sign_request_payload(normalized)
+    )
+
+
+def _parse_tp_sign_response_payload(response_text: str) -> dict:
+    normalized = str(response_text or "").strip()
+    if not normalized or ":" not in normalized or "-" not in normalized:
+        raise ValueError("签名结果格式不正确")
+
+    namespace, remainder = normalized.split(":", 1)
+    if "-" in remainder:
+        action, query_text = remainder.split("-", 1)
+    else:
+        action, query_text = remainder, ""
+    if query_text.startswith("?"):
+        query_text = query_text[1:]
+
+    params = {key: values[-1] for key, values in parse_qs(query_text, keep_blank_values=True).items()}
+    raw_data = params.get("data", "")
+    try:
+        data = json.loads(raw_data) if raw_data else {}
+    except Exception as exc:
+        raise ValueError(f"签名结果里的 data JSON 无法解析: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError("签名结果里的 data 不是对象")
+
+    return {
+        "namespace": namespace,
+        "action": action,
+        "params": params,
+        "data": data,
+    }
+
+
+def _hex_to_bytes(value: str) -> bytes:
+    normalized = str(value or "").strip()
+    if normalized.startswith(("0x", "0X")):
+        normalized = normalized[2:]
+    if not normalized:
+        return b""
+    if len(normalized) % 2 != 0:
+        raise ValueError("十六进制长度不正确")
+    try:
+        return bytes.fromhex(normalized)
+    except Exception as exc:
+        raise ValueError(f"十六进制内容无效: {exc}") from exc
+
+
+def _int_to_fixed_bytes(value: int, size: int) -> bytes:
+    if value < 0:
+        raise ValueError("数值不能为负数")
+    raw = value.to_bytes(max(1, (value.bit_length() + 7) // 8), "big") if value else b""
+    if len(raw) > size:
+        raise ValueError(f"数值长度超过 {size} 字节")
+    return (b"\x00" * (size - len(raw))) + raw
+
+
+def _int_to_minimal_bytes(value: int) -> bytes:
+    if value < 0:
+        raise ValueError("数值不能为负数")
+    if value == 0:
+        return b"\x00"
+    return value.to_bytes((value.bit_length() + 7) // 8, "big")
+
+
+def _rlp_decode(payload: bytes):
+    value, next_offset = _rlp_decode_at(payload, 0)
+    if next_offset != len(payload):
+        raise ValueError("RLP 数据存在多余字节")
+    return value
+
+
+def _rlp_decode_at(payload: bytes, offset: int):
+    if offset >= len(payload):
+        raise ValueError("RLP 数据不完整")
+    prefix = payload[offset]
+
+    if prefix <= 0x7F:
+        return payload[offset : offset + 1], offset + 1
+
+    if prefix <= 0xB7:
+        length = prefix - 0x80
+        start = offset + 1
+        end = start + length
+        if end > len(payload):
+            raise ValueError("RLP 字节串越界")
+        return payload[start:end], end
+
+    if prefix <= 0xBF:
+        length_of_length = prefix - 0xB7
+        start = offset + 1
+        length = _rlp_parse_length(payload, start, length_of_length)
+        data_start = start + length_of_length
+        data_end = data_start + length
+        if data_end > len(payload):
+            raise ValueError("RLP 长字节串越界")
+        return payload[data_start:data_end], data_end
+
+    if prefix <= 0xF7:
+        length = prefix - 0xC0
+        start = offset + 1
+        end = start + length
+        if end > len(payload):
+            raise ValueError("RLP 列表越界")
+        return _rlp_decode_list(payload, start, end), end
+
+    length_of_length = prefix - 0xF7
+    start = offset + 1
+    length = _rlp_parse_length(payload, start, length_of_length)
+    data_start = start + length_of_length
+    data_end = data_start + length
+    if data_end > len(payload):
+        raise ValueError("RLP 长列表越界")
+    return _rlp_decode_list(payload, data_start, data_end), data_end
+
+
+def _rlp_decode_list(payload: bytes, start: int, end: int) -> list:
+    values = []
+    cursor = start
+    while cursor < end:
+        item, next_cursor = _rlp_decode_at(payload, cursor)
+        values.append(item)
+        cursor = next_cursor
+    if cursor != end:
+        raise ValueError("RLP 列表边界不匹配")
+    return values
+
+
+def _rlp_parse_length(payload: bytes, offset: int, length_of_length: int) -> int:
+    if length_of_length not in range(1, 9):
+        raise ValueError("RLP 长度字段不合法")
+    end = offset + length_of_length
+    if end > len(payload):
+        raise ValueError("RLP 长度字段越界")
+    value = 0
+    for index in range(offset, end):
+        value = (value << 8) | payload[index]
+    return value
+
+
+def _rlp_require_list(value, label: str) -> list:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} 不是列表")
+    return value
+
+
+def _rlp_require_bytes(value, label: str) -> bytes:
+    if not isinstance(value, (bytes, bytearray)):
+        raise ValueError(f"{label} 不是字节串")
+    return bytes(value)
+
+
+def _rlp_quantity(value, label: str) -> int:
+    raw = _rlp_require_bytes(value, label)
+    return int.from_bytes(raw, "big") if raw else 0
+
+
+def _normalize_legacy_v_mode(value: str | None = None) -> str:
+    normalized = str(value or WEB3_ETH_SIGNATURE_LEGACY_V_MODE or "").strip().lower()
+    if normalized in {"eip155_v", "eip155", "chain_v", "chainid_v", "37_38", "37/38"}:
+        return "eip155_v"
+    if normalized in {"ethereum_v", "ethereum", "eth_v", "27_28", "27/28"}:
+        return "ethereum_v"
+    return "recovery_id"
+
+
+def _web3_legacy_signature_v_mode(origin: str | None, chain_id: int | None) -> str:
+    default_mode = _normalize_legacy_v_mode()
+    if default_mode != "recovery_id":
+        return default_mode
+    wallet_code, _ = _web3_wallet_meta(origin)
+    if wallet_code in {"OKX", "BITGET"} and int(chain_id or 0) > 0:
+        return "eip155_v"
+    return default_mode
+
+
+def _legacy_signature_output_bytes(recovery_id: int, v_mode: str | None = None, chain_id: int | None = None) -> bytes:
+    mode = _normalize_legacy_v_mode(v_mode)
+    if mode == "ethereum_v":
+        return bytes([recovery_id + 27])
+    if mode == "eip155_v":
+        if chain_id is None:
+            raise ValueError("legacy tx 缺少 chainId，无法编码 EIP-155 v")
+        return _int_to_minimal_bytes(int(chain_id) * 2 + 35 + int(recovery_id))
+    return bytes([recovery_id & 0xFF])
+
+
+def _eth_signature_debug_cache_key(response_text: str) -> str:
+    return hashlib.sha256(str(response_text or "").strip().encode("utf-8")).hexdigest()
+
+
+def _remember_eth_signature_debug_context(response_text: str, context: dict | None) -> None:
+    if not context:
+        return
+    cache_key = _eth_signature_debug_cache_key(response_text)
+    merged = dict(_WEB3_ETH_SIGNATURE_DEBUG_CACHE.get(cache_key) or {})
+    for key, value in dict(context).items():
+        if value is not None and value != "":
+            merged[key] = value
+    _WEB3_ETH_SIGNATURE_DEBUG_CACHE[cache_key] = merged
+
+
+def _get_eth_signature_debug_context(response_text: str) -> dict:
+    return dict(_WEB3_ETH_SIGNATURE_DEBUG_CACHE.get(_eth_signature_debug_cache_key(response_text)) or {})
+
+
+def _extract_legacy_transaction_signature_details(
+    raw_transaction: str,
+    chain_id: int,
+    v_mode: str | None = None,
+) -> tuple[bytes, dict]:
+    values = _rlp_require_list(_rlp_decode(_hex_to_bytes(raw_transaction)), "Signed legacy tx")
+    if len(values) < 9:
+        raise ValueError("Signed legacy tx 字段不足")
+    v = _rlp_quantity(values[6], "v")
+    r = _int_to_fixed_bytes(_rlp_quantity(values[7], "r"), 32)
+    s = _int_to_fixed_bytes(_rlp_quantity(values[8], "s"), 32)
+    if v in (0, 1):
+        recovery_id = v
+    elif v in (27, 28):
+        recovery_id = v - 27
+    else:
+        recovery_id = v - (int(chain_id) * 2 + 35)
+    if recovery_id not in (0, 1):
+        raise ValueError(f"Signed legacy tx recoveryId 不正确: {recovery_id}")
+    output_bytes = _legacy_signature_output_bytes(recovery_id, v_mode=v_mode, chain_id=chain_id)
+    output_value = int.from_bytes(output_bytes, "big")
+    return (
+        r + s + output_bytes,
+        {
+            "transaction_type": "legacy",
+            "v": v,
+            "recovery_id": recovery_id,
+            "signature_output_byte": output_value,
+            "legacy_v_mode": _normalize_legacy_v_mode(v_mode),
+        },
+    )
+
+
+def _extract_legacy_transaction_signature(raw_transaction: str, chain_id: int) -> bytes:
+    signature_bytes, _ = _extract_legacy_transaction_signature_details(raw_transaction, chain_id)
+    return signature_bytes
+
+
+def _extract_typed_transaction_signature_details(raw_transaction: str) -> tuple[bytes, dict]:
+    tx_bytes = _hex_to_bytes(raw_transaction)
+    if not tx_bytes:
+        raise ValueError("Signed typed tx 为空")
+
+    tx_type = tx_bytes[0]
+    values = _rlp_require_list(_rlp_decode(tx_bytes[1:]), "Signed typed tx")
+    if tx_type == 0x01:
+        if len(values) < 11:
+            raise ValueError("Signed EIP-2930 tx 字段不足")
+        y_parity = _rlp_quantity(values[8], "yParity")
+        r = _int_to_fixed_bytes(_rlp_quantity(values[9], "r"), 32)
+        s = _int_to_fixed_bytes(_rlp_quantity(values[10], "s"), 32)
+        return (
+            r + s + bytes([y_parity & 0xFF]),
+            {
+                "transaction_type": "eip-2930",
+                "y_parity": y_parity,
+                "signature_output_byte": y_parity,
+            },
+        )
+
+    if tx_type == 0x02:
+        if len(values) < 12:
+            raise ValueError("Signed EIP-1559 tx 字段不足")
+        y_parity = _rlp_quantity(values[9], "yParity")
+        r = _int_to_fixed_bytes(_rlp_quantity(values[10], "r"), 32)
+        s = _int_to_fixed_bytes(_rlp_quantity(values[11], "s"), 32)
+        return (
+            r + s + bytes([y_parity & 0xFF]),
+            {
+                "transaction_type": "eip-1559",
+                "y_parity": y_parity,
+                "signature_output_byte": y_parity,
+            },
+        )
+
+    raise ValueError(f"当前暂不支持的 typed transaction 回传类型: 0x{tx_type:02x}")
+
+
+def _extract_typed_transaction_signature(raw_transaction: str) -> bytes:
+    signature_bytes, _ = _extract_typed_transaction_signature_details(raw_transaction)
+    return signature_bytes
+
+
+def _normalize_eth_message_signature_bytes(signature_bytes: bytes) -> bytes:
+    if len(signature_bytes) != 65:
+        raise ValueError("签名结果必须是 65 字节")
+    v = signature_bytes[-1]
+    if v in (27, 28):
+        recovery_id = v - 27
+    elif v in (0, 1):
+        recovery_id = v
+    else:
+        recovery_id = (v - 35) % 2
+    return signature_bytes[:-1] + bytes([recovery_id & 0xFF])
+
+
+def _eth_signature_recovery_id(signature_byte: int) -> int | None:
+    value = int(signature_byte)
+    if value in (0, 1):
+        return value
+    if value in (27, 28):
+        return value - 27
+    if value >= 35:
+        return (value - 35) % 2
+    return None
+
+
+def _recover_eth_signature_address(digest: bytes, signature_bytes: bytes, expected_address: str | None = None) -> str | None:
+    if len(digest) != 32 or len(signature_bytes) < 65:
+        return None
+
+    signer = _load_signer_preview_module()
+    r = int.from_bytes(signature_bytes[0:32], "big")
+    s = int.from_bytes(signature_bytes[32:64], "big")
+    candidates: list[int] = []
+    if expected_address:
+        try:
+            candidates.append(int(signer.recover_rec_id_by_address(digest, r, s, expected_address)))
+        except Exception:
+            pass
+
+    rec_id = _eth_signature_recovery_id(int.from_bytes(signature_bytes[64:], "big"))
+    if rec_id is not None:
+        candidates.extend([rec_id, rec_id + 2])
+
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            pubkey = signer.recover_pubkey_from_digest(digest, r, s, candidate)
+        except Exception:
+            continue
+        if not pubkey:
+            continue
+        try:
+            return signer.ethereum_address_from_pubkey(pubkey)
+        except Exception:
+            continue
+    return None
+
+
+def _eth_signature_request_debug_context(request, signature_bytes: bytes) -> dict:
+    signer = _load_signer_preview_module()
+    request_address = str(getattr(request, "address", "") or "").strip() or None
+    digest = None
+
+    if isinstance(request, signer.TpSignTransactionRequest):
+        tx = signer.EvmTxEncoder.from_tp_request(request)
+        digest = signer.EvmTxEncoder.transaction_hash(tx)
+    elif isinstance(request, signer.TpSignPersonalMessageRequest):
+        digest = signer.personal_sign_hash(request.message)
+    elif isinstance(request, signer.TpSignTypedDataRequest):
+        digest = signer.typed_data_hash(request.typed_data_json)
+
+    recovered_address = _recover_eth_signature_address(digest, signature_bytes, expected_address=request_address) if digest else None
+    matches_request = None
+    if recovered_address and request_address:
+        matches_request = recovered_address.lower() == signer.normalize_eth_address(request_address).lower()
+
+    return {
+        "request_address": request_address,
+        "digest_hex": digest.hex() if isinstance(digest, (bytes, bytearray)) else None,
+        "recovered_address": recovered_address,
+        "recovered_matches_request": matches_request,
+    }
+
+
+def _extract_signature_bytes_from_tp_response(request, response_text: str) -> bytes:
+    signature_bytes, _ = _extract_signature_bytes_with_debug_from_tp_response(request, response_text)
+    return signature_bytes
+
+
+def _extract_signature_bytes_with_debug_from_tp_response(
+    request,
+    response_text: str,
+    *,
+    legacy_v_mode: str | None = None,
+) -> tuple[bytes, dict]:
+    parsed = _parse_tp_sign_response_payload(response_text)
+    data = parsed["data"]
+
+    signer = _load_signer_preview_module()
+    request_type = type(request).__name__
+    chain_id = int(getattr(request, "chain_id", 1) or 1)
+    debug = {
+        "request_type": request_type,
+        "chain_id": chain_id,
+    }
+    if isinstance(request, signer.TpSignTransactionRequest):
+        raw_transaction = str(data.get("rawTransaction") or "").strip()
+        if not raw_transaction:
+            raise ValueError("树莓派未返回签名交易")
+        raw_bytes = _hex_to_bytes(raw_transaction)
+        if raw_bytes and raw_bytes[0] in (0x01, 0x02):
+            signature_bytes, signature_debug = _extract_typed_transaction_signature_details(raw_transaction)
+        else:
+            signature_bytes, signature_debug = _extract_legacy_transaction_signature_details(
+                raw_transaction,
+                chain_id,
+                v_mode=legacy_v_mode,
+            )
+        debug.update(signature_debug)
+        debug.update(_eth_signature_request_debug_context(request, signature_bytes))
+        return signature_bytes, debug
+
+    signature_hex = str(data.get("signature") or "").strip()
+    if not signature_hex:
+        raise ValueError("树莓派未返回签名结果")
+    signature_bytes = _normalize_eth_message_signature_bytes(_hex_to_bytes(signature_hex))
+    if len(signature_bytes) != 65:
+        raise ValueError("树莓派返回的签名长度不正确")
+    debug.update(
+        {
+            "transaction_type": "typed-data" if "typed" in request_type.lower() else "message",
+            "v": signature_bytes[-1],
+            "recovery_id": _eth_signature_recovery_id(signature_bytes[-1]),
+            "signature_output_byte": signature_bytes[-1],
+        }
+    )
+    debug.update(_eth_signature_request_debug_context(request, signature_bytes))
+    return signature_bytes, debug
+
+
+def _build_eth_signature_ur(
+    request_id: str | None,
+    signature_bytes: bytes,
+    origin: str | None = None,
+    request_id_cbor: object | None = None,
+) -> str:
+    if len(signature_bytes) < 65:
+        raise ValueError("签名结果长度不正确")
+
+    request_id_value = _request_id_response_cbor(request_id, request_id_cbor=request_id_cbor)
+    origin_text = str(origin or "").strip()
+
+    cbor = CBOREncoder()
+    field_count = 1
+    if request_id_value is not None:
+        field_count += 1
+    if origin_text and WEB3_ETH_SIGNATURE_INCLUDE_ORIGIN:
+        field_count += 1
+    cbor.encodeMapSize(field_count)
+    if request_id_value is not None:
+        cbor.encodeUnsigned(1)
+        _encode_request_id_cbor_value(cbor, request_id_value)
+    cbor.encodeUnsigned(2)
+    cbor.encodeBytes(signature_bytes)
+    if origin_text and WEB3_ETH_SIGNATURE_INCLUDE_ORIGIN:
+        cbor.encodeUnsigned(3)
+        cbor.encodeText(origin_text)
+    return UREncoder.encode(UR("eth-signature", cbor.get_bytes()))
+
+
+def _build_web3_request_header_pages(
+    wallet_name: str | None,
+    request_format: str | None,
+    response_protocol: str | None,
+    origin: str | None,
+    chain_id: int,
+) -> list[str]:
+    native_header_lines = [
+        f"来源钱包: {wallet_name or 'Web3 钱包'}",
+        f"请求格式: {request_format or 'Keystone / AirGap UR'}",
+        f"回传格式: {response_protocol or '-'}",
+        "签名完成后",
+        "原钱包直接扫树莓派结果码",
+        "手机不用再回扫",
+    ]
+    if origin:
+        native_header_lines.insert(3, f"DApp: {origin}")
+    support_note = _web3_wallet_support_note(origin, chain_id)
+    if support_note:
+        native_header_lines.extend(["", support_note])
+    return _paginate_report_lines(native_header_lines, lines_per_page=9)
+
+
+def _finalize_native_wallet_response(payload: str, response_text: str) -> str:
+    normalized = (payload or "").strip()
+    if _is_web3_eth_sign_request_payload(normalized):
+        request = _parse_web3_eth_sign_request_from_payload(normalized)
+        signer = _load_signer_preview_module()
+        tp_request = signer.parse_sign_request(_build_tp_payload_from_web3_request(request))
+        signature_bytes, signature_debug = _extract_signature_bytes_with_debug_from_tp_response(
+            tp_request,
+            response_text,
+            legacy_v_mode=_web3_legacy_signature_v_mode(request.origin, request.chain_id),
+        )
+        result = _build_eth_signature_ur(
+            request.request_id,
+            signature_bytes,
+            origin=request.origin,
+            request_id_cbor=request.request_id_cbor,
+        )
+        signature_debug.update(
+            {
+                "request_id": request.request_id or None,
+                "origin": request.origin or None,
+                "derivation_path": request.derivation_path or None,
+                "request_address": request.address or None,
+            }
+        )
+        _remember_eth_signature_debug_context(result, signature_debug)
+        return result
+
+    if not _is_web3_native_relay_payload(normalized):
+        return response_text
+
+    request_meta = _extract_web3_native_relay_request(normalized)
+    if request_meta.get("response_protocol") != "eth-signature":
+        return response_text
+
+    signer = _load_signer_preview_module()
+    request = signer.parse_sign_request(request_meta["payload"])
+    request_id = request_meta.get("request_id") or getattr(request, "request_id", "")
+    origin = request_meta.get("origin") or None
+    legacy_v_mode = _web3_legacy_signature_v_mode(origin, int(getattr(request, "chain_id", 1) or 1))
+    signature_bytes, signature_debug = _extract_signature_bytes_with_debug_from_tp_response(
+        request,
+        response_text,
+        legacy_v_mode=legacy_v_mode,
+    )
+    result = _build_eth_signature_ur(request_id, signature_bytes, origin=origin)
+    signature_debug.update(
+        {
+            "request_id": request_id or None,
+            "origin": origin or None,
+            "derivation_path": request_meta.get("derivation_path") or None,
+        }
+    )
+    _remember_eth_signature_debug_context(result, signature_debug)
+    return result
+
+
 def _build_tp_request_review_pages(payload: str) -> tuple[str, list[str]]:
     signer = _load_signer_preview_module()
-    request = signer.parse_sign_request(payload)
+    review_payload = _resolve_sign_execution_payload(payload)
+    request = signer.parse_sign_request(review_payload)
     request_type = type(request).__name__
     pages: list[str] = []
+    if _is_web3_eth_sign_request_payload(payload):
+        web3_request = _parse_web3_eth_sign_request_from_payload(payload)
+        wallet_name = _web3_wallet_meta(web3_request.origin)[1]
+        pages.extend(
+            _build_web3_request_header_pages(
+                wallet_name=wallet_name,
+                request_format="Keystone / AirGap UR",
+                response_protocol="eth-signature",
+                origin=web3_request.origin,
+                chain_id=int(getattr(request, "chain_id", web3_request.chain_id) or web3_request.chain_id or 1),
+            )
+        )
+    elif _is_web3_native_relay_payload(payload):
+        request_meta = _extract_web3_native_relay_request(payload)
+        pages.extend(
+            _build_web3_request_header_pages(
+                wallet_name=request_meta.get("wallet_name") or "Web3 钱包",
+                request_format=request_meta.get("format") or "Keystone / AirGap UR",
+                response_protocol=request_meta.get("response_protocol") or "-",
+                origin=request_meta.get("origin") or None,
+                chain_id=int(getattr(request, "chain_id", 1) or 1),
+            )
+        )
 
     if request_type == "TpSignTransactionRequest":
         tx = signer.EvmTxEncoder.from_tp_request(request)
@@ -1287,6 +3157,620 @@ def _build_tp_request_review_pages(payload: str) -> tuple[str, list[str]]:
     raise ValueError(f"不支持的签名请求类型: {request_type}")
 
 
+def _seed_sign_evm_digest(seed: Seed, derivation_path: str, digest: bytes):
+    if isinstance(seed, TransientWordSeed):
+        raise ValueError("这条是临时假助记词，不能用于真实签名。")
+    if len(digest) != 32:
+        raise ValueError("EVM 签名摘要长度不正确。")
+
+    from embit.util import secp256k1
+
+    signer = _load_signer_preview_module()
+    normalized_path = _normalize_bip32_path(derivation_path)
+    root = seed.get_root(SettingsConstants.MAINNET)
+    derived_key = root.derive(normalized_path).key
+    pubkey = _to_uncompressed_secp256k1_pubkey(derived_key.get_public_key().sec())
+    signer_address = signer.ethereum_address_from_pubkey(pubkey)
+
+    recoverable_sig = bytes(secp256k1.ecdsa_sign_recoverable(digest, derived_key._secret))
+    if len(recoverable_sig) != 65:
+        raise ValueError("助记词签名结果长度不正确。")
+
+    compact_sig, rec_id = secp256k1.ecdsa_recoverable_signature_serialize_compact(recoverable_sig)
+    compact_sig = bytes(compact_sig)
+    rec_id = int(rec_id)
+    if len(compact_sig) != 64:
+        raise ValueError("助记词签名结果紧凑序列化长度不正确。")
+
+    r = int.from_bytes(compact_sig[0:32], "big")
+    s = int.from_bytes(compact_sig[32:64], "big")
+    if s > signer.SECP256K1_HALF_N:
+        s = signer.SECP256K1_N - s
+        rec_id ^= 1
+
+    try:
+        rec_id = int(signer.recover_rec_id_by_address(digest, r, s, signer_address))
+    except Exception as exc:
+        raise ValueError("助记词签名结果无法恢复为派生地址。") from exc
+
+    return signer.SignatureParts(rec_id=rec_id, r=r, s=s), signer_address
+
+
+def _satochip_sign_evm_digest(connector, derivation_path: str, digest: bytes):
+    if len(digest) != 32:
+        raise ValueError("EVM 签名摘要长度不正确。")
+
+    from seedsigner.helpers.satochip_signer import format_path_string
+
+    signer = _load_signer_preview_module()
+    normalized_path = _normalize_bip32_path(derivation_path)
+    key, _chaincode = connector.card_bip32_get_extendedkey(format_path_string(normalized_path))
+    pubkey = key.get_public_key_bytes(compressed=False)
+    signer_address = _derive_evm_address_from_pubkey_bytes(pubkey)
+
+    response, sw1, sw2 = connector.card_sign_transaction_hash(0xFF, list(digest), None)
+    if sw1 != 0x90 or sw2 != 0x00:
+        raise ValueError(format_sw_error(sw1, sw2))
+
+    dersig = bytes(response or b"")
+    if not dersig:
+        raise ValueError("智能卡未返回签名结果。")
+
+    parser = getattr(connector, "parser", None)
+    parse_rsv = getattr(parser, "parse_rsv_from_dersig", None)
+    if not callable(parse_rsv):
+        raise ValueError("智能卡解析器缺少 EVM 签名恢复能力。")
+
+    r, s, rec_id, _sigstring = parse_rsv(dersig, digest, key)
+    r = int(r)
+    s = int(s)
+    rec_id = int(rec_id)
+    try:
+        rec_id = int(signer.recover_rec_id_by_address(digest, r, s, signer_address))
+    except Exception:
+        pass
+
+    return signer.SignatureParts(rec_id=rec_id, r=r, s=s), signer_address
+
+
+def _verify_seed_signer_address(signer, request, signer_address: str) -> None:
+    request_address = str(getattr(request, "address", "") or "").strip()
+    if not request_address:
+        return
+    expected = signer.normalize_eth_address(request_address)
+    if expected and expected.lower() != signer_address.lower():
+        raise ValueError(
+            "签名地址与已加载助记词派生地址不一致。\n"
+            f"请求地址: {expected}\n"
+            f"助记词地址: {signer_address}"
+        )
+
+
+def _signature_output_value(signature_bytes: bytes) -> int:
+    if len(signature_bytes) < 65:
+        raise ValueError("签名结果长度不正确")
+    return int.from_bytes(signature_bytes[64:], "big")
+
+
+def _sign_web3_eth_request_with_seed(
+    request: Web3EthSignRequest,
+    seed: Seed,
+    *,
+    derivation_path: str | None = None,
+    request_address: str | None = None,
+    request_id: str | None = None,
+    origin: str | None = None,
+):
+    signer = _load_signer_preview_module()
+    request_sign_data = bytes(request.sign_data or b"")
+    if not request_sign_data:
+        raise ValueError("Web3 请求缺少 signData")
+
+    normalized_path = _normalize_bip32_path(derivation_path or request.derivation_path or DEFAULT_DERIVATION_PATH)
+    request_type_id = int(getattr(request, "data_type", 0) or 0)
+    request_address = str(request_address or request.address or "").strip() or None
+    request_id = str(request_id or request.request_id or "").strip() or None
+    origin = str(origin or request.origin or "").strip() or None
+    chain_id = int(getattr(request, "chain_id", 1) or 1)
+    digest_label = "签名哈希"
+    result_label = "签名Hex"
+    debug_context = {
+        "request_id": request_id,
+        "origin": origin,
+        "derivation_path": normalized_path,
+        "chain_id": chain_id,
+        "request_address": request_address,
+    }
+
+    if request_type_id in (1, 4):
+        digest = signer.keccak256(request_sign_data)
+        sig, signer_address = _seed_sign_evm_digest(seed, normalized_path, digest)
+        if request_address:
+            expected = signer.normalize_eth_address(request_address)
+            if expected and expected.lower() != signer_address.lower():
+                raise ValueError(
+                    "签名地址与 Web3 请求不一致。\n"
+                    f"请求地址: {expected}\n"
+                    f"助记词地址: {signer_address}"
+                )
+        legacy_v_mode = _web3_legacy_signature_v_mode(origin, chain_id) if request_type_id == 1 else None
+        signature_bytes = (
+            _int_to_fixed_bytes(sig.r, 32)
+            + _int_to_fixed_bytes(sig.s, 32)
+            + (
+                bytes([sig.rec_id & 0xFF])
+                if request_type_id == 4
+                else _legacy_signature_output_bytes(sig.rec_id, v_mode=legacy_v_mode, chain_id=chain_id)
+            )
+        )
+        debug_context.update(
+            {
+                "transaction_type": (
+                    "legacy"
+                    if request_type_id == 1
+                    else {0x01: "eip-2930", 0x02: "eip-1559"}.get(request_sign_data[0], "typed-transaction")
+                ),
+                "digest_hex": digest.hex(),
+                "recovered_address": signer_address,
+                "recovered_matches_request": (
+                    signer_address.lower() == signer.normalize_eth_address(request_address).lower()
+                    if request_address
+                    else None
+                ),
+                "signature_output_byte": _signature_output_value(signature_bytes),
+            }
+        )
+        if request_type_id == 1:
+            debug_context.update(
+                {
+                    "v": chain_id * 2 + 35 + sig.rec_id,
+                    "recovery_id": sig.rec_id,
+                    "legacy_v_mode": _normalize_legacy_v_mode(legacy_v_mode),
+                }
+            )
+        else:
+            debug_context.update({"y_parity": sig.rec_id})
+        digest_label = "交易哈希"
+    elif request_type_id == 3:
+        prefix = f"\x19Ethereum Signed Message:\n{len(request_sign_data)}".encode("utf-8")
+        digest = signer.keccak256(prefix + request_sign_data)
+        sig, signer_address = _seed_sign_evm_digest(seed, normalized_path, digest)
+        if request_address:
+            expected = signer.normalize_eth_address(request_address)
+            if expected and expected.lower() != signer_address.lower():
+                raise ValueError(
+                    "签名地址与 Web3 请求不一致。\n"
+                    f"请求地址: {expected}\n"
+                    f"助记词地址: {signer_address}"
+                )
+        signature_bytes = _normalize_eth_message_signature_bytes(
+            _int_to_fixed_bytes(sig.r, 32) + _int_to_fixed_bytes(sig.s, 32) + bytes([27 + sig.rec_id])
+        )
+        debug_context.update(
+            {
+                "transaction_type": "message",
+                "digest_hex": digest.hex(),
+                "recovered_address": signer_address,
+                "recovered_matches_request": (
+                    signer_address.lower() == signer.normalize_eth_address(request_address).lower()
+                    if request_address
+                    else None
+                ),
+                "v": signature_bytes[-1],
+                "recovery_id": sig.rec_id,
+                "signature_output_byte": signature_bytes[-1],
+            }
+        )
+        digest_label = "消息哈希"
+    elif request_type_id == 2:
+        typed_data_json = request_sign_data.decode("utf-8")
+        digest = signer.typed_data_hash(typed_data_json)
+        sig, signer_address = _seed_sign_evm_digest(seed, normalized_path, digest)
+        if request_address:
+            expected = signer.normalize_eth_address(request_address)
+            if expected and expected.lower() != signer_address.lower():
+                raise ValueError(
+                    "签名地址与 Web3 请求不一致。\n"
+                    f"请求地址: {expected}\n"
+                    f"助记词地址: {signer_address}"
+                )
+        signature_bytes = _normalize_eth_message_signature_bytes(
+            _int_to_fixed_bytes(sig.r, 32) + _int_to_fixed_bytes(sig.s, 32) + bytes([27 + sig.rec_id])
+        )
+        debug_context.update(
+            {
+                "transaction_type": "typed-data",
+                "digest_hex": digest.hex(),
+                "recovered_address": signer_address,
+                "recovered_matches_request": (
+                    signer_address.lower() == signer.normalize_eth_address(request_address).lower()
+                    if request_address
+                    else None
+                ),
+                "v": signature_bytes[-1],
+                "recovery_id": sig.rec_id,
+                "signature_output_byte": signature_bytes[-1],
+            }
+        )
+        digest_label = "TypedData哈希"
+    else:
+        raise ValueError(f"暂不支持的 Web3 请求类型: {request_type_id}")
+
+    result = _build_eth_signature_ur(
+        request_id,
+        signature_bytes,
+        origin=origin,
+        request_id_cbor=request.request_id_cbor,
+    )
+    _remember_eth_signature_debug_context(result, debug_context)
+    return signer.SigningOutcome(
+        response_payload=result,
+        signer_address=signer_address,
+        digest_hex=signer.ensure_hex_prefix(digest.hex()),
+        digest_label=digest_label,
+        result_hex=signer.ensure_hex_prefix(signature_bytes.hex()),
+        result_label=result_label,
+    )
+
+
+def _sign_web3_eth_request_with_satochip(
+    request: Web3EthSignRequest,
+    connector,
+    *,
+    derivation_path: str | None = None,
+    request_address: str | None = None,
+    request_id: str | None = None,
+    origin: str | None = None,
+):
+    signer = _load_signer_preview_module()
+    request_sign_data = bytes(request.sign_data or b"")
+    if not request_sign_data:
+        raise ValueError("Web3 请求缺少 signData")
+
+    normalized_path = _normalize_bip32_path(derivation_path or request.derivation_path or DEFAULT_DERIVATION_PATH)
+    request_type_id = int(getattr(request, "data_type", 0) or 0)
+    request_address = str(request_address or request.address or "").strip() or None
+    request_id = str(request_id or request.request_id or "").strip() or None
+    origin = str(origin or request.origin or "").strip() or None
+    chain_id = int(getattr(request, "chain_id", 1) or 1)
+    digest_label = "签名哈希"
+    result_label = "签名Hex"
+    debug_context = {
+        "request_id": request_id,
+        "origin": origin,
+        "derivation_path": normalized_path,
+        "chain_id": chain_id,
+        "request_address": request_address,
+    }
+
+    def _verify_request_address(signer_address: str) -> None:
+        if not request_address:
+            return
+        expected = signer.normalize_eth_address(request_address)
+        if expected and expected.lower() != signer_address.lower():
+            raise ValueError(
+                "签名地址与 Web3 请求不一致。\n"
+                f"请求地址: {expected}\n"
+                f"智能卡地址: {signer_address}"
+            )
+
+    if request_type_id in (1, 4):
+        digest = signer.keccak256(request_sign_data)
+        sig, signer_address = _satochip_sign_evm_digest(connector, normalized_path, digest)
+        _verify_request_address(signer_address)
+        legacy_v_mode = _web3_legacy_signature_v_mode(origin, chain_id) if request_type_id == 1 else None
+        signature_bytes = (
+            _int_to_fixed_bytes(sig.r, 32)
+            + _int_to_fixed_bytes(sig.s, 32)
+            + (
+                bytes([sig.rec_id & 0xFF])
+                if request_type_id == 4
+                else _legacy_signature_output_bytes(sig.rec_id, v_mode=legacy_v_mode, chain_id=chain_id)
+            )
+        )
+        debug_context.update(
+            {
+                "transaction_type": (
+                    "legacy"
+                    if request_type_id == 1
+                    else {0x01: "eip-2930", 0x02: "eip-1559"}.get(request_sign_data[0], "typed-transaction")
+                ),
+                "digest_hex": digest.hex(),
+                "recovered_address": signer_address,
+                "recovered_matches_request": (
+                    signer_address.lower() == signer.normalize_eth_address(request_address).lower()
+                    if request_address
+                    else None
+                ),
+                "signature_output_byte": _signature_output_value(signature_bytes),
+            }
+        )
+        if request_type_id == 1:
+            debug_context.update(
+                {
+                    "v": chain_id * 2 + 35 + sig.rec_id,
+                    "recovery_id": sig.rec_id,
+                    "legacy_v_mode": _normalize_legacy_v_mode(legacy_v_mode),
+                }
+            )
+        else:
+            debug_context.update({"y_parity": sig.rec_id})
+        digest_label = "交易哈希"
+    elif request_type_id == 3:
+        prefix = f"\x19Ethereum Signed Message:\n{len(request_sign_data)}".encode("utf-8")
+        digest = signer.keccak256(prefix + request_sign_data)
+        sig, signer_address = _satochip_sign_evm_digest(connector, normalized_path, digest)
+        _verify_request_address(signer_address)
+        signature_bytes = _normalize_eth_message_signature_bytes(
+            _int_to_fixed_bytes(sig.r, 32) + _int_to_fixed_bytes(sig.s, 32) + bytes([27 + sig.rec_id])
+        )
+        debug_context.update(
+            {
+                "transaction_type": "message",
+                "digest_hex": digest.hex(),
+                "recovered_address": signer_address,
+                "recovered_matches_request": (
+                    signer_address.lower() == signer.normalize_eth_address(request_address).lower()
+                    if request_address
+                    else None
+                ),
+                "v": signature_bytes[-1],
+                "recovery_id": sig.rec_id,
+                "signature_output_byte": signature_bytes[-1],
+            }
+        )
+        digest_label = "消息哈希"
+    elif request_type_id == 2:
+        typed_data_json = request_sign_data.decode("utf-8")
+        digest = signer.typed_data_hash(typed_data_json)
+        sig, signer_address = _satochip_sign_evm_digest(connector, normalized_path, digest)
+        _verify_request_address(signer_address)
+        signature_bytes = _normalize_eth_message_signature_bytes(
+            _int_to_fixed_bytes(sig.r, 32) + _int_to_fixed_bytes(sig.s, 32) + bytes([27 + sig.rec_id])
+        )
+        debug_context.update(
+            {
+                "transaction_type": "typed-data",
+                "digest_hex": digest.hex(),
+                "recovered_address": signer_address,
+                "recovered_matches_request": (
+                    signer_address.lower() == signer.normalize_eth_address(request_address).lower()
+                    if request_address
+                    else None
+                ),
+                "v": signature_bytes[-1],
+                "recovery_id": sig.rec_id,
+                "signature_output_byte": signature_bytes[-1],
+            }
+        )
+        digest_label = "TypedData哈希"
+    else:
+        raise ValueError(f"暂不支持的 Web3 请求类型: {request_type_id}")
+
+    result = _build_eth_signature_ur(
+        request_id,
+        signature_bytes,
+        origin=origin,
+        request_id_cbor=request.request_id_cbor,
+    )
+    _remember_eth_signature_debug_context(result, debug_context)
+    return signer.SigningOutcome(
+        response_payload=result,
+        signer_address=signer_address,
+        digest_hex=signer.ensure_hex_prefix(digest.hex()),
+        digest_label=digest_label,
+        result_hex=signer.ensure_hex_prefix(signature_bytes.hex()),
+        result_label=result_label,
+    )
+
+
+def _sign_web3_native_relay_payload_with_seed(payload: str, seed: Seed, derivation_path: str):
+    normalized = (payload or "").strip()
+    if not _is_web3_native_relay_payload(normalized):
+        return None
+
+    request_meta = _extract_web3_native_relay_request(normalized)
+    if request_meta.get("response_protocol") != "eth-signature":
+        return None
+
+    request_sign_data_hex = str(request_meta.get("request_sign_data_hex") or "").strip().lower()
+    request_type_id = str(request_meta.get("request_data_type_id") or "").strip()
+    if not request_sign_data_hex or not request_type_id:
+        derived_type_id, derived_sign_data = _derive_web3_native_request_sign_data(request_meta.get("payload") or "")
+        if not request_type_id and derived_type_id is not None:
+            request_type_id = str(derived_type_id)
+        if not request_sign_data_hex and isinstance(derived_sign_data, (bytes, bytearray)) and derived_sign_data:
+            request_sign_data_hex = bytes(derived_sign_data).hex()
+
+    try:
+        request_sign_data = _hex_to_bytes(request_sign_data_hex)
+    except Exception:
+        return None
+    if not request_sign_data or not request_type_id:
+        return None
+
+    request = Web3EthSignRequest(
+        request_id=str(request_meta.get("request_id") or "").strip() or None,
+        sign_data=request_sign_data,
+        data_type=int(request_type_id),
+        chain_id=int(str(request_meta.get("chain_id") or "1") or 1),
+        derivation_path=str(request_meta.get("derivation_path") or derivation_path or DEFAULT_DERIVATION_PATH),
+        address=str(request_meta.get("address") or "").strip() or None,
+        origin=str(request_meta.get("origin") or "").strip() or None,
+    )
+    return _sign_web3_eth_request_with_seed(
+        request,
+        seed,
+        derivation_path=str(request_meta.get("derivation_path") or derivation_path or DEFAULT_DERIVATION_PATH),
+        request_address=str(request_meta.get("address") or request_meta.get("expected_address") or "").strip() or None,
+        request_id=str(request_meta.get("request_id") or "").strip() or None,
+        origin=str(request_meta.get("origin") or "").strip() or None,
+    )
+
+
+def _sign_web3_native_relay_payload_with_satochip(payload: str, connector, derivation_path: str):
+    normalized = (payload or "").strip()
+    if not _is_web3_native_relay_payload(normalized):
+        return None
+
+    request_meta = _extract_web3_native_relay_request(normalized)
+    if request_meta.get("response_protocol") != "eth-signature":
+        return None
+
+    request_sign_data_hex = str(request_meta.get("request_sign_data_hex") or "").strip().lower()
+    request_type_id = str(request_meta.get("request_data_type_id") or "").strip()
+    if not request_sign_data_hex or not request_type_id:
+        derived_type_id, derived_sign_data = _derive_web3_native_request_sign_data(request_meta.get("payload") or "")
+        if not request_type_id and derived_type_id is not None:
+            request_type_id = str(derived_type_id)
+        if not request_sign_data_hex and isinstance(derived_sign_data, (bytes, bytearray)) and derived_sign_data:
+            request_sign_data_hex = bytes(derived_sign_data).hex()
+
+    try:
+        request_sign_data = _hex_to_bytes(request_sign_data_hex)
+    except Exception:
+        return None
+    if not request_sign_data or not request_type_id:
+        return None
+
+    request = Web3EthSignRequest(
+        request_id=str(request_meta.get("request_id") or "").strip() or None,
+        sign_data=request_sign_data,
+        data_type=int(request_type_id),
+        chain_id=int(str(request_meta.get("chain_id") or "1") or 1),
+        derivation_path=str(request_meta.get("derivation_path") or derivation_path or DEFAULT_DERIVATION_PATH),
+        address=str(request_meta.get("address") or "").strip() or None,
+        origin=str(request_meta.get("origin") or "").strip() or None,
+    )
+    return _sign_web3_eth_request_with_satochip(
+        request,
+        connector,
+        derivation_path=str(request_meta.get("derivation_path") or derivation_path or DEFAULT_DERIVATION_PATH),
+        request_address=str(request_meta.get("address") or request_meta.get("expected_address") or "").strip() or None,
+        request_id=str(request_meta.get("request_id") or "").strip() or None,
+        origin=str(request_meta.get("origin") or "").strip() or None,
+    )
+
+
+def _sign_tp_payload_with_seed(payload: str, seed: Seed, derivation_path: str):
+    normalized = (payload or "").strip()
+    if _is_web3_eth_sign_request_payload(normalized):
+        request = _parse_web3_eth_sign_request_from_payload(normalized)
+        return _sign_web3_eth_request_with_seed(
+            request,
+            seed,
+            derivation_path=request.derivation_path,
+            request_address=request.address,
+            request_id=request.request_id,
+            origin=request.origin,
+        )
+
+    native_outcome = _sign_web3_native_relay_payload_with_seed(payload, seed, derivation_path)
+    if native_outcome is not None:
+        return native_outcome
+
+    signer = _load_signer_preview_module()
+    execution_payload = _resolve_sign_execution_payload(payload)
+    request = signer.parse_sign_request(execution_payload)
+    normalized_path = _normalize_bip32_path(derivation_path)
+
+    if isinstance(request, signer.TpSignTransactionRequest):
+        try:
+            tx = signer.EvmTxEncoder.from_tp_request(request)
+            digest = signer.EvmTxEncoder.transaction_hash(tx)
+        except Exception as exc:
+            raise ValueError(str(exc)) from exc
+
+        sig, signer_address = _seed_sign_evm_digest(seed, normalized_path, digest)
+        _verify_seed_signer_address(signer, request, signer_address)
+        signed_payload = signer.EvmTxEncoder.signed_payload(tx, sig.rec_id, sig.r, sig.s)
+        raw_tx = signer.ensure_hex_prefix(signed_payload.hex())
+        outcome = signer.SigningOutcome(
+            response_payload=signer.build_sign_response(request, raw_tx, signer_address),
+            signer_address=signer_address,
+            digest_hex=signer.ensure_hex_prefix(digest.hex()),
+            digest_label="交易哈希",
+            result_hex=raw_tx,
+            result_label="RawTx",
+        )
+        return signer.SigningOutcome(
+            response_payload=_finalize_native_wallet_response(payload, outcome.response_payload),
+            signer_address=outcome.signer_address,
+            digest_hex=outcome.digest_hex,
+            digest_label=outcome.digest_label,
+            result_hex=outcome.result_hex,
+            result_label=outcome.result_label,
+        )
+
+    if isinstance(request, signer.TpSignPersonalMessageRequest):
+        digest = signer.personal_sign_hash(request.message)
+        sig, signer_address = _seed_sign_evm_digest(seed, normalized_path, digest)
+        _verify_seed_signer_address(signer, request, signer_address)
+        signature_hex = signer.build_eth_message_signature(sig.rec_id, sig.r, sig.s)
+        outcome = signer.SigningOutcome(
+            response_payload=signer.build_sign_response(request, signature_hex, signer_address),
+            signer_address=signer_address,
+            digest_hex=signer.ensure_hex_prefix(digest.hex()),
+            digest_label="消息哈希",
+            result_hex=signature_hex,
+            result_label="签名Hex",
+        )
+        return signer.SigningOutcome(
+            response_payload=_finalize_native_wallet_response(payload, outcome.response_payload),
+            signer_address=outcome.signer_address,
+            digest_hex=outcome.digest_hex,
+            digest_label=outcome.digest_label,
+            result_hex=outcome.result_hex,
+            result_label=outcome.result_label,
+        )
+
+    if isinstance(request, signer.TpSignTypedDataRequest):
+        if request.is_legacy or request.typed_data_json.strip().startswith("["):
+            raise ValueError("暂不支持 signTypedDataLegacy 数组格式，请在 TP 端改用 signTypedData/signTypeDataV4。")
+        digest = signer.typed_data_hash(request.typed_data_json)
+        sig, signer_address = _seed_sign_evm_digest(seed, normalized_path, digest)
+        _verify_seed_signer_address(signer, request, signer_address)
+        signature_hex = signer.build_eth_message_signature(sig.rec_id, sig.r, sig.s)
+        outcome = signer.SigningOutcome(
+            response_payload=signer.build_sign_response(request, signature_hex, signer_address),
+            signer_address=signer_address,
+            digest_hex=signer.ensure_hex_prefix(digest.hex()),
+            digest_label="TypedData哈希",
+            result_hex=signature_hex,
+            result_label="签名Hex",
+        )
+        return signer.SigningOutcome(
+            response_payload=_finalize_native_wallet_response(payload, outcome.response_payload),
+            signer_address=outcome.signer_address,
+            digest_hex=outcome.digest_hex,
+            digest_label=outcome.digest_label,
+            result_hex=outcome.result_hex,
+            result_label=outcome.result_label,
+        )
+
+    raise ValueError("未知签名请求类型。")
+
+
+def _sign_tp_payload_with_satochip(payload: str, connector, derivation_path: str):
+    normalized = (payload or "").strip()
+    if _is_web3_eth_sign_request_payload(normalized):
+        request = _parse_web3_eth_sign_request_from_payload(normalized)
+        return _sign_web3_eth_request_with_satochip(
+            request,
+            connector,
+            derivation_path=request.derivation_path,
+            request_address=request.address,
+            request_id=request.request_id,
+            origin=request.origin,
+        )
+
+    native_outcome = _sign_web3_native_relay_payload_with_satochip(payload, connector, derivation_path)
+    if native_outcome is not None:
+        return native_outcome
+
+    return None
+
+
 def _hex_payload_stats(hex_text: str) -> tuple[int | None, int]:
     value = str(hex_text or "").strip()
     if not value:
@@ -1321,6 +3805,69 @@ def _describe_review_qr_delivery(qr_encoder) -> tuple[str, int, str]:
     return f"连续二维码（共 {frame_count} 张）", frame_count, f"下一步会显示 {frame_count} 张连续二维码"
 
 
+def _eth_signature_qr_parts(response_text: str, qr_encoder=None) -> list[str]:
+    if qr_encoder is not None:
+        parts = [str(part).strip() for part in list(getattr(qr_encoder, "parts", []) or []) if str(part).strip()]
+        if parts:
+            return parts
+    response = str(response_text or "").strip()
+    return [response] if response else []
+
+
+def _build_eth_signature_debug_snapshot(response_text: str, qr_encoder=None) -> dict:
+    response = str(response_text or "").strip()
+    decoder = URDecoder()
+    if not decoder.receive_part(response) or not decoder.is_complete():
+        raise ValueError("eth-signature UR 无法解析为诊断快照")
+
+    ur = decoder.result_message()
+    root = _decode_cbor_root_map(ur.cbor)
+    signature_bytes = root.get(2)
+    if not isinstance(signature_bytes, bytes):
+        raise ValueError("eth-signature 缺少 signatureBytes")
+
+    request_id = _uuid_from_cbor(root.get(1))
+    origin = root.get(3)
+    if origin is not None and not isinstance(origin, str):
+        raise ValueError("eth-signature origin 字段格式错误")
+
+    pages = _eth_signature_qr_parts(response, qr_encoder=qr_encoder)
+    context = _get_eth_signature_debug_context(response)
+    context_origin = str(context.get("origin") or "").strip() or None
+    snapshot = {
+        "ur_type": str(getattr(ur, "type", "eth-signature")),
+        "request_id_present": request_id is not None,
+        "request_id": request_id,
+        "cbor_keys": sorted(root.keys()),
+        "signature_len": len(signature_bytes),
+        "transaction_type": context.get("transaction_type") or "unknown",
+        "chain_id": context.get("chain_id"),
+        "request_address": context.get("request_address"),
+        "derivation_path": context.get("derivation_path"),
+        "digest_hex": context.get("digest_hex"),
+        "recovered_address": context.get("recovered_address"),
+        "recovered_matches_request": context.get("recovered_matches_request"),
+        "v": context.get("v"),
+        "y_parity": context.get("y_parity"),
+        "recovery_id": context.get("recovery_id"),
+        "legacy_v_mode": context.get("legacy_v_mode"),
+        "signature_output_byte": context.get("signature_output_byte", int.from_bytes(signature_bytes[64:], "big")),
+        "origin": origin.strip() if isinstance(origin, str) and origin.strip() else context_origin,
+        "fragment_count": len(pages),
+        "frame_char_lengths": [len(page) for page in pages],
+        "first_frame": pages[0] if pages else "",
+        "last_frame": pages[-1] if pages else "",
+        "frame_repeat": int(getattr(qr_encoder, "frame_repeat", 1) or 1),
+        "text_length": len(response),
+        "request_type": context.get("request_type"),
+    }
+    return snapshot
+
+
+def _ensure_eth_signature_debug_snapshot(response_text: str, qr_encoder=None) -> dict:
+    return _build_eth_signature_debug_snapshot(response_text, qr_encoder=qr_encoder)
+
+
 def _friendly_signed_psbt_format_label(input_qr_type: str | None, tx_hex: str | None = None) -> str:
     mapping = {
         "psbt__base43": "BASE43",
@@ -1340,6 +3887,42 @@ def _build_tp_signed_response_review_pages(response_text: str, qr_encoder=None) 
         return "签名结果摘要", ["签名结果为空"]
 
     qr_style, frame_count, qr_hint = _describe_review_qr_delivery(qr_encoder)
+
+    if response.lower().startswith("ur:eth-signature/"):
+        char_len = len(response)
+        pages = [
+            "\n".join(
+                [
+                    "签名已完成",
+                    "回传格式: eth-signature",
+                    f"扫码方式: {qr_style}",
+                    "原钱包直接扫描树莓派",
+                    "不需要再扫回手机",
+                ]
+            )
+        ]
+        pages.append(
+            "\n".join(
+                [
+                    "钱包类型: Keystone / OKX / Bitget",
+                    f"二维码帧数: {frame_count}",
+                    f"文本长度: {char_len:,}",
+                    "请回到原钱包继续扫码",
+                ]
+            )
+        )
+        pages.append(
+            "\n".join(
+                [
+                    qr_hint,
+                    "刚才确认过的内容",
+                    "就是下一步二维码里的结果",
+                    "确认没问题后再点",
+                    "“显示二维码”",
+                ]
+            )
+        )
+        return "原生签名结果", pages
 
     if response.lower().startswith("btctx:"):
         tx_hex = response[6:].strip()
@@ -1992,8 +4575,534 @@ def _operator_display_label(operator: str) -> str:
     return OPERATOR_LABELS.get(operator, operator)
 
 
+class ToolsTpQrPagesEncoder(BaseSimpleAnimatedQREncoder):
+    def __init__(self, pages: list[str], frame_repeat: int = 2):
+        self.pages = [str(page).strip() for page in list(pages or []) if str(page).strip()]
+        self.frame_repeat = max(1, int(frame_repeat))
+        super().__post_init__()
+
+    def _create_parts(self):
+        self.parts = list(self.pages)
+
+
+class ToolsTpEthSignatureQrEncoder(BaseSimpleAnimatedQREncoder):
+    def __init__(
+        self,
+        ur_text: str,
+        max_fragment_len: int = WEB3_ETH_SIGNATURE_QR_MAX_FRAGMENT_LEN,
+        frame_repeat: int = WEB3_ETH_SIGNATURE_QR_FRAME_REPEAT,
+    ):
+        self.ur_text = str(ur_text or "").strip()
+        if not self.ur_text:
+            raise ValueError("eth-signature UR 不能为空")
+        self.max_fragment_len = max(10, int(max_fragment_len))
+        self.frame_repeat = max(1, int(frame_repeat))
+        super().__post_init__()
+
+    def _create_parts(self):
+        decoder = URDecoder()
+        if not decoder.receive_part(self.ur_text) or not decoder.is_complete():
+            raise ValueError("eth-signature UR 无法解析")
+
+        ur = decoder.result_message()
+        encoder = UREncoder(ur, self.max_fragment_len)
+        if encoder.is_single_part():
+            self.parts = [UREncoder.encode(ur)]
+            return
+
+        part_count = max(1, int(encoder.fountain_encoder.seq_len()))
+        self.parts = [encoder.next_part() for _ in range(part_count)]
+
+
+def _configure_high_margin_qr_encoder(
+    qr_encoder,
+    *,
+    border_modules: int = 2,
+    display_size: int | None = None,
+    min_background_brightness: int = 240,
+    background_color: str = "ffffff",
+):
+    if qr_encoder is None:
+        return None
+    try:
+        qr_encoder.display_border_modules = max(2, int(border_modules))
+    except Exception:
+        qr_encoder.display_border_modules = 5
+    try:
+        if display_size is None:
+            from seedsigner.gui.renderer import Renderer
+
+            renderer = Renderer.get_instance()
+            display_size = min(int(renderer.canvas_width), int(renderer.canvas_height))
+        size = max(64, int(display_size))
+    except Exception:
+        size = 240
+    qr_encoder.display_image_size = (size, size)
+    try:
+        qr_encoder.display_min_background_brightness = max(0, min(255, int(min_background_brightness)))
+    except Exception:
+        qr_encoder.display_min_background_brightness = 240
+    color = str(background_color or "").strip().lstrip("#")
+    if re.fullmatch(r"[0-9A-Fa-f]{6}", color):
+        qr_encoder.display_background_color = color.lower()
+    return qr_encoder
+
+
+def _encode_web3_keypath_bytes(path: str, source_fingerprint_hex: str | None = None, depth: int | None = None) -> bytes:
+    normalized = _normalize_bip32_path(path)
+    parts = [segment for segment in normalized.split("/")[1:] if segment]
+    components = []
+    for segment in parts:
+        if segment == "*":
+            components.append((None, False))
+            continue
+        hardened = segment.endswith("'")
+        index = int(segment.rstrip("'"))
+        components.append((index, hardened))
+
+    encoder = CBOREncoder()
+    field_count = 1
+    if source_fingerprint_hex:
+        field_count += 1
+    if depth is not None:
+        field_count += 1
+    encoder.encodeMapSize(field_count)
+
+    encoder.encodeUnsigned(1)
+    encoder.encodeArraySize(len(components) * 2)
+    for index, hardened in components:
+        if index is None:
+            encoder.encodeArraySize(0)
+        else:
+            encoder.encodeUnsigned(index)
+        encoder.encodeBool(hardened)
+
+    if source_fingerprint_hex:
+        encoder.encodeUnsigned(2)
+        encoder.encodeUnsigned(int(source_fingerprint_hex, 16))
+
+    if depth is not None:
+        encoder.encodeUnsigned(3)
+        encoder.encodeUnsigned(depth)
+
+    return bytes(encoder.get_bytes())
+
+
+def _web3_valid_fingerprint(value: str | None) -> str | None:
+    fingerprint = str(value or "").strip().lower()
+    return fingerprint if re.fullmatch(r"[0-9a-f]{8}", fingerprint) else None
+
+
+def _encode_web3_coin_info_bytes(coin_type: int | None = None, network: int | None = None) -> bytes | None:
+    if coin_type is None and network is None:
+        return None
+
+    encoder = CBOREncoder()
+    field_count = 0
+    if coin_type is not None:
+        field_count += 1
+    if network is not None:
+        field_count += 1
+    encoder.encodeMapSize(field_count)
+    if coin_type is not None:
+        encoder.encodeUnsigned(1)
+        encoder.encodeUnsigned(int(coin_type))
+    if network is not None:
+        encoder.encodeUnsigned(2)
+        encoder.encodeUnsigned(int(network))
+    return bytes(encoder.get_bytes())
+
+
+def _web3_keystone_keys(web3_account: dict, key_name: str) -> list[dict]:
+    keys = web3_account.get("keystoneKeys")
+    if not isinstance(keys, dict):
+        return []
+    value = keys.get(key_name)
+    if isinstance(value, dict):
+        return [dict(value)]
+    if isinstance(value, list):
+        return [dict(entry) for entry in value if isinstance(entry, dict)]
+    return []
+
+
+def _web3_keystone_key(web3_account: dict, key_name: str) -> dict:
+    keys = _web3_keystone_keys(web3_account, key_name)
+    if keys:
+        return keys[0]
+    return _web3_key_entry(
+        pubkey_hex=str(web3_account["compressedPubKeyHex"]),
+        chain_code_hex=str(web3_account.get("chainCodeHex") or ""),
+        origin_path=str(web3_account.get("accountPath") or "m/44'/60'/0'"),
+        origin_depth=_web3_path_depth(str(web3_account.get("accountPath") or "m/44'/60'/0'")),
+        parent_fingerprint=str(web3_account.get("parentFingerprint") or ""),
+        children_path=str(web3_account.get("childrenPath") or "0/*"),
+        children_depth=0,
+        note="account.standard",
+        coin_type=WEB3_ETH_COIN_TYPE,
+        network=WEB3_MAINNET_NETWORK,
+    )
+
+
+def _build_web3_hdkey_entry_cbor_bytes(entry: dict, master_fingerprint: str | None, include_children: bool) -> bytes:
+    compressed_pubkey = _hex_to_bytes(str(entry["compressedPubKeyHex"]))
+    chain_code_hex = str(entry.get("chainCodeHex") or "").strip()
+    chain_code = _hex_to_bytes(chain_code_hex) if chain_code_hex else b""
+    if len(compressed_pubkey) != 33:
+        raise ValueError("Web3 连接公钥长度不正确。")
+    if chain_code and len(chain_code) != 32:
+        raise ValueError("Web3 连接链码长度不正确。")
+
+    origin_path = str(entry["originPath"])
+    children_path = str(entry.get("childrenPath") or "").strip()
+    parent_fingerprint = _web3_valid_fingerprint(str(entry.get("parentFingerprint") or ""))
+    coin_info_cbor = _encode_web3_coin_info_bytes(
+        coin_type=entry.get("coinType"),
+        network=entry.get("network"),
+    )
+    name = str(entry.get("name") or "Keystone")
+    note = str(entry.get("note") or "")
+
+    origin_cbor = _encode_web3_keypath_bytes(
+        origin_path,
+        source_fingerprint_hex=master_fingerprint,
+        depth=None,
+    )
+    children_cbor = None
+    if include_children and children_path:
+        children_cbor = _encode_web3_keypath_bytes(
+            children_path,
+            depth=None,
+        )
+
+    encoder = CBOREncoder()
+    field_count = 3
+    if chain_code:
+        field_count += 1
+    if coin_info_cbor is not None:
+        field_count += 1
+    if children_cbor is not None:
+        field_count += 1
+    if parent_fingerprint:
+        field_count += 1
+    if name:
+        field_count += 1
+    if note:
+        field_count += 1
+    encoder.encodeMapSize(field_count)
+    encoder.encodeUnsigned(2)
+    encoder.encodeBool(False)
+    encoder.encodeUnsigned(3)
+    encoder.encodeBytes(compressed_pubkey)
+    if chain_code:
+        encoder.encodeUnsigned(4)
+        encoder.encodeBytes(chain_code)
+    if coin_info_cbor is not None:
+        encoder.encodeUnsigned(5)
+        encoder.encodeTagAndValue(Tag_Major_semantic, 305)
+        encoder.buf += coin_info_cbor
+    encoder.encodeUnsigned(6)
+    encoder.encodeTagAndValue(Tag_Major_semantic, 304)
+    encoder.buf += origin_cbor
+    if children_cbor is not None:
+        encoder.encodeUnsigned(7)
+        encoder.encodeTagAndValue(Tag_Major_semantic, 304)
+        encoder.buf += children_cbor
+    if parent_fingerprint:
+        encoder.encodeUnsigned(8)
+        encoder.encodeUnsigned(int(parent_fingerprint, 16))
+    if name:
+        encoder.encodeUnsigned(9)
+        encoder.encodeText(name)
+    if note:
+        encoder.encodeUnsigned(10)
+        encoder.encodeText(note)
+    return bytes(encoder.get_bytes())
+
+
+def _build_web3_hdkey_cbor_bytes(web3_account: dict) -> bytes:
+    master_fingerprint = _web3_valid_fingerprint(str(web3_account.get("masterFingerprint") or ""))
+    return _build_web3_hdkey_entry_cbor_bytes(
+        _web3_keystone_key(web3_account, "standard"),
+        master_fingerprint=master_fingerprint,
+        include_children=True,
+    )
+
+
+def _build_web3_bitkeep_hdkey_entry_cbor_bytes(entry: dict, master_fingerprint: str | None) -> bytes:
+    compressed_pubkey = _hex_to_bytes(str(entry["compressedPubKeyHex"]))
+    chain_code_hex = str(entry.get("chainCodeHex") or "").strip()
+    chain_code = _hex_to_bytes(chain_code_hex) if chain_code_hex else b""
+    if len(compressed_pubkey) != 33:
+        raise ValueError("Web3 连接公钥长度不正确。")
+    if chain_code and len(chain_code) != 32:
+        raise ValueError("Web3 连接链码长度不正确。")
+
+    origin_path = str(entry["originPath"])
+    children_path = str(entry.get("childrenPath") or "").strip()
+    parent_fingerprint = _web3_valid_fingerprint(str(entry.get("parentFingerprint") or ""))
+    coin_info_cbor = _encode_web3_coin_info_bytes(
+        coin_type=entry.get("coinType"),
+        network=entry.get("network"),
+    )
+    name = str(entry.get("name") or "Keystone")
+    note = str(entry.get("note") or "")
+
+    origin_cbor = _encode_web3_keypath_bytes(
+        origin_path,
+        source_fingerprint_hex=master_fingerprint,
+        depth=entry.get("originDepth"),
+    )
+    children_cbor = None
+    if children_path:
+        children_cbor = _encode_web3_keypath_bytes(
+            children_path,
+            depth=entry.get("childrenDepth"),
+        )
+
+    encoder = CBOREncoder()
+    field_count = 3
+    if chain_code:
+        field_count += 1
+    if coin_info_cbor is not None:
+        field_count += 1
+    if children_cbor is not None:
+        field_count += 1
+    if parent_fingerprint:
+        field_count += 1
+    if name:
+        field_count += 1
+    if note:
+        field_count += 1
+    encoder.encodeMapSize(field_count)
+    encoder.encodeUnsigned(2)
+    encoder.encodeBool(False)
+    encoder.encodeUnsigned(3)
+    encoder.encodeBytes(compressed_pubkey)
+    if chain_code:
+        encoder.encodeUnsigned(4)
+        encoder.encodeBytes(chain_code)
+    if coin_info_cbor is not None:
+        encoder.encodeUnsigned(5)
+        encoder.encodeTagAndValue(Tag_Major_semantic, 305)
+        encoder.buf += coin_info_cbor
+    encoder.encodeUnsigned(6)
+    encoder.encodeTagAndValue(Tag_Major_semantic, 304)
+    encoder.buf += origin_cbor
+    if children_cbor is not None:
+        encoder.encodeUnsigned(7)
+        encoder.encodeTagAndValue(Tag_Major_semantic, 304)
+        encoder.buf += children_cbor
+    if parent_fingerprint:
+        encoder.encodeUnsigned(8)
+        encoder.encodeUnsigned(int(parent_fingerprint, 16))
+    if name:
+        encoder.encodeUnsigned(9)
+        encoder.encodeText(name)
+    if note:
+        encoder.encodeUnsigned(10)
+        encoder.encodeText(note)
+    return bytes(encoder.get_bytes())
+
+
+def _web3_bitkeep_master_fingerprint(web3_account: dict) -> str:
+    return (
+        _web3_valid_fingerprint(str(web3_account.get("bitkeepMasterFingerprint") or ""))
+        or _web3_valid_fingerprint(str(web3_account.get("masterFingerprint") or ""))
+        or "00000000"
+    )
+
+
+def _web3_bitkeep_key_entries(web3_account: dict) -> list[dict]:
+    entries = web3_account.get("bitkeepKeys")
+    if isinstance(entries, list):
+        normalized_entries = [dict(entry) for entry in entries if isinstance(entry, dict)]
+        if normalized_entries:
+            return normalized_entries
+    return [dict(_web3_keystone_key(web3_account, "standard"))]
+
+
+def _build_web3_bitkeep_multi_accounts_cbor_bytes(web3_account: dict) -> bytes:
+    master_fingerprint = _web3_bitkeep_master_fingerprint(web3_account)
+    key_entries = _web3_bitkeep_key_entries(web3_account)
+
+    encoder = CBOREncoder()
+    encoder.encodeMapSize(3)
+    encoder.encodeUnsigned(1)
+    encoder.encodeUnsigned(int(master_fingerprint, 16))
+    encoder.encodeUnsigned(2)
+    encoder.encodeArraySize(len(key_entries))
+    for entry in key_entries:
+        encoder.encodeTagAndValue(Tag_Major_semantic, 303)
+        encoder.buf += _build_web3_bitkeep_hdkey_entry_cbor_bytes(
+            entry,
+            master_fingerprint=master_fingerprint,
+        )
+    encoder.encodeUnsigned(3)
+    encoder.encodeText("Keystone")
+    return bytes(encoder.get_bytes())
+
+
+def _web3_wallet_profile(value: str | None) -> str:
+    normalized = str(value or WEB3_WALLET_PROFILE_OKX).strip().lower()
+    compact = normalized.replace("-", "").replace("_", "").replace(" ", "")
+    if normalized in {"bitget", "bitkeep"}:
+        return WEB3_WALLET_PROFILE_BITGET
+    if compact == WEB3_WALLET_PROFILE_METAMASK:
+        return WEB3_WALLET_PROFILE_METAMASK
+    if compact == WEB3_WALLET_PROFILE_RABBY:
+        return WEB3_WALLET_PROFILE_RABBY
+    if compact in {WEB3_WALLET_PROFILE_TOKENPOCKET, "tpwallet", "tp"}:
+        return WEB3_WALLET_PROFILE_TOKENPOCKET
+    return WEB3_WALLET_PROFILE_OKX
+
+
+def _web3_okx_device_serial(web3_account: dict) -> str:
+    try:
+        with open("/proc/cpuinfo", "r", encoding="utf-8") as file:
+            for line in file:
+                if line.startswith("Serial"):
+                    serial = line.split(":", 1)[-1].strip().replace("\x00", "")
+                    if serial:
+                        return serial
+    except Exception:
+        pass
+
+    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                machine_id = file.read().strip().replace("\x00", "")
+            if machine_id:
+                return machine_id
+        except Exception:
+            continue
+
+    nodename = str(getattr(os.uname(), "nodename", "") or "").strip()
+    if nodename:
+        return nodename
+
+    master_fingerprint = str(web3_account.get("masterFingerprint") or "00000000").strip().lower()
+    address = str(web3_account.get("address") or "").strip().lower()
+    fallback = f"tp-keystone-{master_fingerprint}-{address}"
+    return fallback
+
+
+def _web3_device_id(web3_account: dict, wallet_profile: str | None = None) -> str:
+    profile = _web3_wallet_profile(wallet_profile)
+    if profile == WEB3_WALLET_PROFILE_OKX:
+        serial = f"keystone{_web3_okx_device_serial(web3_account)}"
+        return hashlib.sha256(hashlib.sha256(serial.encode("utf-8")).digest()).hexdigest()[:40]
+
+    master_fingerprint = str(web3_account.get("masterFingerprint") or "00000000").strip().lower()
+    address = str(web3_account.get("address") or "").strip().lower()
+    serial = f"tp-keystone-{master_fingerprint}-{address}"
+    return hashlib.sha256(hashlib.sha256(serial.encode("utf-8")).digest()).digest()[:20].hex()
+
+
+def _build_web3_multi_accounts_cbor_bytes(web3_account: dict, wallet_profile: str) -> bytes:
+    master_fingerprint = _web3_valid_fingerprint(str(web3_account.get("masterFingerprint") or ""))
+    if master_fingerprint is None:
+        master_fingerprint = "00000000"
+
+    profile = _web3_wallet_profile(wallet_profile)
+    standard = _web3_keystone_key(web3_account, "standard")
+    ledger_legacy = _web3_keystone_key(web3_account, "ledgerLegacy")
+    ledger_live = _web3_keystone_key(web3_account, "ledgerLive")
+    okx_ledger_live = _web3_keystone_keys(web3_account, "okxLedgerLive")
+    if profile == WEB3_WALLET_PROFILE_BITGET:
+        key_specs = [
+            (standard, True),
+            (ledger_legacy, True),
+            (ledger_live, False),
+        ]
+    else:
+        key_specs = [(standard, True)]
+
+    encoder = CBOREncoder()
+    encoder.encodeMapSize(5)
+    encoder.encodeUnsigned(1)
+    encoder.encodeUnsigned(int(master_fingerprint, 16))
+    encoder.encodeUnsigned(2)
+    encoder.encodeArraySize(len(key_specs))
+    for entry, include_children in key_specs:
+        encoder.encodeTagAndValue(Tag_Major_semantic, 303)
+        encoder.buf += _build_web3_hdkey_entry_cbor_bytes(
+            entry,
+            master_fingerprint=master_fingerprint,
+            include_children=include_children,
+        )
+    encoder.encodeUnsigned(3)
+    encoder.encodeText(WEB3_OKX_DEVICE_TYPE if profile == WEB3_WALLET_PROFILE_OKX else WEB3_KEYSTONE_DEVICE_TYPE)
+    encoder.encodeUnsigned(4)
+    encoder.encodeText(_web3_device_id(web3_account, profile))
+    encoder.encodeUnsigned(5)
+    encoder.encodeText(WEB3_KEYSTONE_DEVICE_VERSION)
+    return bytes(encoder.get_bytes())
+
+
+def _build_web3_okx_multi_accounts_cbor_bytes(web3_account: dict) -> bytes:
+    master_fingerprint = _web3_valid_fingerprint(str(web3_account.get("masterFingerprint") or ""))
+    if master_fingerprint is None:
+        master_fingerprint = "00000000"
+
+    standard = _web3_keystone_key(web3_account, "standard")
+    okx_ledger_live = _web3_keystone_keys(web3_account, "okxLedgerLive")
+    okx_bitcoin = _web3_keystone_keys(web3_account, "okxBitcoin")
+
+    encoder = CBOREncoder()
+    encoder.encodeMapSize(5)
+    encoder.encodeUnsigned(1)
+    encoder.encodeUnsigned(int(master_fingerprint, 16))
+    encoder.encodeUnsigned(2)
+    encoder.encodeArraySize(1 + len(okx_ledger_live) + len(okx_bitcoin))
+
+    encoder.encodeTagAndValue(Tag_Major_semantic, 303)
+    encoder.buf += _build_web3_hdkey_entry_cbor_bytes(
+        standard,
+        master_fingerprint=master_fingerprint,
+        include_children=True,
+    )
+
+    for entry in okx_ledger_live:
+        encoder.encodeTagAndValue(Tag_Major_semantic, 303)
+        encoder.buf += _build_web3_hdkey_entry_cbor_bytes(
+            entry,
+            master_fingerprint=master_fingerprint,
+            include_children=False,
+        )
+
+    for entry in okx_bitcoin:
+        encoder.encodeTagAndValue(Tag_Major_semantic, 303)
+        encoder.buf += _build_web3_bitkeep_hdkey_entry_cbor_bytes(
+            entry,
+            master_fingerprint=master_fingerprint,
+        )
+
+    encoder.encodeUnsigned(3)
+    encoder.encodeText(WEB3_OKX_DEVICE_TYPE)
+    encoder.encodeUnsigned(4)
+    encoder.encodeText(_web3_device_id(web3_account, WEB3_WALLET_PROFILE_OKX))
+    encoder.encodeUnsigned(5)
+    encoder.encodeText(WEB3_KEYSTONE_DEVICE_VERSION)
+    return bytes(encoder.get_bytes())
+
+
+def _build_web3_connect_qr_pages(web3_account: dict, wallet_profile: str = WEB3_WALLET_PROFILE_OKX) -> list[str]:
+    profile = _web3_wallet_profile(wallet_profile)
+    if profile == WEB3_WALLET_PROFILE_BITGET:
+        ur = UR("crypto-multi-accounts", _build_web3_bitkeep_multi_accounts_cbor_bytes(web3_account))
+        return [UREncoder.encode(ur).upper()]
+    if profile == WEB3_WALLET_PROFILE_OKX:
+        ur = UR("crypto-multi-accounts", _build_web3_okx_multi_accounts_cbor_bytes(web3_account))
+        encoder = UREncoder(ur, WEB3_OKX_CONNECT_QR_MAX_FRAGMENT_LEN)
+        return [part.upper() for part in _collect_ur_encoder_parts(encoder)]
+
+    ur = UR("crypto-hdkey", _build_web3_hdkey_cbor_bytes(web3_account))
+    return [UREncoder.encode(ur).upper()]
+
+
 class ToolsTpHomeView(View):
     SCAN = ButtonOption("扫码签名")
+    CONNECT_WALLET = ButtonOption("连接钱包")
     SEED_TOOLS = ButtonOption("助记词工具")
     FIRMWARE_CHECK = ButtonOption("固件自检")
     SMARTCARD_TOOLS = ButtonOption("智能卡工具")
@@ -2001,6 +5110,7 @@ class ToolsTpHomeView(View):
     def run(self):
         button_data = [
             self.SCAN,
+            self.CONNECT_WALLET,
             self.SEED_TOOLS,
             self.SMARTCARD_TOOLS,
             self.FIRMWARE_CHECK,
@@ -2019,6 +5129,8 @@ class ToolsTpHomeView(View):
 
         if button_data[selected_menu_num] == self.SCAN:
             return Destination(ToolsTpSignerScanView)
+        if button_data[selected_menu_num] == self.CONNECT_WALLET:
+            return Destination(ToolsTpConnectWalletMenuView)
         if button_data[selected_menu_num] == self.SEED_TOOLS:
             return Destination(ToolsTpSeedToolsView)
         if button_data[selected_menu_num] == self.FIRMWARE_CHECK:
@@ -2026,6 +5138,470 @@ class ToolsTpHomeView(View):
         if button_data[selected_menu_num] == self.SMARTCARD_TOOLS:
             return Destination(ToolsTpSmartcardToolsView)
 
+        return _tp_home_destination()
+
+
+class ToolsTpConnectWalletMenuView(View):
+    WEB3 = ButtonOption("Web3钱包")
+    BTC = ButtonOption("比特币钱包")
+
+    def run(self):
+        button_data = [self.WEB3, self.BTC]
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="连接钱包",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return _tp_home_destination()
+
+        selected = button_data[selected_menu_num]
+        if selected == self.WEB3:
+            return Destination(ToolsTpWeb3WalletProfileSelectView)
+        if selected == self.BTC:
+            return Destination(ToolsTpBtcConnectSourceView)
+
+        return _tp_home_destination()
+
+
+class ToolsTpWeb3WalletProfileSelectView(View):
+    OKX = ButtonOption("OKX钱包")
+    BITGET = ButtonOption("Bitget钱包")
+    METAMASK = ButtonOption("MetaMask")
+    RABBY = ButtonOption("Rabby")
+    TOKENPOCKET = ButtonOption("TokenPocket")
+
+    def run(self):
+        button_data = [
+            self.OKX,
+            self.BITGET,
+            self.METAMASK,
+            self.RABBY,
+            self.TOKENPOCKET,
+        ]
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="Web3钱包",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(ToolsTpConnectWalletMenuView, clear_history=True)
+
+        selected_wallet = button_data[selected_menu_num]
+        if selected_wallet == self.BITGET:
+            wallet_profile = WEB3_WALLET_PROFILE_BITGET
+        elif selected_wallet == self.METAMASK:
+            wallet_profile = WEB3_WALLET_PROFILE_METAMASK
+        elif selected_wallet == self.RABBY:
+            wallet_profile = WEB3_WALLET_PROFILE_RABBY
+        elif selected_wallet == self.TOKENPOCKET:
+            wallet_profile = WEB3_WALLET_PROFILE_TOKENPOCKET
+        else:
+            wallet_profile = WEB3_WALLET_PROFILE_OKX
+        return Destination(
+            ToolsTpWeb3ConnectMethodSelectView,
+            view_args=dict(wallet_profile=wallet_profile),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpBtcConnectSourceView(View):
+    SMARTCARD = ButtonOption("智能卡账户")
+    LOADED_SEED = ButtonOption("已加载助记词")
+
+    def run(self):
+        button_data = [self.SMARTCARD, self.LOADED_SEED]
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="比特币钱包",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(ToolsTpConnectWalletMenuView, clear_history=True)
+
+        selected = button_data[selected_menu_num]
+        if selected == self.SMARTCARD:
+            return Destination(ToolsTpBtcConnectTypeView, view_args=dict(source="smartcard"))
+        if selected == self.LOADED_SEED:
+            return Destination(ToolsTpBtcConnectSeedSelectView)
+
+        return Destination(ToolsTpConnectWalletMenuView, clear_history=True)
+
+
+class ToolsTpBtcConnectSeedSelectView(View):
+    def _eligible_seed_options(self) -> tuple[list[int], list[ButtonOption]]:
+        seed_nums: list[int] = []
+        button_data: list[ButtonOption] = []
+        network = self.settings.get_value(SettingsConstants.SETTING__NETWORK)
+        for seed_num, seed in enumerate(self.controller.storage.seeds):
+            if isinstance(seed, TransientWordSeed):
+                continue
+            try:
+                seed.get_root(SettingsConstants.MAINNET)
+                fingerprint = seed.get_fingerprint(network)
+            except Exception:
+                continue
+            seed_nums.append(seed_num)
+            button_data.append(ButtonOption(f"{seed_num + 1}. {fingerprint[:8]}"))
+        return seed_nums, button_data
+
+    def run(self):
+        seed_nums, button_data = self._eligible_seed_options()
+        if not button_data:
+            self.run_screen(
+                WarningScreen,
+                title="没有可用助记词",
+                status_headline=None,
+                text="请先在“助记词工具”里导入或创建有效 BIP39 助记词，再连接比特币钱包。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return Destination(ToolsTpBtcConnectSourceView, clear_history=True)
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="选择助记词",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(ToolsTpBtcConnectSourceView, clear_history=True)
+
+        return Destination(
+            ToolsTpBtcConnectTypeView,
+            view_args=dict(source="seed", seed_num=seed_nums[selected_menu_num]),
+        )
+
+
+class ToolsTpBtcConnectTypeView(View):
+    ZPUB = ButtonOption("BlueWallet zpub")
+    XPUB = ButtonOption("BlueWallet xpub")
+
+    def __init__(self, source: str, seed_num: int | None = None):
+        super().__init__()
+        self.source = str(source or "").strip().lower()
+        self.seed_num = None if seed_num is None else int(seed_num)
+
+    def run(self):
+        button_data = [self.ZPUB, self.XPUB]
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="比特币钱包",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(ToolsTpBtcConnectSourceView, clear_history=True)
+
+        xtype = "zpub" if button_data[selected_menu_num] == self.ZPUB else "xpub"
+        if self.source == "smartcard":
+            return Destination(
+                ToolsTpBtcXpubPinEntryView,
+                view_args=dict(xtype=xtype, return_to_connect_wallet=True),
+                skip_current_view=True,
+            )
+
+        if self.source == "seed" and self.seed_num is not None:
+            return Destination(
+                ToolsTpSeedBtcXpubQrView,
+                view_args=dict(seed_num=self.seed_num, xtype=xtype, return_to_connect_wallet=True),
+                skip_current_view=True,
+            )
+
+        return Destination(ToolsTpBtcConnectSourceView, clear_history=True)
+
+
+class ToolsTpWeb3ConnectMethodSelectView(View):
+    SMARTCARD = ButtonOption("智能卡账户")
+    LOADED_SEED = ButtonOption("已加载助记词")
+
+    def __init__(self, derivation_path: str = DEFAULT_DERIVATION_PATH, wallet_profile: str = WEB3_WALLET_PROFILE_OKX):
+        super().__init__()
+        self.derivation_path = _normalize_bip32_path(derivation_path)
+        self.wallet_profile = _web3_wallet_profile(wallet_profile)
+
+    def run(self):
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title=WEB3_WALLET_PROFILE_LABELS.get(self.wallet_profile, "Web3钱包"),
+            is_button_text_centered=False,
+            button_data=[self.SMARTCARD, self.LOADED_SEED],
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(ToolsTpWeb3WalletProfileSelectView, clear_history=True)
+
+        if selected_menu_num == 0:
+            return Destination(
+                ToolsTpWeb3ConnectPinEntryView,
+                view_args=dict(derivation_path=self.derivation_path, wallet_profile=self.wallet_profile),
+                skip_current_view=True,
+            )
+
+        return Destination(
+            ToolsTpWeb3ConnectSeedSelectView,
+            view_args=dict(derivation_path=self.derivation_path, wallet_profile=self.wallet_profile),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpWeb3ConnectPinEntryView(View):
+    def __init__(self, derivation_path: str = DEFAULT_DERIVATION_PATH, wallet_profile: str = WEB3_WALLET_PROFILE_OKX):
+        super().__init__()
+        self.derivation_path = _normalize_bip32_path(derivation_path)
+        self.wallet_profile = _web3_wallet_profile(wallet_profile)
+
+    def run(self):
+        try:
+            pin = _prompt_for_tp_pin(self)
+        except Exception as exc:
+            logger.exception("TP Web3 connect PIN prompt failed")
+            return _debug_error_destination("21", str(exc))
+
+        if pin is None:
+            return _tp_home_destination()
+
+        pin = pin.strip()
+        if not pin or len(pin) < 4:
+            return _tp_home_destination()
+
+        return Destination(
+            ToolsTpWeb3ConnectRunView,
+            view_args=dict(derivation_path=self.derivation_path, pin=pin, wallet_profile=self.wallet_profile),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpWeb3ConnectSeedSelectView(View):
+    def __init__(self, derivation_path: str = DEFAULT_DERIVATION_PATH, wallet_profile: str = WEB3_WALLET_PROFILE_OKX):
+        super().__init__()
+        self.derivation_path = _normalize_bip32_path(derivation_path)
+        self.wallet_profile = _web3_wallet_profile(wallet_profile)
+
+    def _eligible_seed_options(self) -> tuple[list[int], list[ButtonOption]]:
+        seed_nums: list[int] = []
+        button_data: list[ButtonOption] = []
+        network = self.settings.get_value(SettingsConstants.SETTING__NETWORK)
+        for seed_num, seed in enumerate(self.controller.storage.seeds):
+            if isinstance(seed, TransientWordSeed):
+                continue
+            try:
+                seed.get_root(SettingsConstants.MAINNET)
+                fingerprint = seed.get_fingerprint(network)
+            except Exception:
+                continue
+            seed_nums.append(seed_num)
+            button_data.append(ButtonOption(f"{seed_num + 1}. {fingerprint[:8]}"))
+        return seed_nums, button_data
+
+    def run(self):
+        seed_nums, button_data = self._eligible_seed_options()
+        if not button_data:
+            self.run_screen(
+                WarningScreen,
+                title="没有可用助记词",
+                status_headline=None,
+                text="请先在“助记词工具”里导入或创建有效 BIP39 助记词，再生成 Web3 连接二维码。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return Destination(
+                ToolsTpWeb3ConnectMethodSelectView,
+                view_args=dict(wallet_profile=self.wallet_profile, derivation_path=self.derivation_path),
+                clear_history=True,
+            )
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="选择助记词",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(
+                ToolsTpWeb3ConnectMethodSelectView,
+                view_args=dict(wallet_profile=self.wallet_profile, derivation_path=self.derivation_path),
+                clear_history=True,
+            )
+
+        return Destination(
+            ToolsTpWeb3ConnectSeedRunView,
+            view_args=dict(
+                seed_num=seed_nums[selected_menu_num],
+                derivation_path=self.derivation_path,
+                wallet_profile=self.wallet_profile,
+            ),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpWeb3ConnectSeedRunView(View):
+    def __init__(self, seed_num: int, derivation_path: str = DEFAULT_DERIVATION_PATH, wallet_profile: str = WEB3_WALLET_PROFILE_OKX):
+        super().__init__()
+        self.seed_num = int(seed_num)
+        self.derivation_path = _normalize_bip32_path(derivation_path)
+        self.wallet_profile = _web3_wallet_profile(wallet_profile)
+
+    def run(self):
+        try:
+            seed = self.controller.get_seed(self.seed_num)
+        except Exception as exc:
+            return _debug_error_destination("63", str(exc))
+
+        loading = LoadingScreenThread(text="生成 Web3 连接码...")
+        loading.start()
+        try:
+            web3_account = _export_web3_account_from_seed(seed, self.derivation_path)
+            qr_pages = _build_web3_connect_qr_pages(web3_account, self.wallet_profile)
+        except Exception as exc:
+            logger.warning("TP Web3 connect seed export failed: %s", exc)
+            return _debug_error_destination("63", str(exc))
+        finally:
+            loading.stop()
+
+        return Destination(
+            ToolsTpWeb3ConnectQrView,
+            view_args=dict(web3_account=web3_account, qr_pages=qr_pages, wallet_profile=self.wallet_profile),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpWeb3ConnectRunView(View):
+    def __init__(self, derivation_path: str = DEFAULT_DERIVATION_PATH, pin: str = "", wallet_profile: str = WEB3_WALLET_PROFILE_OKX):
+        super().__init__()
+        self.derivation_path = _normalize_bip32_path(derivation_path)
+        self.pin = pin
+        self.wallet_profile = _web3_wallet_profile(wallet_profile)
+
+    def run(self):
+        connector = seedkeeper_utils.init_satochip(
+            self,
+            init_card_filter=["satochip"],
+            require_pin=False,
+        )
+        if not connector:
+            return _tp_home_destination()
+
+        loading = LoadingScreenThread(text="验证智能卡...")
+        loading.start()
+        try:
+            connector.set_pin(0, list(self.pin.encode("utf-8")))
+            _response, sw1, sw2 = connector.card_verify_PIN()
+            if sw1 != 0x90 or sw2 != 0x00:
+                return _debug_error_destination("45", format_sw_error(sw1, sw2))
+            web3_account = _export_web3_account_from_satochip(connector, self.derivation_path)
+            qr_pages = _build_web3_connect_qr_pages(web3_account, self.wallet_profile)
+        except Exception as exc:
+            logger.warning("TP Web3 connect smartcard export failed: %s", exc)
+            return _debug_error_destination("63", str(exc))
+        finally:
+            loading.stop()
+
+        return Destination(
+            ToolsTpWeb3ConnectQrView,
+            view_args=dict(web3_account=web3_account, qr_pages=qr_pages, wallet_profile=self.wallet_profile),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpWeb3ConnectQrView(View):
+    SHOW_QR = ButtonOption("显示连接二维码")
+
+    def __init__(
+        self,
+        web3_account: dict,
+        qr_pages: list[str],
+        wallet_profile: str = WEB3_WALLET_PROFILE_OKX,
+        skip_review: bool = False,
+    ):
+        super().__init__()
+        self.web3_account = dict(web3_account or {})
+        self.qr_pages = [str(page).strip() for page in list(qr_pages or []) if str(page).strip()]
+        self.wallet_profile = _web3_wallet_profile(wallet_profile)
+        self.skip_review = bool(skip_review)
+
+    def run(self):
+        if not self.qr_pages:
+            return _debug_error_destination("33", "Web3 连接二维码为空")
+
+        if not self.skip_review:
+            qr_format = (
+                "crypto-multi-accounts"
+                if self.wallet_profile in {WEB3_WALLET_PROFILE_OKX, WEB3_WALLET_PROFILE_BITGET}
+                else "crypto-hdkey"
+            )
+            pages = [
+                "\n".join(
+                    [
+                        f"地址: {self.web3_account.get('address') or '-'}",
+                        f"路径: {self.web3_account.get('addressPath') or DEFAULT_DERIVATION_PATH}",
+                        f"来源: {self.web3_account.get('sourceLabel') or '-'}",
+                        f"钱包: {WEB3_WALLET_PROFILE_LABELS.get(self.wallet_profile, 'Web3 钱包')}",
+                        f"格式: {qr_format}",
+                        "原钱包请选择 Keystone 硬件钱包扫码",
+                    ]
+                ),
+                "\n".join(
+                    [
+                        "连接码类型: " + ("单张静态二维码" if len(self.qr_pages) == 1 else "动态连续二维码"),
+                        f"二维码帧数: {len(self.qr_pages)}",
+                        "连接后发起签名时",
+                        "回到首页点“扫码签名”",
+                        "签名请求太密时",
+                        "再用安卓中转",
+                    ]
+                ),
+            ]
+
+            selected = self.run_screen(
+                ToolsScrollableTextScreen,
+                title="Web3钱包",
+                text="\n\n".join(page for page in pages if str(page).strip()),
+                text_font_name=GUIConstants.get_body_font_name(),
+                text_font_size=max(GUIConstants.get_body_font_size() + 1, 19),
+                button_data=[self.SHOW_QR],
+            )
+
+            if selected == RET_CODE__BACK_BUTTON:
+                return _tp_home_destination()
+            return Destination(
+                ToolsTpWeb3ConnectQrView,
+                view_args=dict(
+                    web3_account=self.web3_account,
+                    qr_pages=self.qr_pages,
+                    wallet_profile=self.wallet_profile,
+                    skip_review=True,
+                ),
+                clear_history=True,
+            )
+
+        qr_encoder = (
+            GenericStaticQrEncoder(data=self.qr_pages[0])
+            if len(self.qr_pages) == 1
+            else ToolsTpQrPagesEncoder(
+                self.qr_pages,
+                frame_repeat=WEB3_OKX_CONNECT_QR_FRAME_REPEAT
+                if self.wallet_profile == WEB3_WALLET_PROFILE_OKX
+                else 2,
+            )
+        )
+        if len(self.qr_pages) == 1:
+            qr_encoder = _configure_high_margin_qr_encoder(
+                qr_encoder,
+                border_modules=2,
+                min_background_brightness=248,
+                background_color="ffffff",
+            )
+        self.run_screen(QRDisplayScreen, qr_encoder=qr_encoder)
         return _tp_home_destination()
 
 
@@ -2128,37 +5704,31 @@ class ToolsTpUiLockView(View):
         return self._enter_password()
 
 
-class ToolsTpSeedToolsView(View):
-    SEEDKEEPER_CREATE = ButtonOption("卡上真随机创建")
+class ToolsTpSeedCreateMnemonicView(View):
+    SEEDKEEPER_CREATE = ButtonOption("智能卡创建")
     CAMERA_CREATE = ButtonOption("拍照创建")
     DICE_CREATE = ButtonOption("骰子创建")
     CARD_CREATE = ButtonOption("扑克牌创建")
     HEX_CREATE = ButtonOption("16进制创建")
-    IMPORT_SEED = ButtonOption("导入助记词")
-    BIP39_CHECK = ButtonOption("BIP39 单词自检")
-    MANAGE_SEEDS = ButtonOption("已加载助记词")
 
     def run(self):
         button_data = [
-            self.SEEDKEEPER_CREATE,
-            self.CAMERA_CREATE,
-            self.DICE_CREATE,
             self.CARD_CREATE,
             self.HEX_CREATE,
-            self.IMPORT_SEED,
-            self.BIP39_CHECK,
-            self.MANAGE_SEEDS,
+            self.DICE_CREATE,
+            self.CAMERA_CREATE,
+            self.SEEDKEEPER_CREATE,
         ]
 
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title="助记词工具",
+            title="创建助记词",
             is_button_text_centered=False,
             button_data=button_data,
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
-            return _tp_home_destination()
+            return Destination(ToolsTpSeedToolsView)
 
         selected = button_data[selected_menu_num]
 
@@ -2169,7 +5739,7 @@ class ToolsTpSeedToolsView(View):
                 ToolsSeedkeeperGenerateMnemonicView,
                 view_args=dict(
                     return_destination=Destination(
-                        ToolsTpSeedToolsView,
+                        ToolsTpSeedCreateMnemonicView,
                         clear_history=True,
                     ),
                 ),
@@ -2194,6 +5764,38 @@ class ToolsTpSeedToolsView(View):
             from seedsigner.views.tools_views import ToolsHexEntropyMnemonicLengthView
 
             return Destination(ToolsHexEntropyMnemonicLengthView)
+
+        return Destination(ToolsTpSeedToolsView)
+
+
+class ToolsTpSeedToolsView(View):
+    CREATE_MNEMONIC = ButtonOption("创建助记词")
+    IMPORT_SEED = ButtonOption("导入助记词")
+    BIP39_CHECK = ButtonOption("BIP39 查询")
+    MANAGE_SEEDS = ButtonOption("管理助记词")
+
+    def run(self):
+        button_data = [
+            self.CREATE_MNEMONIC,
+            self.IMPORT_SEED,
+            self.BIP39_CHECK,
+            self.MANAGE_SEEDS,
+        ]
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="助记词工具",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return _tp_home_destination()
+
+        selected = button_data[selected_menu_num]
+
+        if selected == self.CREATE_MNEMONIC:
+            return Destination(ToolsTpSeedCreateMnemonicView)
 
         if selected == self.IMPORT_SEED:
             from seedsigner.views.seed_views import LoadSeedView
@@ -2223,14 +5825,14 @@ class ToolsTpSeedToolsView(View):
 
 
 class ToolsTpBip39CheckMenuView(View):
-    WORD_LOOKUP = ButtonOption("输入单词查编号")
-    INDEX_LOOKUP = ButtonOption("输入编号查单词")
+    WORD_LOOKUP = ButtonOption("单词查编号")
+    INDEX_LOOKUP = ButtonOption("编号查单词")
 
     def run(self):
         button_data = [self.WORD_LOOKUP, self.INDEX_LOOKUP]
         selected_menu_num = self.run_screen(
             ButtonListScreen,
-            title="BIP39 单词自检",
+            title="BIP39 查询",
             is_button_text_centered=False,
             button_data=button_data,
         )
@@ -2267,7 +5869,7 @@ class ToolsTpBip39WordLookupView(View):
             return Destination(
                 ToolsTpBip39CheckResultView,
                 view_args=dict(
-                    title="BIP39 单词自检",
+                    title="BIP39 查询",
                     text=report,
                     return_view="word",
                     return_value=word,
@@ -2311,7 +5913,7 @@ class ToolsTpBip39IndexLookupView(View):
             return Destination(
                 ToolsTpBip39CheckResultView,
                 view_args=dict(
-                    title="BIP39 单词自检",
+                    title="BIP39 查询",
                     text=report,
                     return_view="index",
                     return_value=index_text,
@@ -2383,8 +5985,6 @@ class ToolsTpLoadedSeedOptionsView(View):
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     VIEW_ENTROPY = ButtonOption("查看原始熵")
     DERIVE_ADDRESS = ButtonOption("按路径算地址")
-    EXPORT_BTC_ZPUB = ButtonOption("导出 Blue zpub")
-    EXPORT_BTC_XPUB = ButtonOption("导出 Blue xpub")
     BIP85_CHILD_SEED = ButtonOption("BIP85 子助记词")
     IMPORT_TO_SMARTCARD = ButtonOption("写入到智能卡")
     SAVE_TO_SEEDKEEPER = ButtonOption("写入到 SeedKeeper")
@@ -2413,8 +6013,6 @@ class ToolsTpLoadedSeedOptionsView(View):
             button_data.insert(insert_at, self.VIEW_ENTROPY)
         if not isinstance(self.seed, TransientWordSeed):
             button_data.insert(1, self.DERIVE_ADDRESS)
-            button_data.insert(2, self.EXPORT_BTC_ZPUB)
-            button_data.insert(3, self.EXPORT_BTC_XPUB)
         if (
             self.seed.bip85_supported
             and self.settings.get_value(SettingsConstants.SETTING__BIP85_CHILD_SEEDS) == SettingsConstants.OPTION__ENABLED
@@ -2456,36 +6054,6 @@ class ToolsTpLoadedSeedOptionsView(View):
             )
         if selected == self.DERIVE_ADDRESS:
             return Destination(ToolsTpDeriveAddressPathView, view_args=dict(seed_num=self.seed_num))
-        if selected == self.EXPORT_BTC_ZPUB:
-            from seedsigner.views.seed_views import SeedExportXpubWarningView
-
-            return Destination(
-                SeedExportXpubWarningView,
-                view_args=dict(
-                    seed_num=self.seed_num,
-                    sig_type=SettingsConstants.SINGLE_SIG,
-                    script_type=_tp_bluewallet_export_script_type("zpub"),
-                    coordinator=SettingsConstants.COORDINATOR__BLUE_WALLET,
-                    custom_derivation="",
-                    coordinator_label="BlueWallet",
-                    account=0,
-                ),
-            )
-        if selected == self.EXPORT_BTC_XPUB:
-            from seedsigner.views.seed_views import SeedExportXpubWarningView
-
-            return Destination(
-                SeedExportXpubWarningView,
-                view_args=dict(
-                    seed_num=self.seed_num,
-                    sig_type=SettingsConstants.SINGLE_SIG,
-                    script_type=_tp_bluewallet_export_script_type("xpub"),
-                    coordinator=SettingsConstants.COORDINATOR__BLUE_WALLET,
-                    custom_derivation="",
-                    coordinator_label="BlueWallet",
-                    account=0,
-                ),
-            )
         if selected == self.BIP85_CHILD_SEED:
             from seedsigner.views.seed_views import SeedBIP85ApplicationModeView
             return Destination(SeedBIP85ApplicationModeView, view_args=dict(seed_num=self.seed_num))
@@ -2693,10 +6261,16 @@ class ToolsTpDerivedAddressResultView(View):
 
 
 class ToolsTpSeedBtcXpubQrView(View):
-    def __init__(self, seed_num: int, xtype: str):
+    def __init__(self, seed_num: int, xtype: str, return_to_connect_wallet: bool = False):
         super().__init__()
         self.seed_num = seed_num
         self.xtype = xtype.strip().lower()
+        self.return_to_connect_wallet = bool(return_to_connect_wallet)
+
+    def _done_destination(self):
+        if self.return_to_connect_wallet:
+            return Destination(ToolsTpConnectWalletMenuView, clear_history=True)
+        return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
 
     def run(self):
         export_profile = TP_BTC_XPUB_EXPORTS.get(self.xtype)
@@ -2733,11 +6307,11 @@ class ToolsTpSeedBtcXpubQrView(View):
             button_data=[ButtonOption("继续")],
         )
         if ret == RET_CODE__BACK_BUTTON:
-            return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
+            return self._done_destination()
 
         encoder = GenericStaticQrEncoder(data=xpub_value)
         self.run_screen(QRDisplayScreen, qr_encoder=encoder)
-        return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
+        return self._done_destination()
 
 
 class ToolsTpSteelCipherOptionsView(View):
@@ -3637,8 +7211,6 @@ class ToolsTpSmartcardToolsView(View):
 
 class ToolsTpSatochipToolsView(View):
     VIEW_ADDRESS = ButtonOption("按路径看地址")
-    EXPORT_BTC_ZPUB = ButtonOption("导出 Blue zpub")
-    EXPORT_BTC_XPUB = ButtonOption("导出 Blue xpub")
     IMPORT_LOADED_SEED = ButtonOption("写入助记词")
     CHANGE_PIN = ButtonOption("更改卡 PIN")
     FACTORY_RESET = ButtonOption("重置卡")
@@ -3647,8 +7219,6 @@ class ToolsTpSatochipToolsView(View):
     def run(self):
         button_data = [
             self.VIEW_ADDRESS,
-            self.EXPORT_BTC_ZPUB,
-            self.EXPORT_BTC_XPUB,
             self.IMPORT_LOADED_SEED,
             self.CHANGE_PIN,
             self.FACTORY_RESET,
@@ -3668,34 +7238,6 @@ class ToolsTpSatochipToolsView(View):
         selected = button_data[selected_menu_num]
         if selected == self.VIEW_ADDRESS:
             return Destination(ToolsTpSmartcardAddressPathView)
-        if selected == self.EXPORT_BTC_ZPUB:
-            from seedsigner.views.tools_views import SatochipExportXpubWarningView
-
-            return Destination(
-                SatochipExportXpubWarningView,
-                view_args=dict(
-                    sig_type=SettingsConstants.SINGLE_SIG,
-                    script_type=_tp_bluewallet_export_script_type("zpub"),
-                    coordinator=SettingsConstants.COORDINATOR__BLUE_WALLET,
-                    custom_derivation="",
-                    coordinator_label="BlueWallet",
-                    account=0,
-                ),
-            )
-        if selected == self.EXPORT_BTC_XPUB:
-            from seedsigner.views.tools_views import SatochipExportXpubWarningView
-
-            return Destination(
-                SatochipExportXpubWarningView,
-                view_args=dict(
-                    sig_type=SettingsConstants.SINGLE_SIG,
-                    script_type=_tp_bluewallet_export_script_type("xpub"),
-                    coordinator=SettingsConstants.COORDINATOR__BLUE_WALLET,
-                    custom_derivation="",
-                    coordinator_label="BlueWallet",
-                    account=0,
-                ),
-            )
         if selected == self.IMPORT_LOADED_SEED:
             from seedsigner.views.tools_views import ToolsSatochipImportSeedView
             return Destination(
@@ -3878,7 +7420,7 @@ class ToolsTpSeedkeeperLoadSteelCipherView(View):
 
 
 class ToolsTpSeedkeeperToolsView(View):
-    GENERATE_MNEMONIC = ButtonOption("卡上真随机创建")
+    GENERATE_MNEMONIC = ButtonOption("智能卡创建")
     SAVE_CURRENT_SEED = ButtonOption("写入到 SeedKeeper")
     SAVE_STEEL_CIPHER = ButtonOption("保存二次加密")
     LOAD_STEEL_CIPHER = ButtonOption("加载二次加密")
@@ -4210,12 +7752,22 @@ class ToolsTpFirmwareIntegrityDetailsView(View):
 class ToolsTpSignerScanView(View):
     def run(self):
         decoder = TpRequestQrDecoder()
-        ScanScreen(decoder=decoder, instructions_text="").display()
+        ret = ScanScreen(
+            decoder=decoder,
+            instructions_text="",
+            show_top_nav=False,
+            show_status_overlay=False,
+            exit_on_any_button=True,
+        ).display()
+        if ret == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
 
         self.controller.reset_screensaver_timeout()
         time.sleep(0.1)
 
         if decoder.is_complete:
+            if decoder.error:
+                return _debug_error_destination("32", decoder.error)
             if decoder.has_psbt:
                 return Destination(
                     ToolsTpSignerPsbtReviewPrepView,
@@ -4225,8 +7777,13 @@ class ToolsTpSignerScanView(View):
                     ),
                 )
             payload = decoder.get_text().strip()
-            if not payload.startswith(("ethereum:", "tp:")):
-                return _tp_home_destination()
+            if not _is_supported_sign_scan_payload(payload):
+                return _debug_error_destination("32", "当前扫码内容不是已接入的签名协议，请把原始二维码样本留给我继续兼容。")
+            if payload.lower().startswith("tp:exportweb3account-"):
+                return Destination(
+                    ToolsTpExportWeb3MethodSelectView,
+                    view_args=dict(payload=payload),
+                )
             return Destination(
                 ToolsTpSignerPayloadReviewView,
                 view_args=dict(payload=payload),
@@ -4238,10 +7795,213 @@ class ToolsTpSignerScanView(View):
         return _tp_home_destination()
 
 
+class ToolsTpExportWeb3MethodSelectView(View):
+    SMARTCARD = ButtonOption("智能卡账户")
+    LOADED_SEED = ButtonOption("已加载助记词账户")
+
+    def __init__(self, payload: str):
+        super().__init__()
+        self.payload = (payload or "").strip()
+
+    def run(self):
+        try:
+            request = _extract_web3_export_request(self.payload)
+        except Exception as exc:
+            return _debug_error_destination("32", str(exc))
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="绑定 Web3 账户",
+            is_button_text_centered=False,
+            button_data=[self.SMARTCARD, self.LOADED_SEED],
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return _tp_home_destination()
+
+        if selected_menu_num == 0:
+            return Destination(
+                ToolsTpExportWeb3PinEntryView,
+                view_args=dict(payload=self.payload),
+                skip_current_view=True,
+            )
+
+        return Destination(
+            ToolsTpExportWeb3SeedSelectView,
+            view_args=dict(payload=self.payload, derivation_path=request["derivation_path"]),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpExportWeb3PinEntryView(View):
+    def __init__(self, payload: str):
+        super().__init__()
+        self.payload = (payload or "").strip()
+
+    def run(self):
+        try:
+            pin = _prompt_for_tp_pin(self)
+        except Exception as exc:
+            logger.exception("TP Web3 export PIN prompt failed")
+            return _debug_error_destination("21", str(exc))
+
+        if pin is None:
+            return _tp_home_destination()
+
+        pin = pin.strip()
+        if not pin or len(pin) < 4:
+            return _tp_home_destination()
+
+        return Destination(
+            ToolsTpExportWeb3RunView,
+            view_args=dict(payload=self.payload, pin=pin),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpExportWeb3SeedSelectView(View):
+    def __init__(self, payload: str, derivation_path: str):
+        super().__init__()
+        self.payload = (payload or "").strip()
+        self.derivation_path = _normalize_bip32_path(derivation_path)
+
+    def _eligible_seed_options(self) -> tuple[list[int], list[ButtonOption]]:
+        seed_nums: list[int] = []
+        button_data: list[ButtonOption] = []
+        network = self.settings.get_value(SettingsConstants.SETTING__NETWORK)
+        for seed_num, seed in enumerate(self.controller.storage.seeds):
+            if isinstance(seed, TransientWordSeed):
+                continue
+            try:
+                seed.get_root(SettingsConstants.MAINNET)
+                fingerprint = seed.get_fingerprint(network)
+            except Exception:
+                continue
+            seed_nums.append(seed_num)
+            button_data.append(ButtonOption(f"{seed_num + 1}. {fingerprint[:8]}"))
+        return seed_nums, button_data
+
+    def run(self):
+        seed_nums, button_data = self._eligible_seed_options()
+        if not button_data:
+            self.run_screen(
+                WarningScreen,
+                title="没有可用助记词",
+                status_headline=None,
+                text="请先在“助记词工具”里导入或创建有效 BIP39 助记词，再绑定 Web3 观察地址。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return Destination(
+                ToolsTpExportWeb3MethodSelectView,
+                view_args=dict(payload=self.payload),
+                clear_history=True,
+            )
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="选择助记词",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(
+                ToolsTpExportWeb3MethodSelectView,
+                view_args=dict(payload=self.payload),
+                clear_history=True,
+            )
+
+        return Destination(
+            ToolsTpExportWeb3SeedRunView,
+            view_args=dict(payload=self.payload, seed_num=seed_nums[selected_menu_num]),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpExportWeb3SeedRunView(View):
+    def __init__(self, payload: str, seed_num: int):
+        super().__init__()
+        self.payload = (payload or "").strip()
+        self.seed_num = seed_num
+
+    def run(self):
+        try:
+            request = _extract_web3_export_request(self.payload)
+            seed = self.controller.get_seed(self.seed_num)
+        except Exception as exc:
+            return _debug_error_destination("63", str(exc))
+
+        loading = LoadingScreenThread(text="绑定 Web3 账户...")
+        loading.start()
+        try:
+            web3_account = _export_web3_account_from_seed(seed, request["derivation_path"])
+            response_text = _build_web3_account_export_response(request, web3_account)
+        except Exception as exc:
+            logger.warning("TP Web3 seed export failed: %s", exc)
+            return _debug_error_destination("63", str(exc))
+        finally:
+            loading.stop()
+
+        return Destination(
+            ToolsTpSignerQrView,
+            view_args=dict(response_text=response_text, skip_review=True),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpExportWeb3RunView(View):
+    def __init__(self, payload: str, pin: str):
+        super().__init__()
+        self.payload = (payload or "").strip()
+        self.pin = pin
+
+    def run(self):
+        try:
+            request = _extract_web3_export_request(self.payload)
+        except Exception as exc:
+            return _debug_error_destination("32", str(exc))
+
+        connector = seedkeeper_utils.init_satochip(
+            self,
+            init_card_filter=["satochip"],
+            require_pin=False,
+        )
+        if not connector:
+            return _tp_home_destination()
+
+        loading = LoadingScreenThread(text="验证智能卡...")
+        loading.start()
+        try:
+            connector.set_pin(0, list(self.pin.encode("utf-8")))
+            _response, sw1, sw2 = connector.card_verify_PIN()
+            if sw1 != 0x90 or sw2 != 0x00:
+                return _debug_error_destination("45", format_sw_error(sw1, sw2))
+            web3_account = _export_web3_account_from_satochip(connector, request["derivation_path"])
+            response_text = _build_web3_account_export_response(request, web3_account)
+        except Exception as exc:
+            logger.warning("TP Web3 smartcard export failed: %s", exc)
+            return _debug_error_destination("63", str(exc))
+        finally:
+            loading.stop()
+
+        return Destination(
+            ToolsTpSignerQrView,
+            view_args=dict(response_text=response_text, skip_review=True),
+            skip_current_view=True,
+        )
+
+
 class ToolsTpBtcXpubPinEntryView(View):
-    def __init__(self, xtype: str):
+    def __init__(self, xtype: str, return_to_connect_wallet: bool = False):
         super().__init__()
         self.xtype = xtype
+        self.return_to_connect_wallet = bool(return_to_connect_wallet)
+
+    def _back_destination(self):
+        if self.return_to_connect_wallet:
+            return Destination(ToolsTpBtcConnectTypeView, view_args=dict(source="smartcard"), clear_history=True)
+        return _smartcard_tools_destination()
 
     def run(self):
         try:
@@ -4251,24 +8011,30 @@ class ToolsTpBtcXpubPinEntryView(View):
             return _debug_error_destination("21", str(exc))
 
         if pin is None:
-            return _smartcard_tools_destination()
+            return self._back_destination()
 
         pin = pin.strip()
         if not pin or len(pin) < 4:
-            return _smartcard_tools_destination()
+            return self._back_destination()
 
         return Destination(
             ToolsTpBtcXpubRunView,
-            view_args=dict(pin=pin, xtype=self.xtype),
+            view_args=dict(pin=pin, xtype=self.xtype, return_to_connect_wallet=self.return_to_connect_wallet),
             skip_current_view=True,
         )
 
 
 class ToolsTpBtcXpubRunView(View):
-    def __init__(self, pin: str, xtype: str):
+    def __init__(self, pin: str, xtype: str, return_to_connect_wallet: bool = False):
         super().__init__()
         self.pin = pin
         self.xtype = xtype
+        self.return_to_connect_wallet = bool(return_to_connect_wallet)
+
+    def _back_destination(self):
+        if self.return_to_connect_wallet:
+            return Destination(ToolsTpConnectWalletMenuView, clear_history=True)
+        return _smartcard_tools_destination()
 
     def run(self):
         export_profile = TP_BTC_XPUB_EXPORTS.get(self.xtype.strip().lower())
@@ -4282,7 +8048,7 @@ class ToolsTpBtcXpubRunView(View):
             require_pin=False,
         )
         if not connector:
-            return _smartcard_tools_destination()
+            return self._back_destination()
 
         loading = LoadingScreenThread(text="Verifying PIN")
         loading.start()
@@ -4309,16 +8075,22 @@ class ToolsTpBtcXpubRunView(View):
 
         return Destination(
             ToolsTpBtcXpubQrView,
-            view_args=dict(xpub=xpub_value, xtype=self.xtype),
+            view_args=dict(xpub=xpub_value, xtype=self.xtype, return_to_connect_wallet=self.return_to_connect_wallet),
             skip_current_view=True,
         )
 
 
 class ToolsTpBtcXpubQrView(View):
-    def __init__(self, xpub: str, xtype: str):
+    def __init__(self, xpub: str, xtype: str, return_to_connect_wallet: bool = False):
         super().__init__()
         self.xpub = xpub
         self.xtype = xtype
+        self.return_to_connect_wallet = bool(return_to_connect_wallet)
+
+    def _done_destination(self):
+        if self.return_to_connect_wallet:
+            return Destination(ToolsTpConnectWalletMenuView, clear_history=True)
+        return _smartcard_tools_destination()
 
     def run(self):
         ret = self.run_screen(
@@ -4330,11 +8102,11 @@ class ToolsTpBtcXpubQrView(View):
             button_data=[ButtonOption("继续")],
         )
         if ret == RET_CODE__BACK_BUTTON:
-            return _smartcard_tools_destination()
+            return self._done_destination()
 
         encoder = GenericStaticQrEncoder(data=self.xpub)
         self.run_screen(QRDisplayScreen, qr_encoder=encoder)
-        return _smartcard_tools_destination()
+        return self._done_destination()
 
 
 @dataclass
@@ -4355,14 +8127,17 @@ class ToolsTpDirectQrPagerScreen(BaseScreen):
         self.clear_screen()
         hex_color = (hex(max(31, min(255, self.qr_brightness))).split("x")[1]) * 3
         qr_part = self.parts[self.current_index]
+        qr_size = min(self.canvas_width, self.canvas_height)
         qr_image = GenericStaticQrEncoder(data=qr_part).part_to_image(
             qr_part,
-            240,
-            240,
+            qr_size,
+            qr_size,
             border=2,
             background_color=hex_color,
         )
-        self.canvas.paste(qr_image, (0, 0))
+        paste_x = max(0, (self.canvas_width - qr_size) // 2)
+        paste_y = max(0, (self.canvas_height - qr_size) // 2)
+        self.canvas.paste(qr_image, (paste_x, paste_y))
 
     def _run(self):
         from seedsigner.models.settings import Settings
@@ -4476,6 +8251,268 @@ class ToolsTpManualQrPartsView(View):
         return _tp_home_destination()
 
 
+class ToolsTpSignerMethodSelectView(View):
+    SMARTCARD = ButtonOption("智能卡签名")
+    LOADED_SEED = ButtonOption("已加载助记词签名")
+
+    def __init__(
+        self,
+        payload: str | None = None,
+        psbt_base64: str | None = None,
+        psbt_input_qr_type: str | None = None,
+        response_mode: str | None = None,
+    ):
+        super().__init__()
+        self.payload = (payload or "").strip() or None
+        self.psbt_base64 = (psbt_base64 or "").strip() or None
+        self.psbt_input_qr_type = psbt_input_qr_type
+        self.response_mode = (response_mode or "").strip().lower() or None
+
+    def run(self):
+        button_data = [self.SMARTCARD, self.LOADED_SEED]
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="选择签名方式",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return _tp_home_destination()
+
+        selected = button_data[selected_menu_num]
+        if selected == self.SMARTCARD:
+            return Destination(
+                ToolsTpSignerPinEntryView,
+                view_args=dict(
+                    payload=self.payload,
+                    psbt_base64=self.psbt_base64,
+                    psbt_input_qr_type=self.psbt_input_qr_type,
+                    response_mode=self.response_mode,
+                ),
+                skip_current_view=True,
+            )
+
+        if self.payload and self.payload.lower().startswith("tp:signpsbt-"):
+            try:
+                _request_id, psbt_base64 = _extract_psbt_request(self.payload)
+            except Exception as exc:
+                logger.warning("Failed to extract TP PSBT for seed signing: %s", exc)
+                return _debug_error_destination("32", str(exc))
+            return Destination(
+                ToolsTpSignerPsbtSeedSelectView,
+                view_args=dict(
+                    psbt_base64=psbt_base64,
+                    psbt_input_qr_type=self.psbt_input_qr_type,
+                    response_mode=self.response_mode or "btctx",
+                ),
+                skip_current_view=True,
+            )
+
+        if self.psbt_base64:
+            return Destination(
+                ToolsTpSignerPsbtSeedSelectView,
+                view_args=dict(
+                    psbt_base64=self.psbt_base64,
+                    psbt_input_qr_type=self.psbt_input_qr_type,
+                    response_mode=self.response_mode,
+                ),
+                skip_current_view=True,
+            )
+
+        if not self.payload:
+            return _tp_home_destination()
+        return Destination(
+            ToolsTpSignerSeedSelectView,
+            view_args=dict(payload=self.payload),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpSignerSeedSelectView(View):
+    def __init__(self, payload: str):
+        super().__init__()
+        self.payload = (payload or "").strip()
+
+    def _eligible_seed_options(self) -> tuple[list[int], list[ButtonOption]]:
+        seed_nums: list[int] = []
+        button_data: list[ButtonOption] = []
+        network = self.settings.get_value(SettingsConstants.SETTING__NETWORK)
+        for seed_num, seed in enumerate(self.controller.storage.seeds):
+            if isinstance(seed, TransientWordSeed):
+                continue
+            try:
+                seed.get_root(SettingsConstants.MAINNET)
+                fingerprint = seed.get_fingerprint(network)
+            except Exception:
+                continue
+            seed_nums.append(seed_num)
+            button_data.append(ButtonOption(f"{seed_num + 1}. {fingerprint[:8]}"))
+        return seed_nums, button_data
+
+    def run(self):
+        seed_nums, button_data = self._eligible_seed_options()
+        if not button_data:
+            self.run_screen(
+                WarningScreen,
+                title="没有可用助记词",
+                status_headline=None,
+                text="请先在“助记词工具”里导入或创建有效 BIP39 助记词，再选择助记词签名。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return Destination(ToolsTpSignerMethodSelectView, view_args=dict(payload=self.payload), clear_history=True)
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="选择助记词",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(ToolsTpSignerMethodSelectView, view_args=dict(payload=self.payload), clear_history=True)
+
+        return Destination(
+            ToolsTpSignerSeedRunView,
+            view_args=dict(payload=self.payload, seed_num=seed_nums[selected_menu_num]),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpSignerSeedRunView(View):
+    def __init__(self, payload: str, seed_num: int):
+        super().__init__()
+        self.payload = (payload or "").strip()
+        self.seed_num = seed_num
+        self.derivation_path = _extract_requested_derivation_path(self.payload)
+
+    def run(self):
+        try:
+            seed = self.controller.get_seed(self.seed_num)
+        except Exception as exc:
+            return _debug_error_destination("61", str(exc))
+
+        loading = LoadingScreenThread(text="")
+        loading.start()
+        try:
+            outcome = _sign_tp_payload_with_seed(self.payload, seed, self.derivation_path)
+        except Exception as exc:
+            logger.warning("TP seed signer failed: %s", exc)
+            return _debug_error_destination("61", str(exc))
+        finally:
+            loading.stop()
+
+        return Destination(
+            ToolsTpSignerQrView,
+            view_args=dict(response_text=outcome.response_payload),
+            skip_current_view=True,
+        )
+
+
+class ToolsTpSignerPsbtSeedSelectView(View):
+    def __init__(
+        self,
+        psbt_base64: str | None = None,
+        psbt_input_qr_type: str | None = None,
+        response_mode: str | None = None,
+    ):
+        super().__init__()
+        self.psbt_base64 = (psbt_base64 or "").strip()
+        self.psbt_input_qr_type = psbt_input_qr_type
+        self.response_mode = (response_mode or "").strip().lower() or None
+
+    def _ensure_psbt_loaded(self) -> bool:
+        if getattr(self.controller, "psbt", None) is not None:
+            return True
+        try:
+            from embit.psbt import PSBT
+
+            self.controller.psbt = PSBT.from_base64(self.psbt_base64)
+        except Exception as exc:
+            logger.warning("Failed to load PSBT for seed signing: %s", exc)
+            self.run_screen(
+                WarningScreen,
+                title="PSBT 解析失败",
+                status_headline=None,
+                text=str(exc) or "当前二维码里的 PSBT 无法读取。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return False
+        return True
+
+    def _eligible_seed_options(self) -> tuple[list[int], list[ButtonOption]]:
+        from seedsigner.models.psbt_parser import PSBTParser
+
+        seed_nums: list[int] = []
+        button_data: list[ButtonOption] = []
+        network = self.settings.get_value(SettingsConstants.SETTING__NETWORK)
+        for seed_num, seed in enumerate(self.controller.storage.seeds):
+            if isinstance(seed, TransientWordSeed):
+                continue
+            try:
+                fingerprint = seed.get_fingerprint(network)
+            except Exception:
+                continue
+            try:
+                can_sign = PSBTParser.has_matching_input_fingerprint(
+                    psbt=self.controller.psbt,
+                    seed=seed,
+                    network=network,
+                )
+            except Exception:
+                can_sign = True
+            label = fingerprint[:8] if can_sign else f"{fingerprint[:8]} (?)"
+            seed_nums.append(seed_num)
+            button_data.append(ButtonOption(f"{seed_num + 1}. {label}"))
+        return seed_nums, button_data
+
+    def run(self):
+        if not self._ensure_psbt_loaded():
+            return _tp_home_destination()
+
+        seed_nums, button_data = self._eligible_seed_options()
+        if not button_data:
+            self.run_screen(
+                WarningScreen,
+                title="没有可用助记词",
+                status_headline=None,
+                text="请先在“助记词工具”里导入或创建有效 BIP39 助记词，再选择助记词签名。",
+                show_back_button=False,
+                button_data=[ButtonOption("继续")],
+            )
+            return _tp_home_destination()
+
+        selected_menu_num = self.run_screen(
+            ButtonListScreen,
+            title="选择助记词",
+            is_button_text_centered=False,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(
+                ToolsTpSignerMethodSelectView,
+                view_args=dict(
+                    psbt_base64=self.psbt_base64,
+                    psbt_input_qr_type=self.psbt_input_qr_type,
+                    response_mode=self.response_mode,
+                ),
+                clear_history=True,
+            )
+
+        from seedsigner.views.psbt_views import PSBTOverviewView
+
+        self.controller.psbt_seed = self.controller.get_seed(seed_nums[selected_menu_num])
+        self.controller.psbt_parser = None
+        self.controller.psbt_input_qr_type = self.psbt_input_qr_type
+        self.controller.psbt_response_mode = self.response_mode
+        self.controller.psbt_sign_with_satochip = False
+        self.controller.psbt_external_signer_flow = False
+        return Destination(PSBTOverviewView, clear_history=True)
+
+
 class ToolsTpSignerPayloadReviewView(View):
     def __init__(self, payload: str, page_index: int = 0):
         super().__init__()
@@ -4483,6 +8520,13 @@ class ToolsTpSignerPayloadReviewView(View):
         self.page_index = max(0, int(page_index))
 
     def run(self):
+        if self.payload.lower().startswith("tp:exportweb3account-"):
+            return Destination(
+                ToolsTpExportWeb3MethodSelectView,
+                view_args=dict(payload=self.payload),
+                skip_current_view=True,
+            )
+
         if self.payload.lower().startswith("tp:signpsbt-"):
             try:
                 _request_id, psbt_base64 = _extract_psbt_request(self.payload)
@@ -4514,14 +8558,14 @@ class ToolsTpSignerPayloadReviewView(View):
             if selected == RET_CODE__BACK_BUTTON:
                 return _tp_home_destination()
             return Destination(
-                ToolsTpSignerPinEntryView,
+                ToolsTpSignerMethodSelectView,
                 view_args=dict(payload=self.payload),
                 skip_current_view=True,
             )
 
         if not pages:
             return Destination(
-                ToolsTpSignerPinEntryView,
+                ToolsTpSignerMethodSelectView,
                 view_args=dict(payload=self.payload),
                 skip_current_view=True,
             )
@@ -4532,14 +8576,14 @@ class ToolsTpSignerPayloadReviewView(View):
             text="\n\n".join(page for page in pages if str(page).strip()),
             text_font_name=GUIConstants.get_body_font_name(),
             text_font_size=max(GUIConstants.get_body_font_size(), 18),
-            button_data=[ButtonOption("输入 PIN 并签名")],
+            button_data=[ButtonOption("选择签名方式")],
         )
 
         if selected == RET_CODE__BACK_BUTTON:
             return _tp_home_destination()
 
         return Destination(
-            ToolsTpSignerPinEntryView,
+            ToolsTpSignerMethodSelectView,
             view_args=dict(payload=self.payload),
             skip_current_view=True,
         )
@@ -4757,6 +8801,38 @@ class ToolsTpSignerPsbtRunView(View):
             self.psbt_base64 = (psbt_base64 or "").strip()
 
     def run(self):
+        if _is_web3_eth_sign_request_payload(self.payload) or _is_web3_native_relay_payload(self.payload):
+            loading = LoadingScreenThread(text="")
+            loading.start()
+            try:
+                connector = seedkeeper_utils.init_satochip(
+                    self,
+                    init_card_filter=["satochip"],
+                    require_pin=False,
+                )
+                if not connector:
+                    return _tp_home_destination()
+
+                connector.set_pin(0, list(self.pin.encode("utf-8")))
+                _response, sw1, sw2 = connector.card_verify_PIN()
+                if sw1 != 0x90 or sw2 != 0x00:
+                    return _debug_error_destination("45", format_sw_error(sw1, sw2))
+
+                outcome = _sign_tp_payload_with_satochip(self.payload, connector, self.derivation_path)
+                if outcome is None:
+                    return _debug_error_destination("32", "当前 Web3 请求暂不支持直接智能卡签名。")
+            except Exception as exc:
+                logger.warning("TP-only Web3 smartcard signer failed: %s", exc)
+                return _debug_error_destination("63", str(exc))
+            finally:
+                loading.stop()
+
+            return Destination(
+                ToolsTpSignerQrView,
+                view_args=dict(response_text=outcome.response_payload),
+                skip_current_view=True,
+            )
+
         signer_bin = _resolve_signer_bin()
         if not signer_bin.is_file():
             return _masked_error_destination("31")
@@ -4855,8 +8931,41 @@ class ToolsTpSignerRunView(View):
         self.payload = payload
         self.pin = pin
         self.derivation_path = _extract_requested_derivation_path(payload)
+        self.execution_payload = _resolve_sign_execution_payload(payload)
 
     def run(self):
+        if _is_web3_eth_sign_request_payload(self.payload) or _is_web3_native_relay_payload(self.payload):
+            loading = LoadingScreenThread(text="")
+            loading.start()
+            try:
+                connector = seedkeeper_utils.init_satochip(
+                    self,
+                    init_card_filter=["satochip"],
+                    require_pin=False,
+                )
+                if not connector:
+                    return _tp_home_destination()
+
+                connector.set_pin(0, list(self.pin.encode("utf-8")))
+                _response, sw1, sw2 = connector.card_verify_PIN()
+                if sw1 != 0x90 or sw2 != 0x00:
+                    return _debug_error_destination("45", format_sw_error(sw1, sw2))
+
+                outcome = _sign_tp_payload_with_satochip(self.payload, connector, self.derivation_path)
+                if outcome is None:
+                    return _debug_error_destination("32", "当前 Web3 请求暂不支持直接智能卡签名。")
+            except Exception as exc:
+                logger.warning("TP-only Web3 smartcard signer failed: %s", exc)
+                return _debug_error_destination("63", str(exc))
+            finally:
+                loading.stop()
+
+            return Destination(
+                ToolsTpSignerQrView,
+                view_args=dict(response_text=outcome.response_payload),
+                skip_current_view=True,
+            )
+
         signer_bin = _resolve_signer_bin()
         if not signer_bin.is_file():
             return _masked_error_destination("31")
@@ -4868,7 +8977,7 @@ class ToolsTpSignerRunView(View):
                 tmpdir_path = Path(tmpdir)
                 request_path = tmpdir_path / "request.txt"
                 response_path = tmpdir_path / "response.txt"
-                request_path.write_text(self.payload + "\n", encoding="utf-8")
+                request_path.write_text(self.execution_payload + "\n", encoding="utf-8")
 
                 cmd = [
                     str(signer_bin),
@@ -4898,6 +9007,7 @@ class ToolsTpSignerRunView(View):
                     if response_path.exists():
                         response_text = response_path.read_text(encoding="utf-8").strip()
                         if response_text:
+                            response_text = _finalize_native_wallet_response(self.payload, response_text)
                             return Destination(
                                 ToolsTpSignerQrView,
                                 view_args=dict(response_text=response_text),
@@ -4916,6 +9026,7 @@ class ToolsTpSignerRunView(View):
                     return _masked_error_destination("33")
 
                 response_text = response_path.read_text(encoding="utf-8").strip()
+                response_text = _finalize_native_wallet_response(self.payload, response_text)
         except subprocess.TimeoutExpired:
             return _masked_error_destination("34")
         except Exception as exc:
@@ -4952,7 +9063,10 @@ class ToolsTpSignerQrView(View):
         )
 
     def _get_qr_encoder(self):
-        return GenericStaticQrEncoder(data=self.response_text)
+        response = str(self.response_text or "").strip()
+        if response.lower().startswith("ur:eth-signature/"):
+            return _configure_high_margin_qr_encoder(ToolsTpEthSignatureQrEncoder(response))
+        return GenericStaticQrEncoder(data=response)
 
     def run(self):
         qr_encoder = self._get_qr_encoder()

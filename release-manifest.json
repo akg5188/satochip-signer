@@ -2,7 +2,32 @@
   "schema_version": 1,
   "profiles": {
     "firmware-clean": {
-      "title": "当前 clean 正式树莓派固件",
+      "title": "当前 clean 树莓派固件（跟随当前 HEAD）",
+      "release_tag": "current-head-clean",
+      "source_tag": "HEAD",
+      "artifact_type": "firmware_xz",
+      "artifact_path": "dist/system-update-latest.img.xz",
+      "sha_path": "dist/system-update-latest.img.xz.sha256",
+      "build_info_path": "dist/system-update-latest.build-info.txt",
+      "build_command": "bash scripts/build_pi_firmware_from_snapshot.sh",
+      "verify_command": "bash scripts/check_named_release.sh firmware-clean",
+      "defaults": {
+        "TP_BUILD_CLEAN_MODE": "clean",
+        "BR2_JLEVEL": "1",
+        "TP_BUILD_CPUSET": "0",
+        "TP_BUILD_NICE": "19",
+        "TP_BUILD_IONICE_CLASS": "3",
+        "XZ_THREADS": "1",
+        "ALLOW_DIRTY_REPO": "0",
+        "ALLOW_NO_CLEAN_RELEASE_BUILD": "0"
+      },
+      "expected": {
+        "repo_dirty": "0",
+        "build_clean_mode": "clean"
+      }
+    },
+    "firmware-public-20260410b-clean": {
+      "title": "20260410b 冻结正式树莓派固件",
       "release_tag": "offline-signer-firmware-20260410b-clean",
       "source_tag": "offline-signer-clean-source-20260410b",
       "artifact_type": "firmware_xz",
@@ -10,7 +35,7 @@
       "sha_path": "dist/system-update-latest.img.xz.sha256",
       "build_info_path": "dist/system-update-latest.build-info.txt",
       "build_command": "bash scripts/build_pi_firmware_from_snapshot.sh",
-      "verify_command": "bash scripts/check_named_release.sh firmware-clean",
+      "verify_command": "bash scripts/check_named_release.sh firmware-public-20260410b-clean",
       "defaults": {
         "TP_BUILD_CLEAN_MODE": "clean",
         "BR2_JLEVEL": "1",

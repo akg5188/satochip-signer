@@ -301,7 +301,13 @@ class RestartView(View):
         from seedsigner.gui.screens.screen import ResetScreen
         thread = RestartView.DoResetThread()
         thread.start()
-        self.run_screen(ResetScreen)
+        try:
+            self.run_screen(ResetScreen)
+        except Exception:
+            # Screenshot and smoke tests can exit screens by raising; stop the
+            # background reset thread before it replaces the current process.
+            thread.stop()
+            raise
 
 
     class DoResetThread(BaseThread):
@@ -312,6 +318,9 @@ class RestartView(View):
             # Give the screen just enough time to display the reset message before
             # exiting.
             time.sleep(0.25)
+
+            if not self.keep_running:
+                return
 
             # Replace the current process image directly instead of shelling out.
             if Settings.HOSTNAME == Settings.SEEDSIGNER_OS:

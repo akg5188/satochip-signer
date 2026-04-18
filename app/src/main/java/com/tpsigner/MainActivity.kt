@@ -109,6 +109,7 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     SignerScreen(
                         state = state,
+                        onWalletChanged = viewModel::onWalletChanged,
                         onInputChanged = viewModel::onInputChanged,
                         onPinChanged = viewModel::onPinChanged,
                         onPathChanged = viewModel::onPathChanged,
@@ -174,6 +175,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startScan() {
         val intent = Intent(this, ContinuousQrScanActivity::class.java)
+            .putExtra(ContinuousQrScanActivity.EXTRA_SCAN_WALLET, viewModel.uiState.value.selectedWallet.name)
         qrLauncher.launch(intent)
     }
 
@@ -222,6 +224,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun SignerScreen(
     state: MainUiState,
+    onWalletChanged: (RelayWallet) -> Unit,
     onInputChanged: (String) -> Unit,
     onPinChanged: (String) -> Unit,
     onPathChanged: (String) -> Unit,
@@ -247,9 +250,24 @@ private fun SignerScreen(
     ) {
         Text("智能卡", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text("离线冷签：应用不申请 INTERNET 权限", color = Color(0xFF0F5132))
-        Text("也可先扫 TP 动态码，转成静态二维码给树莓派慢慢扫", color = Color(0xFF4A5568))
+        Text("可扫 TP/OKX/Bitget 高密度码，转成静态二维码给树莓派慢慢扫", color = Color(0xFF4A5568))
         Text("支持 NFC 贴卡 或 USB-OTG 读卡器（ACR39U）签名", color = Color(0xFF4A5568))
         Text("助记词导入请在离线 Tails 电脑完成，手机仅做扫码中转/签名", color = Color(0xFF4A5568))
+
+        Text("中转来源", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RelayWallet.values().forEach { wallet ->
+                Button(
+                    onClick = { onWalletChanged(wallet) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (state.selectedWallet == wallet) Color(0xFF1565C0) else Color(0xFF64748B)
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(wallet.shortName)
+                }
+            }
+        }
 
         OutlinedTextField(
             value = state.derivationPath,
@@ -287,7 +305,15 @@ private fun SignerScreen(
         OutlinedTextField(
             value = state.inputPayload,
             onValueChange = onInputChanged,
-            label = { Text("TP 请求字符串") },
+            label = {
+                Text(
+                    when (state.selectedWallet) {
+                        RelayWallet.TOKENPOCKET -> "TP 请求字符串"
+                        RelayWallet.OKX -> "OKX/Keystone 二维码内容"
+                        RelayWallet.BITGET -> "Bitget/Keystone 二维码内容"
+                    }
+                )
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(180.dp)
@@ -298,7 +324,7 @@ private fun SignerScreen(
             Button(onClick = onParse) { Text("解析") }
             Button(
                 onClick = onArmSign,
-                enabled = state.isUnlocked && (!state.reviewRequired || state.reviewConfirmed),
+                enabled = state.selectedWallet == RelayWallet.TOKENPOCKET && state.isUnlocked && (!state.reviewRequired || state.reviewConfirmed),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E8C5C))
             ) {
                 Text("贴卡/插卡签名")
@@ -343,7 +369,10 @@ private fun SignerScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("树莓派静态中转二维码", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (state.selectedWallet == RelayWallet.TOKENPOCKET) "树莓派静态中转二维码" else "${state.selectedWallet.shortName} 树莓派中转二维码",
+                    style = MaterialTheme.typography.titleMedium
+                )
                 if (state.relayPayloadPages.size > 1) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),

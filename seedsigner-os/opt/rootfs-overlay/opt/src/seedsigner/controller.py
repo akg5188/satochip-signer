@@ -403,8 +403,8 @@ class Controller(Singleton):
         tp_only_mode = os.environ.get("TP_ONLY_MODE") == "1"
         home_destination = Destination(MainMenuView)
         if tp_only_mode:
-            from seedsigner.views.tp_views import ToolsTpSignerScanView
-            home_destination = Destination(ToolsTpSignerScanView, clear_history=True)
+            from seedsigner.views.tp_views import ToolsTpUiLockView
+            home_destination = Destination(ToolsTpUiLockView, clear_history=True)
 
         if not skip_startup_interstitials and not tp_only_mode:
             OpeningSplashView().run()

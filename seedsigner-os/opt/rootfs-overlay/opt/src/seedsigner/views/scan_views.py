@@ -56,11 +56,13 @@ class ScanView(View):
         from seedsigner.gui.screens.scan_screens import ScanScreen
 
         # Start the live preview and background QR reading
-        self.run_screen(
+        ret = self.run_screen(
             ScanScreen,
             instructions_text=self.instructions_text,
             decoder=self.decoder
         )
+        if ret == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
 
         # A long scan might have exceeded the screensaver timeout; ensure screensaver
         # doesn't immediately engage when we leave here.
@@ -347,11 +349,13 @@ class ScanSlip39ShareQRView(ScanView):
         from seedsigner.gui.screens.scan_screens import ScanScreen
         from seedsigner.models.qr_type import QRType
 
-        self.run_screen(
+        ret = self.run_screen(
             ScanScreen,
             instructions_text=self.instructions_text,
             decoder=self.decoder
         )
+        if ret == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
 
         self.controller.reset_screensaver_timeout()
         time.sleep(0.1)

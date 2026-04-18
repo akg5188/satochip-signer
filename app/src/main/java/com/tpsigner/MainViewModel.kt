@@ -19,6 +19,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.satochip.io.CardChannel
 
 data class MainUiState(
+    val selectedWallet: RelayWallet = RelayWallet.TOKENPOCKET,
     val inputPayload: String = "",
     val parseMessage: String = "",
     val fragmentMessage: String = "",
@@ -32,6 +33,7 @@ data class MainUiState(
     val reviewRequired: Boolean = false,
     val reviewConfirmed: Boolean = false,
     val parsedRequest: TpSignRequest? = null,
+    val web3RelayRequest: Web3RelayRequest? = null,
     val derivationPath: String = "m/44'/60'/0'/0/0",
     val pin: String = "",
     val isUnlocked: Boolean = false,
@@ -63,11 +65,44 @@ class MainViewModel : ViewModel() {
     private val signer = SatochipSigner()
     private val cardOpMutex = Mutex()
 
+    fun onWalletChanged(wallet: RelayWallet) {
+        _uiState.update {
+            resetUnlockState(it).copy(
+                selectedWallet = wallet,
+                inputPayload = "",
+                parsedRequest = null,
+                web3RelayRequest = null,
+                parsedSummary = "",
+                transferInfo = "",
+                dappInfo = "",
+                relayHint = "",
+                relayPayloadPages = emptyList(),
+                relayPageIndex = 0,
+                relayQr = null,
+                reviewRequired = false,
+                reviewConfirmed = false,
+                responsePayload = "",
+                responseQr = null,
+                signerAddress = "",
+                digestHex = "",
+                signedResult = "",
+                parseMessage = when (wallet) {
+                    RelayWallet.TOKENPOCKET -> "已切换到 TP 签名/中转模式"
+                    RelayWallet.OKX -> "已切换到 OKX Wallet 中转模式"
+                    RelayWallet.BITGET -> "已切换到 Bitget Wallet 中转模式"
+                },
+                fragmentMessage = "",
+                errorMessage = ""
+            )
+        }
+    }
+
     fun onInputChanged(value: String) {
         _uiState.update {
             it.copy(
                 inputPayload = value,
                 parsedRequest = null,
+                web3RelayRequest = null,
                 parsedSummary = "",
                 transferInfo = "",
                 dappInfo = "",
@@ -106,7 +141,7 @@ class MainViewModel : ViewModel() {
     fun parseCurrentPayload() {
         val payload = _uiState.value.inputPayload.trim()
         if (payload.isBlank()) {
-            _uiState.update { it.copy(errorMessage = "请先扫码或粘贴 TP 请求") }
+            _uiState.update { it.copy(errorMessage = "请先扫码或粘贴请求二维码内容") }
             return
         }
         parseAndApply(payload)
@@ -164,6 +199,12 @@ class MainViewModel : ViewModel() {
         }
 
         if (state.parsedRequest == null) {
+            if (state.web3RelayRequest != null) {
+                _uiState.update {
+                    it.copy(errorMessage = "OKX/Bitget 中转请求请交给树莓派签名，手机只负责低密度二维码中转。")
+                }
+                return
+            }
             parseCurrentPayload()
         }
 
@@ -381,6 +422,10 @@ class MainViewModel : ViewModel() {
     }
 
     private fun parseAndApply(payload: String): ScanHandleResult {
+        if (_uiState.value.selectedWallet != RelayWallet.TOKENPOCKET) {
+            return parseAndApplyWeb3Relay(payload)
+        }
+
         runCatching {
             TpQrCodec.parseInput(payload)
         }.onSuccess { parsed ->
@@ -399,6 +444,7 @@ class MainViewModel : ViewModel() {
                         it.copy(
                             inputPayload = payload,
                             parsedRequest = parsed.request,
+                            web3RelayRequest = null,
                             parsedSummary = summary,
                             transferInfo = transferInfo,
                             dappInfo = dappInfo,
@@ -458,6 +504,7 @@ class MainViewModel : ViewModel() {
                 it.copy(
                     parseMessage = "",
                     parsedRequest = null,
+                    web3RelayRequest = null,
                     parsedSummary = "",
                     transferInfo = "",
                     dappInfo = "",
@@ -471,6 +518,58 @@ class MainViewModel : ViewModel() {
                 )
             }
             return ScanHandleResult.Done
+        }
+        return ScanHandleResult.Done
+    }
+
+    private fun parseAndApplyWeb3Relay(payload: String): ScanHandleResult {
+        val wallet = _uiState.value.selectedWallet
+        runCatching {
+            Web3RelayCodec.parse(wallet, payload)
+        }.onSuccess { request ->
+            val relay = Web3RelayCodec.buildRelayPayloads(request)
+            val relayHint = if (relay.isFragmented) {
+                "已转成 ${relay.payloads.size} 张 ${request.wallet.shortName} 静态中转二维码，默认每 1 秒自动循环切换。"
+            } else {
+                "已生成 1 张 ${request.wallet.shortName} 静态中转二维码，可直接给树莓派扫描。"
+            }
+            _uiState.update {
+                it.copy(
+                    inputPayload = payload,
+                    parsedRequest = null,
+                    web3RelayRequest = request,
+                    parsedSummary = "wallet: ${request.wallet.displayName}\nformat: ${request.detectedFormat}\naction: ${request.actionHint}\nqrType: ${request.qrType}",
+                    transferInfo = request.detailText,
+                    dappInfo = "source: ${request.wallet.displayName}\nmode: offline relay\ninternet: disabled",
+                    relayHint = relayHint,
+                    relayPayloadPages = relay.payloads,
+                    relayPageIndex = 0,
+                    relayQr = generateQrBitmap(relay.payloads.first()),
+                    reviewRequired = false,
+                    reviewConfirmed = false,
+                    parseMessage = "${request.wallet.displayName} 二维码解析成功。下方已生成树莓派低密度中转二维码。",
+                    fragmentMessage = "",
+                    errorMessage = ""
+                )
+            }
+        }.onFailure { error ->
+            _uiState.update {
+                it.copy(
+                    parseMessage = "",
+                    parsedRequest = null,
+                    web3RelayRequest = null,
+                    parsedSummary = "",
+                    transferInfo = "",
+                    dappInfo = "",
+                    relayHint = "",
+                    relayPayloadPages = emptyList(),
+                    relayPageIndex = 0,
+                    relayQr = null,
+                    reviewRequired = false,
+                    reviewConfirmed = false,
+                    errorMessage = error.message ?: "Web3 中转解析失败"
+                )
+            }
         }
         return ScanHandleResult.Done
     }

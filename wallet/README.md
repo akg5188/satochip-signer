@@ -9,6 +9,7 @@
 - 树莓派离线签名请求二维码生成器
 - 树莓派签名结果回传后的人工确认广播器
 - `BTC xpub / ypub / zpub` 观察账户原型
+- `OKX Wallet / Bitget Wallet / Keystone` 兼容 Web3 二维码桥接
 
 它不是：
 
@@ -23,6 +24,10 @@
 - 生成给树莓派扫描的 EVM 待签名请求
 - 扫描树莓派回签结果并人工确认广播
 - 通过 `WalletConnect v2` 协调 DApp 请求
+- 保留独立钱包连接 DApp 所需的 `WalletConnect / DApp 签名` 入口
+- `OKX Wallet / Bitget Wallet` 的 Keystone `crypto-multi-accounts` 连接二维码改由树莓派固件首页 `连接钱包` 生成
+- 扫描 `eth-sign-request`，转成低密度树莓派中转二维码
+- 扫回树莓派签名结果，再显示 `eth-signature` 给 Web3 钱包扫回去
 - 导入 `BTC xpub / ypub / zpub` 观察账户
 - 主网 `BTC` 同步优先走 `Electrum`，更快返回余额、活动、下一收款地址
 - 生成 `BTC PSBT` 给树莓派冷签
@@ -33,6 +38,7 @@
 - 拦截 `ADB / USB 调试`、开发者选项、`Root / Magisk / Hook`、`test-keys`
 - 关键联网主机白名单 + 证书 pinning
 - `WalletConnect` 仅接受已验证、`HTTPS`、主机合法的 DApp
+- Web3 桥接只保存公开地址、xpub、公钥和链码，不保存助记词或私钥
 - 锁屏或退后台后主动清理敏感状态
 
 ## 标准构建
@@ -62,6 +68,16 @@ bash scripts/build_wallet_release.sh
 如果以后丢了旧 keystore 密码，只能换一把新的发布签名。
 
 这不会影响链上资产安全，因为手机里不存私钥；但旧钱包 APK 将无法直接覆盖升级，必须卸载后重装，再重新导入观察地址、`xpub / ypub / zpub` 和 `WalletConnect` 会话。
+
+本地验证或给自己临时安装时，可以先打 debug 包：
+
+```bash
+./gradlew :app:assembleDebug
+```
+
+debug 包路径：
+
+- `wallet/app/build/outputs/apk/debug/app-debug.apk`
 
 ## 文档入口
 

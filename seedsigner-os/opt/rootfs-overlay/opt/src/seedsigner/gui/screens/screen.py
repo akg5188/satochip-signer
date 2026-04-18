@@ -1016,22 +1016,70 @@ class QRDisplayScreen(BaseScreen):
             is_brightness_tip_enabled = cur_brightness_setting == SettingsConstants.OPTION__ENABLED
             pending_encoder_restart = False
 
+            def render_qr_image(part: str, *, use_current_part: bool) -> Image.Image:
+                border_modules = max(2, int(getattr(self.qr_encoder, "display_border_modules", 2) or 2))
+                display_size = getattr(self.qr_encoder, "display_image_size", None)
+                if (
+                    isinstance(display_size, (tuple, list))
+                    and len(display_size) == 2
+                    and all(int(value) > 0 for value in display_size)
+                ):
+                    qr_width, qr_height = int(display_size[0]), int(display_size[1])
+                else:
+                    qr_width, qr_height = self.renderer.canvas_width, self.renderer.canvas_height
+
+                if use_current_part:
+                    qr_image = self.qr_encoder.part_to_image(
+                        part,
+                        qr_width,
+                        qr_height,
+                        border=border_modules,
+                        background_color=hex_color,
+                    )
+                else:
+                    qr_image = self.qr_encoder.next_part_image(
+                        qr_width,
+                        qr_height,
+                        border=border_modules,
+                        background_color=hex_color,
+                    )
+
+                if qr_width == self.renderer.canvas_width and qr_height == self.renderer.canvas_height:
+                    return qr_image
+
+                image = Image.new(
+                    "RGBA",
+                    (self.renderer.canvas_width, self.renderer.canvas_height),
+                    f"#{hex_color}",
+                )
+                paste_x = max(0, (self.renderer.canvas_width - qr_width) // 2)
+                paste_y = max(0, (self.renderer.canvas_height - qr_height) // 2)
+                image.paste(qr_image, (paste_x, paste_y))
+                return image
+
             # Loop whether the QR is a single frame or animated; each loop might adjust
             # brightness setting.
             while self.keep_running:
-                # convert the self.qr_brightness integer (31-255) into hex triplets
-                hex_color = (hex(self.qr_brightness.cur_count).split('x')[1]) * 3
+                forced_background_color = str(getattr(self.qr_encoder, "display_background_color", "") or "").strip()
+                forced_background_color = forced_background_color.lstrip("#")
+                if re.fullmatch(r"[0-9A-Fa-f]{6}", forced_background_color):
+                    hex_color = forced_background_color.lower()
+                else:
+                    background_level = int(self.qr_brightness.cur_count)
+                    min_background_level = getattr(self.qr_encoder, "display_min_background_brightness", None)
+                    try:
+                        if min_background_level is not None:
+                            background_level = max(background_level, int(min_background_level))
+                    except Exception:
+                        pass
+                    background_level = max(0, min(255, background_level))
+                    # convert the QR background level integer (0-255) into hex triplets
+                    hex_color = f"{background_level:02x}" * 3
 
                 # Display the brightness tips toast
                 duration = 10 ** 9 * 1.2  # 1.2 seconds
                 if is_brightness_tip_enabled and time.time_ns() - self.tips_start_time.cur_count < duration:
-                    image = self.qr_encoder.part_to_image(
-                        self.qr_encoder.cur_part(),
-                        self.renderer.canvas_width,
-                        self.renderer.canvas_height,
-                        border=2,
-                        background_color=hex_color,
-                    )
+                    image = render_qr_image(self.qr_encoder.cur_part(), use_current_part=True)
                     self.render_brightness_tip(image)
                     pending_encoder_restart = True
                 else:
@@ -1041,12 +1089,7 @@ class QRDisplayScreen(BaseScreen):
                         # brightness tip is stowed.
                         self.qr_encoder.restart()
                         pending_encoder_restart = False
-                    image = self.qr_encoder.next_part_image(
-                        self.renderer.canvas_width,
-                        self.renderer.canvas_height,
-                        border=2,
-                        background_color=hex_color,
-                    )
+                    image = render_qr_image("", use_current_part=False)
 
                 with self.renderer.lock:
                     self.renderer.show_image(image)
