@@ -11,6 +11,13 @@ __pycache__/
 *.bak
 logs/
 *.deb
+CODEX_SETUP_GUIDE.md
+QUICK_START.md
+codex
+codex_cli.py
+run_codex.sh
+setup_codex.sh
+test_codex.py
 official-seedsigner/
 seedsigner-os/buildroot_dl/
 seedsigner-os/images/
@@ -38,6 +45,7 @@ seedsigner-os/opt/pi4-dev/
 seedsigner-os/opt/pi4-smartcard/
 seedsigner-os/opt/pi4-smartcard-dev/
 seedsigner-os/opt/rootfs-overlay-dev/
+seedsigner-os/opt/rootfs-overlay/opt/microsd/
 dist/system-update-*.img
 dist/system-update-*.img.SHA256SUMS
 dist/system-update-*.img.xz
