@@ -25,11 +25,6 @@ OUT_SUM="${OUT_SUM:-$OUT_APK.sha256}"
 
 mkdir -p "$OUT_DIR"
 
-(
-  cd "$ROOT_DIR/wallet"
-  OUT_DIR="$OUT_DIR" BUILD_ROOT="$BUILD_ROOT" ./scripts/build_local_ascii.sh release
-)
-
 repo_head="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 repo_dirty="$(
   if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
@@ -43,6 +38,11 @@ if [[ "$ARTIFACT_MODE" == "release-baseline" && "$repo_dirty" == "1" ]]; then
   echo "Use bash scripts/build_current_wallet_apk.sh for current worktree builds." >&2
   exit 1
 fi
+
+(
+  cd "$ROOT_DIR/wallet"
+  OUT_DIR="$OUT_DIR" BUILD_ROOT="$BUILD_ROOT" ./scripts/build_local_ascii.sh release
+)
 apk_sha="$(awk 'NR==1 {print $1}' "$OUT_SUM")"
 version_name="$(awk -F'"' '/versionName = / {print $2; exit}' "$ROOT_DIR/wallet/app/build.gradle.kts")"
 build_epoch="$(git -C "$ROOT_DIR" show -s --format=%ct "$repo_head" 2>/dev/null || echo "")"
