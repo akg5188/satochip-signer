@@ -123,12 +123,12 @@ case "$VARIANT" in
   release)
     GRADLE_TASK=":app:assembleRelease"
     SRC_APK="$BUILD_DIR/app/build/outputs/apk/release/app-release.apk"
-    OUT_APK="$OUT_DIR/satochip-wallet-release.apk"
+    OUT_APK="${OUT_APK:-$OUT_DIR/satochip-wallet-release.apk}"
     ;;
   debug)
     GRADLE_TASK=":app:assembleDebug"
     SRC_APK="$BUILD_DIR/app/build/outputs/apk/debug/app-debug.apk"
-    OUT_APK="$OUT_DIR/satochip-wallet-debug.apk"
+    OUT_APK="${OUT_APK:-$OUT_DIR/satochip-wallet-debug.apk}"
     ;;
   *)
     echo "用法: ./scripts/build_local_ascii.sh [release|debug]" >&2

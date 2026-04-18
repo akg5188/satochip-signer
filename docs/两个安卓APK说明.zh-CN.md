@@ -61,13 +61,25 @@ bash scripts/build_tp_relay_apk.sh
 
 ## 2. `satochip-wallet-release.apk`
 
-标准构建命令：
+当前工作区最新构建命令：
 
 ```bash
-bash scripts/build_wallet_release.sh
+bash scripts/build_current_wallet_apk.sh
 ```
 
 构建产物：
+
+- `dist/satochip-wallet-worktree-latest.apk`
+- `dist/satochip-wallet-worktree-latest.apk.sha256`
+- `dist/satochip-wallet-worktree-latest.build-info.txt`
+
+如果你要重建当前 clean 正式版，才用：
+
+```bash
+bash scripts/rebuild_official_release.sh wallet-release
+```
+
+正式版产物：
 
 - `dist/satochip-wallet-release.apk`
 - `dist/satochip-wallet-release.apk.sha256`

@@ -41,10 +41,22 @@
 - Web3 桥接只保存公开地址、xpub、公钥和链码，不保存助记词或私钥
 - 锁屏或退后台后主动清理敏感状态
 
-## 标准构建
+## 当前工作区构建
 
 ```bash
-bash scripts/build_wallet_release.sh
+bash scripts/build_current_wallet_apk.sh
+```
+
+输出：
+
+- `dist/satochip-wallet-worktree-latest.apk`
+- `dist/satochip-wallet-worktree-latest.apk.sha256`
+- `dist/satochip-wallet-worktree-latest.build-info.txt`
+
+## 当前 clean 正式版重建
+
+```bash
+bash scripts/rebuild_official_release.sh wallet-release
 ```
 
 输出：

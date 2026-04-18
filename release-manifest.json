@@ -52,9 +52,9 @@
       }
     },
     "wallet-release": {
-      "title": "当前正式安卓观察钱包",
-      "release_tag": "wallet-android-20260408-0.1.4",
-      "source_tag": "wallet-android-20260408-0.1.4-source",
+      "title": "当前正式安卓观察钱包（跟随当前 HEAD）",
+      "release_tag": "current-head-wallet-release",
+      "source_tag": "HEAD",
       "artifact_type": "apk",
       "artifact_path": "dist/satochip-wallet-release.apk",
       "sha_path": "dist/satochip-wallet-release.apk.sha256",
@@ -62,13 +62,9 @@
       "build_command": "bash scripts/build_wallet_release.sh",
       "verify_command": "bash scripts/check_named_release.sh wallet-release",
       "defaults": {
+        "WALLET_ARTIFACT_MODE": "release-baseline",
         "WALLET_GRADLE_JVMARGS": "-Xmx2g -XX:MaxMetaspaceSize=512m",
         "WALLET_GRADLE_WORKERS_MAX": "1"
-      },
-      "expected": {
-        "repo_head": "8a87ae5d1d19d3a7a2809a2b13327afee490364f",
-        "artifact_sha256": "0a84fdf7ce58488b246b36d9b007160e73d32893772b9709bd39326672f3a5e9",
-        "version_name": "0.1.4"
       }
     }
   }

@@ -111,6 +111,15 @@ trap cleanup EXIT
 git -C "$ROOT_DIR" worktree add --detach "$WORKTREE" "$SOURCE_TAG" >/dev/null
 mkdir -p "$PROFILE_STATE_DIR" "$PROFILE_ARTIFACT_DIR" "$PROFILE_LOG_DIR"
 
+if [[ "$PROFILE" == "wallet-release" ]]; then
+  if [[ ! -f "$ROOT_DIR/wallet/keystore.properties" ]]; then
+    echo "ERROR: Missing local wallet/keystore.properties required for wallet-release rebuild." >&2
+    echo "ERROR: Restore your wallet release keystore config, then rerun this command." >&2
+    exit 1
+  fi
+  install -m 600 "$ROOT_DIR/wallet/keystore.properties" "$WORKTREE/wallet/keystore.properties"
+fi
+
 REBUILD_LOG="$PROFILE_LOG_DIR/rebuild-$(date -u +%Y%m%d-%H%M%S).log"
 exec > >(tee -a "$REBUILD_LOG") 2>&1
 

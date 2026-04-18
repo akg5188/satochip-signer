@@ -26,7 +26,7 @@
   当前公开 tag：`offline-signer-firmware-20260410b-clean`
 - 安卓正式钱包：
   看 [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
-  当前公开 tag：`wallet-android-20260408-0.1.4`
+  当前正式重建入口：`wallet-release -> HEAD`
 - 安卓智能卡 App：
   如需 `TokenPocket` 路线，再看 [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
   当前可用 tag：`smartcard-app-android-20260330`
@@ -44,9 +44,9 @@ bash scripts/rebuild_official_release.sh wallet-release
 现在这几条的含义要记住：
 
 - `firmware-clean`：跟随当前 `HEAD` 重建 clean 固件，不再回到旧的 `offline-signer-clean-source-20260410b`
-- `wallet-release`：仍然按冻结 release source tag 重建
+- `wallet-release`：跟随当前 `HEAD` 重建 clean 正式钱包 APK，不再回到旧的 `wallet-android-20260408-0.1.4-source`
 - 如果以后真要重建旧的 `20260410b` 固件，改用 `firmware-public-20260410b-clean`
-- 如果当前工作区还有未提交的源码/脚本改动，`firmware-clean` 会直接拒绝，避免你以为编到的是“最新功能”但实际只拿了旧 `HEAD`
+- 如果当前工作区还有未提交的源码/脚本改动，`firmware-clean` 和 `wallet-release` 都会直接拒绝，避免你以为编到的是“最新功能”但实际只拿了旧 `HEAD`
 
 如果要的是“当前工作区最新固件”，而且连未提交改动也要一起带进包里，就不要只跑上面那条 `firmware-clean`。
 
@@ -133,7 +133,7 @@ bash scripts/build_current_firmware.sh
 | 你要做的事 | 该看哪里 | 当前产物/入口 |
 | --- | --- | --- |
 | 给 `TokenPocket` 做手机端扫码与智能卡签名 | `app/` | `bash scripts/build_tp_relay_apk.sh` |
-| 用自己的安卓观察钱包发起 EVM / BTC 冷签 | `wallet/` | `bash scripts/build_wallet_release.sh` |
+| 用自己的安卓观察钱包发起 EVM / BTC 冷签 | `wallet/` | `bash scripts/build_current_wallet_apk.sh` |
 | 给 `OKX Wallet / Bitget Wallet` 做 Web3 二维码桥接 | `wallet/` | `DApp -> Web3 钱包桥接` |
 | 想用骰子 / 扑克牌 / 16进制自己离线创建助记词 | 树莓派离线签名器 | [离线熵创建助记词教程](docs/离线熵创建助记词教程.zh-CN.md) |
 | 给 `BlueWallet` 做 `BTC PSBT` 冷签 | 树莓派离线签名器 | [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md) |
@@ -294,7 +294,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 - `firmware-clean`
   用当前 `HEAD` 重建 clean 基线固件，并自动验包
 - `wallet-release`
-  用官方固定源码重建当前正式钱包 APK，并自动验包
+  用当前 `HEAD` 重建 clean 正式钱包 APK，并自动验包
 
 以后只要先跑这套脚本，就不会再靠记忆去猜：
 
@@ -328,7 +328,19 @@ bash scripts/build_tp_relay_apk.sh
 ### 安卓观察钱包
 
 ```bash
-bash scripts/build_wallet_release.sh
+bash scripts/build_current_wallet_apk.sh
+```
+
+这条命令默认输出：
+
+- `dist/satochip-wallet-worktree-latest.apk`
+- `dist/satochip-wallet-worktree-latest.apk.sha256`
+- `dist/satochip-wallet-worktree-latest.build-info.txt`
+
+如果你要重建当前 clean 正式版，才用：
+
+```bash
+bash scripts/rebuild_official_release.sh wallet-release
 ```
 
 ## 最容易写错的地方

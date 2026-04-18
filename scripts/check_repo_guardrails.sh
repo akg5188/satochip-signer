@@ -36,9 +36,15 @@ assert firmware_clean["expected"]["build_clean_mode"] == "clean", firmware_clean
 
 historical = profiles["firmware-public-20260410b-clean"]
 assert historical["source_tag"] == "offline-signer-clean-source-20260410b", historical
+
+wallet_release = profiles["wallet-release"]
+assert wallet_release["source_tag"] == "HEAD", wallet_release
+assert wallet_release["artifact_path"] == "dist/satochip-wallet-release.apk", wallet_release
+assert wallet_release["defaults"]["WALLET_ARTIFACT_MODE"] == "release-baseline", wallet_release
 PY
 
 bash -n "$ROOT_DIR/scripts/build_current_firmware.sh"
+bash -n "$ROOT_DIR/scripts/build_current_wallet_apk.sh"
 bash -n "$ROOT_DIR/scripts/build_pi_firmware_from_snapshot.sh"
 bash -n "$ROOT_DIR/scripts/check_named_release.sh"
 bash -n "$ROOT_DIR/scripts/rebuild_official_release.sh"
@@ -58,5 +64,16 @@ grep -q 'system-update-worktree-latest.img.xz' "$ROOT_DIR/docs/固件与源码�
   fail "固件与源码对应关系 must document the worktree firmware artifact name"
 grep -q 'system-update-worktree-latest.img.xz' "$ROOT_DIR/docs/长期维护总入口.zh-CN.md" || \
   fail "长期维护总入口 must document the worktree firmware artifact name"
+
+grep -q 'satochip-wallet-worktree-latest.apk' "$ROOT_DIR/scripts/build_wallet_release.sh" || \
+  fail "build_wallet_release.sh must write to satochip-wallet-worktree-latest.apk by default"
+grep -q 'satochip-wallet-worktree-latest.apk' "$ROOT_DIR/scripts/build_current_wallet_apk.sh" || \
+  fail "build_current_wallet_apk.sh must target satochip-wallet-worktree-latest.apk"
+grep -q 'satochip-wallet-worktree-latest.apk' "$ROOT_DIR/README.md" || \
+  fail "README.md must document the worktree wallet artifact name"
+grep -q 'satochip-wallet-worktree-latest.apk' "$ROOT_DIR/docs/两个安卓APK说明.zh-CN.md" || \
+  fail "两个安卓APK说明 must document the worktree wallet artifact name"
+grep -q 'satochip-wallet-worktree-latest.apk' "$ROOT_DIR/wallet/README.md" || \
+  fail "wallet README must document the worktree wallet artifact name"
 
 echo "Repository guardrails checks passed."
