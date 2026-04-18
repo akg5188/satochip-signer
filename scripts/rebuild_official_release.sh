@@ -179,6 +179,22 @@ cp -f "$WORKTREE/$ARTIFACT_PATH" "$ARTIFACT_COPY"
 cp -f "$WORKTREE/$SHA_PATH" "$SHA_COPY"
 cp -f "$WORKTREE/$BUILD_INFO_PATH" "$BUILD_INFO_COPY"
 
+if [[ "$PROFILE" == "firmware-clean" || "$PROFILE" == "wallet-release" ]]; then
+  CANONICAL_ARTIFACT="$ROOT_DIR/$ARTIFACT_PATH"
+  CANONICAL_SHA="$ROOT_DIR/$SHA_PATH"
+  CANONICAL_BUILD_INFO="$ROOT_DIR/$BUILD_INFO_PATH"
+  mkdir -p "$(dirname "$CANONICAL_ARTIFACT")"
+  mkdir -p "$(dirname "$CANONICAL_SHA")"
+  mkdir -p "$(dirname "$CANONICAL_BUILD_INFO")"
+  cp -f "$WORKTREE/$ARTIFACT_PATH" "$CANONICAL_ARTIFACT"
+  cp -f "$WORKTREE/$SHA_PATH" "$CANONICAL_SHA"
+  cp -f "$WORKTREE/$BUILD_INFO_PATH" "$CANONICAL_BUILD_INFO"
+  echo "Canonical:"
+  echo "  $CANONICAL_ARTIFACT"
+  echo "  $CANONICAL_SHA"
+  echo "  $CANONICAL_BUILD_INFO"
+fi
+
 echo "Artifacts:"
 echo "  $ARTIFACT_COPY"
 echo "  $SHA_COPY"
