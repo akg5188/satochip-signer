@@ -118,6 +118,15 @@ trap cleanup EXIT
 git -C "$ROOT_DIR" worktree add --detach "$WORKTREE" "$SOURCE_TAG" >/dev/null
 mkdir -p "$PROFILE_STATE_DIR" "$PROFILE_ARTIFACT_DIR" "$PROFILE_LOG_DIR"
 
+LOCAL_BUILDROOT_DL="$ROOT_DIR/seedsigner-os/buildroot_dl"
+WORKTREE_BUILDROOT_DL="$WORKTREE/seedsigner-os/buildroot_dl"
+if [[ -d "$LOCAL_BUILDROOT_DL" ]]; then
+  mkdir -p "$WORKTREE_BUILDROOT_DL"
+  # git worktree only includes tracked files, so seed any locally cached
+  # Buildroot tarballs into the clean worktree to avoid needless re-downloads.
+  cp -a "$LOCAL_BUILDROOT_DL/." "$WORKTREE_BUILDROOT_DL/"
+fi
+
 if [[ "$PROFILE" == "wallet-release" ]]; then
   if [[ ! -f "$ROOT_DIR/wallet/keystore.properties" ]]; then
     echo "ERROR: Missing local wallet/keystore.properties required for wallet-release rebuild." >&2
