@@ -1100,6 +1100,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val signatureBytes = Web3UrCodec.extractSignatureBytes(pendingWeb3Request, parsed)
                         val pages = Web3UrCodec.buildEthSignatureQrPages(
                             requestId = pendingWeb3Request.requestId,
+                            requestIdDataItem = pendingWeb3Request.requestIdDataItem,
                             signatureBytes = signatureBytes,
                             origin = pendingWeb3Request.origin,
                         )

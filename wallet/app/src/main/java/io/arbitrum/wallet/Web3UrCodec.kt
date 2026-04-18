@@ -53,6 +53,7 @@ enum class Web3RequestDataType(val code: Int) {
 
 data class Web3EthSignRequest(
     val requestId: String?,
+    val requestIdDataItem: DataItem? = null,
     val signData: ByteArray,
     val dataType: Web3RequestDataType,
     val chainId: Long,
@@ -101,7 +102,8 @@ object Web3UrCodec {
             "当前只支持 $ETH_SIGN_REQUEST_TYPE"
         }
         val root = decodeMap(ur.cborBytes)
-        val requestId = root.uuidString(1)
+        val requestIdItem = root.get(unsignedKey(1))
+        val requestId = requestIdItem?.let(::decodeRequestId)
         val signData = root.byteString(2) ?: throw IllegalArgumentException("签名请求缺少 signData")
         val dataType = Web3RequestDataType.fromCode(root.longValue(3)?.toInt() ?: 1)
         val chainId = root.longValue(4) ?: 1L
@@ -114,6 +116,7 @@ object Web3UrCodec {
         val origin = root.text(7)?.trim()?.takeIf { it.isNotBlank() }
         return Web3EthSignRequest(
             requestId = requestId,
+            requestIdDataItem = requestIdItem?.let(::copyRequestIdDataItem),
             signData = signData,
             dataType = dataType,
             chainId = chainId,
@@ -127,15 +130,15 @@ object Web3UrCodec {
     @Suppress("UNUSED_PARAMETER")
     fun buildEthSignatureQrPages(
         requestId: String?,
+        requestIdDataItem: DataItem? = null,
         signatureBytes: ByteArray,
         origin: String? = null,
     ): List<String> {
         require(signatureBytes.size >= 65) { "签名结果长度不正确" }
         val map = CborMap()
-        requestId?.takeIf { it.isNotBlank() }?.let {
-            val uuidItem = ByteString(uuidToBytes(UUID.fromString(it)))
-            uuidItem.setTag(37)
-            map.put(unsignedKey(1), uuidItem)
+        when {
+            requestIdDataItem != null -> map.put(unsignedKey(1), copyRequestIdDataItem(requestIdDataItem))
+            !requestId.isNullOrBlank() -> map.put(unsignedKey(1), buildRequestIdDataItem(requestId))
         }
         map.put(unsignedKey(2), ByteString(signatureBytes))
         origin?.trim()?.takeIf { it.isNotBlank() && ETH_SIGNATURE_INCLUDE_ORIGIN }?.let {
@@ -509,6 +512,45 @@ object Web3UrCodec {
             .array()
     }
 
+    private fun decodeRequestId(item: DataItem): String {
+        return when (item) {
+            is UnicodeString -> item.string?.takeIf { it.isNotBlank() }
+                ?: throw IllegalArgumentException("requestId 为空")
+            is ByteString -> decodeRequestIdBytes(item.bytes ?: throw IllegalArgumentException("requestId 为空"))
+            else -> throw IllegalArgumentException("requestId 格式不支持")
+        }
+    }
+
+    private fun decodeRequestIdBytes(bytes: ByteArray): String {
+        bytes.toUtf8RequestIdOrNull()?.let { return it }
+        if (bytes.size == 16) {
+            val buffer = ByteBuffer.wrap(bytes)
+            return UUID(buffer.long, buffer.long).toString()
+        }
+        return "0x${bytes.toHexString()}"
+    }
+
+    private fun buildRequestIdDataItem(requestId: String): DataItem {
+        val trimmed = requestId.trim()
+        return try {
+            ByteString(uuidToBytes(UUID.fromString(trimmed))).also { it.setTag(37) }
+        } catch (_: IllegalArgumentException) {
+            UnicodeString(trimmed)
+        }
+    }
+
+    private fun copyRequestIdDataItem(item: DataItem): DataItem {
+        val copied: DataItem = when (item) {
+            is ByteString -> ByteString(item.bytes?.copyOf() ?: byteArrayOf())
+            is UnicodeString -> UnicodeString(item.string)
+            else -> throw IllegalArgumentException("requestId 格式不支持")
+        }
+        if (item.hasTag()) {
+            copied.setTag(item.tag)
+        }
+        return copied
+    }
+
     private fun CborMap.byteString(key: Int): ByteArray? {
         return (get(unsignedKey(key)) as? ByteString)?.bytes
     }
@@ -519,13 +561,6 @@ object Web3UrCodec {
 
     private fun CborMap.longValue(key: Int): Long? {
         return (get(unsignedKey(key)) as? CborNumber)?.value?.toLong()
-    }
-
-    private fun CborMap.uuidString(key: Int): String? {
-        val bytes = byteString(key) ?: return null
-        require(bytes.size == 16) { "requestId 长度不正确" }
-        val buffer = ByteBuffer.wrap(bytes)
-        return UUID(buffer.long, buffer.long).toString()
     }
 
     private fun ethAddressFromBytes(bytes: ByteArray): String {
@@ -559,6 +594,13 @@ object Web3UrCodec {
 
     private fun ByteArray.toHexString(): String =
         joinToString(separator = "") { "%02x".format(it) }
+
+    private fun ByteArray.toUtf8RequestIdOrNull(): String? {
+        val utf8 = toString(StandardCharsets.UTF_8)
+        val roundTrip = utf8.toByteArray(StandardCharsets.UTF_8).contentEquals(this)
+        val printable = utf8.all { ch -> !ch.isISOControl() || ch == '\n' || ch == '\r' || ch == '\t' }
+        return utf8.takeIf { roundTrip && printable && utf8.isNotBlank() }
+    }
 
     private fun hexToBytes(value: String): ByteArray {
         val clean = value.removePrefix("0x").removePrefix("0X")

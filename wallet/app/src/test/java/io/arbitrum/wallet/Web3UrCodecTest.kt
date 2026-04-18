@@ -6,11 +6,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Base64
 import java.math.BigInteger
+import java.io.ByteArrayOutputStream
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import co.nstant.`in`.cbor.CborEncoder
+import co.nstant.`in`.cbor.model.ByteString
+import co.nstant.`in`.cbor.model.DataItem
 import com.sparrowwallet.hummingbird.URDecoder
 import com.sparrowwallet.hummingbird.ResultType
+import com.sparrowwallet.hummingbird.UR
+import com.sparrowwallet.hummingbird.UREncoder
+import com.sparrowwallet.hummingbird.registry.CryptoKeypath
+import com.sparrowwallet.hummingbird.registry.pathcomponent.IndexPathComponent
 import co.nstant.`in`.cbor.CborDecoder
 import co.nstant.`in`.cbor.model.UnicodeString
 import co.nstant.`in`.cbor.model.UnsignedInteger
@@ -47,6 +55,7 @@ class Web3UrCodecTest {
         val signature = ByteArray(65) { index -> index.toByte() }
         val pages = Web3UrCodec.buildEthSignatureQrPages(
             requestId = "123e4567-e89b-12d3-a456-426614174000",
+            requestIdDataItem = null,
             signatureBytes = signature,
             origin = "OKX Wallet",
         )
@@ -72,6 +81,7 @@ class Web3UrCodecTest {
         val signature = ByteArray(65) { index -> index.toByte() }
         val pages = Web3UrCodec.buildEthSignatureQrPages(
             requestId = "123e4567-e89b-12d3-a456-426614174000",
+            requestIdDataItem = null,
             signatureBytes = signature,
             origin = "   ",
         )
@@ -192,6 +202,35 @@ class Web3UrCodecTest {
 
         assertEquals(65, signatureBytes.size)
         assertEquals(1, signatureBytes.last().toInt() and 0xFF)
+    }
+
+    @Test
+    fun parsesAndPreservesNonUuidRequestIdBytes() {
+        val requestIdBytes = "tp-request-20260418".toByteArray(StandardCharsets.UTF_8)
+        val request = Web3UrCodec.parseEthSignRequestUr(
+            buildEthSignRequestUr(ByteString(requestIdBytes)),
+        )
+
+        assertEquals("tp-request-20260418", request.requestId)
+        assertTrue(request.requestIdDataItem is ByteString)
+
+        val pages = Web3UrCodec.buildEthSignatureQrPages(
+            requestId = request.requestId,
+            requestIdDataItem = request.requestIdDataItem,
+            signatureBytes = ByteArray(65) { index -> index.toByte() },
+            origin = "TokenPocket",
+        )
+
+        val decoder = URDecoder()
+        pages.forEach { page ->
+            assertTrue(decoder.receivePart(page))
+        }
+        val result = decoder.result
+        assertEquals(ResultType.SUCCESS, result.type)
+        val root = CborDecoder.decode(result.ur.cborBytes).first() as CborMap
+        val requestIdItem = root[UnsignedInteger(1)] as ByteString
+        assertTrue(requestIdItem.bytes.contentEquals(requestIdBytes))
+        assertFalse(requestIdItem.hasTag())
     }
 
     @Test
@@ -403,6 +442,30 @@ class Web3UrCodecTest {
         val count = inflater.inflate(out)
         inflater.end()
         return String(out, 0, count, StandardCharsets.UTF_8)
+    }
+
+    private fun buildEthSignRequestUr(requestIdItem: DataItem): String {
+        val keypath = CryptoKeypath(
+            listOf(
+                IndexPathComponent(44, true),
+                IndexPathComponent(60, true),
+                IndexPathComponent(0, true),
+                IndexPathComponent(0, false),
+                IndexPathComponent(0, false),
+            ),
+            null,
+        )
+        val map = CborMap()
+        map.put(UnsignedInteger(1), requestIdItem)
+        map.put(UnsignedInteger(2), ByteString("hello".toByteArray(StandardCharsets.UTF_8)))
+        map.put(UnsignedInteger(3), UnsignedInteger(Web3RequestDataType.PERSONAL_MESSAGE.code.toLong()))
+        map.put(UnsignedInteger(4), UnsignedInteger(WalletChains.ARBITRUM.chainId))
+        map.put(UnsignedInteger(5), keypath.toCbor())
+        map.put(UnsignedInteger(6), ByteString(hexToBytes(sampleAccount.address)))
+        map.put(UnsignedInteger(7), UnicodeString("TokenPocket"))
+        val out = ByteArrayOutputStream()
+        CborEncoder(out).encode(map)
+        return UREncoder.encode(UR("eth-sign-request", out.toByteArray()))
     }
 
     private fun hexToBytes(value: String): ByteArray {
