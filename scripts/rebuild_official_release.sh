@@ -82,6 +82,13 @@ if ! profile_vars="$(manifest_eval_profile "$PROFILE")"; then
 fi
 eval "$profile_vars"
 
+for default_var in $(compgen -A variable DEFAULT_); do
+  env_name="${default_var#DEFAULT_}"
+  if [[ -z "${!env_name+x}" ]]; then
+    export "${env_name}=${!default_var}"
+  fi
+done
+
 if [[ "$SOURCE_TAG" == "HEAD" ]]; then
   BUILD_SENSITIVE_CHANGES="$(collect_build_sensitive_changes)"
   if [[ -n "$BUILD_SENSITIVE_CHANGES" ]]; then
