@@ -76,6 +76,9 @@ repo_dirty=0
 if [[ -n "$repo_status" ]]; then
   repo_dirty=1
 fi
+package_repo_head="$repo_head"
+package_build_time_utc="$build_time_utc"
+package_repo_dirty="$repo_dirty"
 if [[ "$repo_dirty" == "1" && "$DIST_BASENAME" == "system-update-latest.img.xz" && "${ALLOW_DIRTY_REPO:-0}" != "1" ]]; then
   echo "Refusing to write dist/system-update-latest.img.xz from a dirty repository." >&2
   echo "Commit source/doc changes first, or set DIST_IMG/DIST_SUM/DIST_INFO to a scratch filename for test builds." >&2
@@ -159,6 +162,12 @@ if [[ -f "$RAW_BUILD_INFO" ]]; then
       exit 1
     fi
   fi
+  # Restore packaging metadata after sourcing the raw image build-info file so
+  # the final dist build-info reflects the current packaging commit rather than
+  # the older raw image build that happened to be reused.
+  repo_head="$package_repo_head"
+  build_time_utc="$package_build_time_utc"
+  repo_dirty="$package_repo_dirty"
 elif [[ "$RAW_IMG" == "$ASCII_IMAGE_DIR/"* && "${ALLOW_MISSING_RAW_BUILD_INFO:-0}" != "1" ]]; then
   echo "Raw image build info not found: $RAW_BUILD_INFO" >&2
   echo "Run bash scripts/build_current_firmware.sh first so the raw image is stamped with the current source fingerprint." >&2
