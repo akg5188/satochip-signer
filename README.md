@@ -127,6 +127,7 @@ bash scripts/build_current_firmware.sh
 - [SeedKeeper 与 SatochipApplet 分工指南](docs/SeedKeeper与SatochipApplet分工指南.zh-CN.md)
 - [固定正式发布重建入口](docs/固定正式发布重建入口.zh-CN.md)
 - [非 GitHub 关键备份清单](docs/非GitHub关键备份清单.zh-CN.md)
+- [删除本机后恢复清单](docs/删除本机后恢复清单.zh-CN.md)
 - [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
 - [真机全套回归清单](docs/真机全套回归清单.zh-CN.md)
 - [离线签名器一页备忘](docs/离线签名器一页备忘.zh-CN.md)
