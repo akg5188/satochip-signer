@@ -1,0 +1,51 @@
+name: Firmware Release Verify
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware-release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify tracked firmware artifact consistency
+        run: |
+          artifact="dist/system-update-latest.img.xz"
+          sha_file="dist/system-update-latest.img.xz.sha256"
+          info_file="dist/system-update-latest.build-info.txt"
+
+          test -f "$artifact"
+          test -f "$sha_file"
+          test -f "$info_file"
+
+          expected_sha="$(awk 'NR==1 {print $1}' "$sha_file")"
+          actual_sha="$(sha256sum "$artifact" | awk '{print $1}')"
+          test "$actual_sha" = "$expected_sha"
+
+          info_sha="$(awk -F= '/^compressed_image_sha256=/{print $2}' "$info_file")"
+          info_raw_sha="$(awk -F= '/^raw_image_sha256=/{print $2}' "$info_file")"
+          raw_sha="$(xz -dc "$artifact" | sha256sum | awk '{print $1}')"
+
+          test "$info_sha" = "$actual_sha"
+          test "$info_raw_sha" = "$raw_sha"
+
+      - name: Upload firmware verification inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-release-${{ github.sha }}
+          path: |
+            dist/system-update-latest.img.xz
+            dist/system-update-latest.img.xz.sha256
+            dist/system-update-latest.build-info.txt
