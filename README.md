@@ -19,14 +19,27 @@
 - [固定正式发布重建入口](docs/固定正式发布重建入口.zh-CN.md)
 - [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)
 
-当前公开下载入口：
+当前 GitHub 入口现在分 3 类，不要再混着记：
 
-- 树莓派当前固件：
-  看 [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
-  当前公开 tag：`offline-signer-firmware-20260410b-clean`
-- 安卓正式钱包：
-  看 [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
-  当前正式重建入口：`wallet-release -> HEAD`
+- 当前仓库保留的正式基线产物：
+  `current-head-clean`
+  `current-head-wallet-release`
+- 历史公开稳定固件：
+  `offline-signer-firmware-20260410b-clean`
+- 当前正式重建入口：
+  `firmware-clean -> HEAD`
+  `wallet-release -> HEAD`
+
+更准确的说明统一看：
+
+- [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
+
+如果只想知道“现在 GitHub 上能下载什么”：
+
+- 树莓派当前仓库基线固件：
+  `current-head-clean`
+- 安卓当前仓库基线钱包：
+  `current-head-wallet-release`
 - 安卓智能卡 App：
   如需 `TokenPocket` 路线，再看 [版本时间线与发布入口](docs/版本时间线与发布入口.zh-CN.md)
   当前可用 tag：`smartcard-app-android-20260330`
@@ -149,7 +162,7 @@ bash scripts/build_current_firmware.sh
 
 ## 当前最重要的树莓派正式镜像
 
-当前默认固件出口就是：
+当前仓库默认固件出口就是：
 
 - `dist/system-update-latest.img.xz`
 - `dist/system-update-latest.img.xz.sha256`
@@ -160,14 +173,21 @@ bash scripts/build_current_firmware.sh
   `bash scripts/build_current_firmware.sh`
 - 当前工作区测试包名：
   `dist/system-update-worktree-latest.img.xz`
-- 历史 `20260410b` 冻结固件入口：
+- 历史公开 `20260410b` 冻结固件入口：
   `bash scripts/rebuild_official_release.sh firmware-public-20260410b-clean`
 
 默认规则现在是：
 
 - `firmware-clean` 跟随当前 `HEAD`
 - `build_current_firmware.sh` 跟随当前工作区，允许带未提交改动，但默认只写 `system-update-worktree-latest.*`
-- 旧的 `20260410b` 只有在显式选择历史 profile 时才会重建
+- 旧的 `20260410b` 只作为历史公开稳定固件保留，只有在显式选择历史 profile 时才会重建
+
+GitHub Release 现在也分开看：
+
+- `current-head-clean`
+  当前仓库里这份 `dist/system-update-latest.*` 的镜像下载入口
+- `offline-signer-firmware-20260410b-clean`
+  之前已经公开发布过的历史稳定固件入口
 
 当前主线固件已经把这次最重要的修复和验证一起带上：
 
@@ -203,6 +223,15 @@ bash scripts/build_current_firmware.sh
 - `助记词工具`
 - `智能卡工具`
 - `固件自检`
+
+## 现在最容易记混的 3 件事
+
+- `current-head-clean` / `current-head-wallet-release`
+  是当前仓库里保留的正式基线产物 Release
+- `firmware-clean -> HEAD` / `wallet-release -> HEAD`
+  是当前正式重建入口
+- `offline-signer-firmware-20260410b-clean`
+  是历史公开稳定固件，不再代表当前 `HEAD`
 
 ## 四条常用使用链路
 
