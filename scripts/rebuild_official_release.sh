@@ -120,7 +120,7 @@ mkdir -p "$PROFILE_STATE_DIR" "$PROFILE_ARTIFACT_DIR" "$PROFILE_LOG_DIR"
 
 LOCAL_BUILDROOT_DL="$ROOT_DIR/seedsigner-os/buildroot_dl"
 WORKTREE_BUILDROOT_DL="$WORKTREE/seedsigner-os/buildroot_dl"
-if [[ -d "$LOCAL_BUILDROOT_DL" ]]; then
+if [[ "$PROFILE" == firmware-* && -d "$LOCAL_BUILDROOT_DL" && -d "$WORKTREE/seedsigner-os" ]]; then
   mkdir -p "$WORKTREE_BUILDROOT_DL"
   # git worktree only includes tracked files, so seed any locally cached
   # Buildroot tarballs into the clean worktree to avoid needless re-downloads.
