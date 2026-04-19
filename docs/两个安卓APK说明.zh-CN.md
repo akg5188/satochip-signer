@@ -61,6 +61,10 @@ bash scripts/build_tp_relay_apk.sh
 
 ## 2. `satochip-wallet-release.apk`
 
+当前仓库保留基线 release：
+
+- `current-head-wallet-release`
+
 当前工作区最新构建命令：
 
 ```bash
@@ -84,6 +88,17 @@ bash scripts/rebuild_official_release.sh wallet-release
 - `dist/satochip-wallet-release.apk`
 - `dist/satochip-wallet-release.apk.sha256`
 - `dist/satochip-wallet-release.build-info.txt`
+
+当前仓库里这份正式钱包基线对应：
+
+- 源码提交：
+  `979f58d3ad5cecdfec319e14681cde006c7073ab`
+- `SHA256`：
+  `246e0faf04b071877466da25716dbf0e9ac0d578a2f5ac68d25f9de948865f96`
+
+历史公开稳定钱包仍然另算：
+
+- `wallet-android-20260408-0.1.4`
 
 当前真实能力：
 
@@ -123,3 +138,4 @@ bash scripts/rebuild_official_release.sh wallet-release
 - 想处理 `TokenPocket` 动态码，就去 `app/`
 - 想给 `BlueWallet` 签 `PSBT`，直接用树莓派，不要装 TP 中转 App
 - 想连接 `OKX Wallet / Bitget Wallet`，连接码走树莓派 `连接钱包 -> Web3钱包`，签名请求太密时才用 `wallet/` 中转
+- `current-head-wallet-release` 是当前仓库保留的正式钱包基线，不等于历史公开稳定 tag `wallet-android-20260408-0.1.4`
