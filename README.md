@@ -147,7 +147,7 @@ bash scripts/build_current_firmware.sh
 | --- | --- | --- |
 | 给 `TokenPocket` 做手机端扫码与智能卡签名 | `app/` | `bash scripts/build_tp_relay_apk.sh` |
 | 用自己的安卓观察钱包发起 EVM / BTC 冷签 | `wallet/` | `bash scripts/build_current_wallet_apk.sh` |
-| 给 `OKX Wallet / Bitget Wallet` 做 Web3 二维码桥接 | `wallet/` | `DApp -> Web3 钱包桥接` |
+| 给 `OKX Wallet / Bitget Wallet` 做 Web3 二维码桥接 | `wallet/` | 树莓派 `连接钱包 -> Web3钱包` + 安卓观察钱包 `DApp` 中转 |
 | 想用骰子 / 扑克牌 / 16进制自己离线创建助记词 | 树莓派离线签名器 | [离线熵创建助记词教程](docs/离线熵创建助记词教程.zh-CN.md) |
 | 给 `BlueWallet` 做 `BTC PSBT` 冷签 | 树莓派离线签名器 | [离线签名器使用教程](docs/离线签名器使用教程.zh-CN.md) |
 | 想系统搞懂 `BIP85` 子助记词 | 树莓派离线签名器 | [BIP85子助记词使用教程](docs/BIP85子助记词使用教程.zh-CN.md) |
@@ -289,20 +289,21 @@ GitHub Release 现在也分开看：
 
 这条线走 `wallet/`，不是 `app/`。
 
-1. 安卓观察钱包进 `DApp -> Web3 钱包桥接`
-2. 确认首页已经添加并选中观察地址
-3. 点 `绑定观察地址`，树莓派扫描后核对并导出公开 Web3 账户
-4. 手机点 `显示连接码`
-5. `OKX Wallet / Bitget Wallet` 扫手机连接码
-6. Web3 钱包发起签名时，手机点 `扫码签名请求`
-7. 手机把高密度请求码转成树莓派更容易扫的中转码
-8. 树莓派签名后，直接显示原钱包可扫的结果码
-9. `OKX Wallet / Bitget Wallet` 直接扫树莓派结果码继续广播或完成签名
+1. 树莓派首页进 `连接钱包 -> Web3钱包`
+2. 选择 `OKX钱包` 或 `Bitget钱包`
+3. 选择 `智能卡账户` 或 `已加载助记词`
+4. 树莓派按钱包类型显示 Keystone 兼容连接二维码
+5. `OKX Wallet / Bitget Wallet` 添加 Keystone 硬件钱包并扫描
+6. Web3 钱包发起签名时，打开安卓观察钱包，进入 `DApp` 页并点 `扫描二维码`
+7. 必要时也可以用 `相册导入` 读取高密度请求二维码
+8. 手机把高密度请求码转成树莓派更容易扫的中转码
+9. 树莓派签名后，直接显示原钱包可扫的结果码
+10. `OKX Wallet / Bitget Wallet` 直接扫树莓派结果码继续广播或完成签名
 
 注意：
 
-- 只有第 `3` 步绑定观察地址时，手机需要扫回树莓派导出的公开账户码
-- 真正签名时，结果不再扫回手机，而是原钱包直接扫树莓派结果码
+- 当前 Web3 连接码由树莓派直接显示，安卓观察钱包不再生成连接码
+- 真正签名时，结果不再扫回安卓观察钱包，而是原钱包直接扫树莓派结果码
 
 如果 `Bitget Wallet` 的签名请求二维码太密，当前也可以直接套用上面的“先录屏、再放大播放录屏”办法，再让安卓观察钱包或树莓派去扫。
 
