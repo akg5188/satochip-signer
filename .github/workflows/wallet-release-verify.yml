@@ -78,7 +78,18 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ !(secrets.WALLET_RELEASE_KEYSTORE_B64 != '' && secrets.WALLET_RELEASE_STORE_PASSWORD != '' && secrets.WALLET_RELEASE_KEY_ALIAS != '' && secrets.WALLET_RELEASE_KEY_PASSWORD != '') }}
     steps:
-      - name: Explain skipped wallet release verification
+      - name: Warn that wallet release verification is disabled
         run: |
-          echo "Skipping wallet release verification."
+          echo "::warning::Wallet release verification did not run because signing secrets are missing."
           echo "Configure WALLET_RELEASE_KEYSTORE_B64, WALLET_RELEASE_STORE_PASSWORD, WALLET_RELEASE_KEY_ALIAS, and WALLET_RELEASE_KEY_PASSWORD to enable it."
+          {
+            echo "## Wallet release verification skipped"
+            echo
+            echo "This workflow did not build or verify the named wallet release."
+            echo
+            echo "Missing secrets:"
+            echo "- WALLET_RELEASE_KEYSTORE_B64"
+            echo "- WALLET_RELEASE_STORE_PASSWORD"
+            echo "- WALLET_RELEASE_KEY_ALIAS"
+            echo "- WALLET_RELEASE_KEY_PASSWORD"
+          } >> "$GITHUB_STEP_SUMMARY"
