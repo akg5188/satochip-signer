@@ -91,6 +91,33 @@ debug 包路径：
 
 - `wallet/app/build/outputs/apk/debug/app-debug.apk`
 
+## GitHub 自动验包
+
+仓库现在应该让 GitHub 跑和本地一样的正式钱包构建链：
+
+```bash
+bash scripts/build_wallet_release.sh
+bash scripts/check_named_release.sh wallet-release
+```
+
+对应工作流：
+
+- `.github/workflows/wallet-release-verify.yml`
+
+要让 GitHub 真正跑出和本地一致的 `release` APK，需要先在仓库 `Secrets` 里配置：
+
+- `WALLET_RELEASE_KEYSTORE_B64`
+- `WALLET_RELEASE_STORE_PASSWORD`
+- `WALLET_RELEASE_KEY_ALIAS`
+- `WALLET_RELEASE_KEY_PASSWORD`
+
+其中：
+
+- `WALLET_RELEASE_KEYSTORE_B64` 是发布 keystore 文件的 `base64` 内容
+- 其余 3 个值和 `wallet/keystore.properties` 里的同名字段一一对应
+
+如果这些 secrets 没配，GitHub 会跳过这条正式钱包构建验证；本地构建规则仍然不变。
+
 ## 文档入口
 
 - [使用教程](docs/使用教程.zh-CN.md)

@@ -1,0 +1,84 @@
+name: Wallet Release Verify
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wallet-release:
+    runs-on: ubuntu-latest
+    if: ${{ secrets.WALLET_RELEASE_KEYSTORE_B64 != '' && secrets.WALLET_RELEASE_STORE_PASSWORD != '' && secrets.WALLET_RELEASE_KEY_ALIAS != '' && secrets.WALLET_RELEASE_KEY_PASSWORD != '' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;35.0.0"
+
+      - name: Materialize wallet release keystore
+        env:
+          WALLET_RELEASE_KEYSTORE_B64: ${{ secrets.WALLET_RELEASE_KEYSTORE_B64 }}
+          WALLET_RELEASE_STORE_PASSWORD: ${{ secrets.WALLET_RELEASE_STORE_PASSWORD }}
+          WALLET_RELEASE_KEY_ALIAS: ${{ secrets.WALLET_RELEASE_KEY_ALIAS }}
+          WALLET_RELEASE_KEY_PASSWORD: ${{ secrets.WALLET_RELEASE_KEY_PASSWORD }}
+        run: |
+          mkdir -p wallet/.ci
+          printf '%s' "$WALLET_RELEASE_KEYSTORE_B64" | base64 --decode > wallet/.ci/release.keystore
+          cat > wallet/keystore.properties <<EOF
+          storeFile=.ci/release.keystore
+          storePassword=$WALLET_RELEASE_STORE_PASSWORD
+          keyAlias=$WALLET_RELEASE_KEY_ALIAS
+          keyPassword=$WALLET_RELEASE_KEY_PASSWORD
+          EOF
+          chmod 600 wallet/keystore.properties wallet/.ci/release.keystore
+
+      - name: Build named wallet release
+        run: bash scripts/build_wallet_release.sh
+
+      - name: Verify named wallet release
+        run: bash scripts/check_named_release.sh wallet-release
+
+      - name: Upload wallet artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallet-release-${{ github.sha }}
+          path: |
+            dist/satochip-wallet-release.apk
+            dist/satochip-wallet-release.apk.sha256
+            dist/satochip-wallet-release.build-info.txt
+
+      - name: Remove local signing material
+        if: always()
+        run: rm -rf wallet/.ci wallet/keystore.properties
+
+  wallet-release-secrets-missing:
+    runs-on: ubuntu-latest
+    if: ${{ !(secrets.WALLET_RELEASE_KEYSTORE_B64 != '' && secrets.WALLET_RELEASE_STORE_PASSWORD != '' && secrets.WALLET_RELEASE_KEY_ALIAS != '' && secrets.WALLET_RELEASE_KEY_PASSWORD != '') }}
+    steps:
+      - name: Explain skipped wallet release verification
+        run: |
+          echo "Skipping wallet release verification."
+          echo "Configure WALLET_RELEASE_KEYSTORE_B64, WALLET_RELEASE_STORE_PASSWORD, WALLET_RELEASE_KEY_ALIAS, and WALLET_RELEASE_KEY_PASSWORD to enable it."
