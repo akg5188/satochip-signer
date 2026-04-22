@@ -157,6 +157,25 @@ class MainActivity : BiometricGateActivity() {
         }
     }
 
+    private val videoQrLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            Toast.makeText(this@MainActivity, "正在解析视频二维码，请稍候", Toast.LENGTH_SHORT).show()
+            val payload = when (galleryImportTarget) {
+                GalleryImportTarget.REQUEST -> decodeRequestPayloadFromVideo(uri)
+                GalleryImportTarget.RESPONSE -> decodeResponsePayloadFromVideo(uri)
+            }
+            if (payload.isNullOrBlank()) {
+                Toast.makeText(this@MainActivity, "视频未识别到二维码，请重试", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            when (galleryImportTarget) {
+                GalleryImportTarget.REQUEST -> viewModel.onRequestScanResult(payload)
+                GalleryImportTarget.RESPONSE -> viewModel.onResponseScanResult(payload)
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -196,8 +215,10 @@ class MainActivity : BiometricGateActivity() {
                     onAutoAdvanceRelayPage = viewModel::nextSignQrPage,
                     onScanRequest = ::startRequestScan,
                     onPickRequestFromGallery = ::startRequestGalleryImport,
+                    onPickRequestFromVideo = ::startRequestVideoImport,
                     onScanResponse = ::startResponseScan,
                     onPickResponseFromGallery = ::startResponseGalleryImport,
+                    onPickResponseFromVideo = ::startResponseVideoImport,
                     onOpenUrl = ::openExternalUrl,
                     onClearPreparedRequest = viewModel::clearPreparedRequest,
                     onClearError = viewModel::clearError,
@@ -243,6 +264,49 @@ class MainActivity : BiometricGateActivity() {
     private fun startResponseGalleryImport() {
         galleryImportTarget = GalleryImportTarget.RESPONSE
         galleryQrLauncher.launch("image/*")
+    }
+
+    private fun startRequestVideoImport() {
+        galleryImportTarget = GalleryImportTarget.REQUEST
+        videoQrLauncher.launch("video/*")
+    }
+
+    private fun startResponseVideoImport() {
+        galleryImportTarget = GalleryImportTarget.RESPONSE
+        videoQrLauncher.launch("video/*")
+    }
+
+    private suspend fun decodeRequestPayloadFromVideo(uri: Uri): String? {
+        val resolver = RequestQrPayloadResolver()
+        var payload: String? = null
+        QrVideoDecoder.scanVideo(
+            context = this,
+            uri = uri,
+            onProgress = null,
+        ) { decodedText ->
+            when (val resolution = resolver.accept(decodedText)) {
+                is RequestQrResolution.Complete -> {
+                    payload = resolution.payload
+                    false
+                }
+
+                is RequestQrResolution.Progress -> true
+            }
+        }
+        return payload
+    }
+
+    private suspend fun decodeResponsePayloadFromVideo(uri: Uri): String? {
+        var payload: String? = null
+        QrVideoDecoder.scanVideo(
+            context = this,
+            uri = uri,
+            onProgress = null,
+        ) { decodedText ->
+            payload = decodedText
+            false
+        }
+        return payload
     }
 
     private fun importRequestFromClipboard() {
@@ -317,8 +381,10 @@ private fun WalletScreen(
     onAutoAdvanceRelayPage: () -> Unit,
     onScanRequest: () -> Unit,
     onPickRequestFromGallery: () -> Unit,
+    onPickRequestFromVideo: () -> Unit,
     onScanResponse: () -> Unit,
     onPickResponseFromGallery: () -> Unit,
+    onPickResponseFromVideo: () -> Unit,
     onOpenUrl: (String) -> Unit,
     onClearPreparedRequest: () -> Unit,
     onClearError: () -> Unit,
@@ -414,6 +480,7 @@ private fun WalletScreen(
                 onNextRelayPage = onNextRelayPage,
                 onScanResponse = onScanResponse,
                 onPickResponseFromGallery = onPickResponseFromGallery,
+                onPickResponseFromVideo = onPickResponseFromVideo,
                 onClearPreparedRequest = onClearPreparedRequest,
             )
         }
@@ -533,6 +600,7 @@ private fun WalletScreen(
                     onImportRawRequest = onImportRawRequest,
                     onScanRequest = onScanRequest,
                     onPickRequestFromGallery = onPickRequestFromGallery,
+                    onPickRequestFromVideo = onPickRequestFromVideo,
                 )
             }
         }
@@ -2868,6 +2936,7 @@ private fun DappToolsSection(
     onImportRawRequest: () -> Unit,
     onScanRequest: () -> Unit,
     onPickRequestFromGallery: () -> Unit,
+    onPickRequestFromVideo: () -> Unit,
 ) {
     var showManualTools by rememberSaveable { mutableStateOf(false) }
 
@@ -2880,6 +2949,9 @@ private fun DappToolsSection(
             OutlinedButton(onClick = onPickRequestFromGallery, modifier = Modifier.weight(1f)) {
                 Text("相册导入", fontSize = 12.sp)
             }
+        }
+        OutlinedButton(onClick = onPickRequestFromVideo, modifier = Modifier.fillMaxWidth()) {
+            Text("导入视频", fontSize = 12.sp)
         }
         TextButton(onClick = { showManualTools = !showManualTools }) {
             Text(if (showManualTools) "收起文本导入" else "文本导入")
@@ -3182,6 +3254,7 @@ private fun PreparedRequestSection(
     onNextRelayPage: () -> Unit,
     onScanResponse: () -> Unit,
     onPickResponseFromGallery: () -> Unit,
+    onPickResponseFromVideo: () -> Unit,
     onClearPreparedRequest: () -> Unit,
 ) {
     val qrPagerLabel = when (state.preparedQrKind) {
@@ -3250,6 +3323,9 @@ private fun PreparedRequestSection(
                             OutlinedButton(onClick = onPickResponseFromGallery, modifier = Modifier.weight(1f)) {
                                 Text("相册导入", fontSize = 12.sp)
                             }
+                        }
+                        OutlinedButton(onClick = onPickResponseFromVideo, modifier = Modifier.fillMaxWidth()) {
+                            Text("导入视频", fontSize = 12.sp)
                         }
                     }
                 }

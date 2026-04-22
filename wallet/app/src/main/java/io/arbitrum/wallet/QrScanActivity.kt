@@ -52,6 +52,32 @@ class QrScanActivity : BiometricGateActivity() {
         }
     }
 
+    private val videoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            updateStatus("正在解析视频二维码，请稍候")
+            val scanResult = QrVideoDecoder.scanVideo(
+                context = this@QrScanActivity,
+                uri = uri,
+                onProgress = { progress ->
+                    updateStatus("正在解析视频 ${progress.currentFrame}/${progress.totalFrames}")
+                },
+            ) { decodedText ->
+                returnResult(decodedText)
+                false
+            }
+            if (!hasReturned) {
+                updateStatus("视频未识别到二维码，请重试")
+                val message = if (scanResult.scannedFrames > 0) {
+                    "视频未识别到二维码"
+                } else {
+                    "视频解析失败，请重试"
+                }
+                Toast.makeText(this@QrScanActivity, message, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private val cameraPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) startScan() else {
@@ -83,6 +109,9 @@ class QrScanActivity : BiometricGateActivity() {
         updateStatus(intent.getStringExtra(EXTRA_STATUS_TEXT) ?: getString(R.string.scan_status_response))
         findViewById<Button>(R.id.btn_pick_qr_from_gallery).setOnClickListener {
             galleryLauncher.launch("image/*")
+        }
+        findViewById<Button>(R.id.btn_pick_qr_from_video).setOnClickListener {
+            videoLauncher.launch("video/*")
         }
         torchButton.setOnClickListener { toggleTorch() }
         torchButton.visibility = if (hasFlash) View.VISIBLE else View.GONE

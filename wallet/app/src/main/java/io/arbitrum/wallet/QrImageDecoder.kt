@@ -24,6 +24,10 @@ object QrImageDecoder {
     suspend fun decodeFromUri(context: Context, uri: Uri): String? {
         decodeWithMlKit(context, uri)?.let { return it }
         val bitmap = withContext(Dispatchers.IO) { loadBitmap(context, uri) } ?: return null
+        return decodeBitmap(bitmap)
+    }
+
+    suspend fun decodeBitmap(bitmap: Bitmap): String? {
         decodeBitmapWithMlKit(bitmap)?.let { return it }
         return decodeBitmapWithZxingVariants(bitmap)
     }
@@ -64,11 +68,16 @@ object QrImageDecoder {
                 .build()
         )
         try {
-            for (candidate in candidateBitmaps(bitmap)) {
-                val image = InputImage.fromBitmap(candidate, 0)
-                val text = scanner.process(image).await()
-                    .firstNotNullOfOrNull { it.rawValue?.trim()?.takeIf(String::isNotBlank) }
-                if (!text.isNullOrBlank()) return@withContext text
+            val candidates = candidateBitmaps(bitmap)
+            try {
+                for (candidate in candidates) {
+                    val image = InputImage.fromBitmap(candidate, 0)
+                    val text = scanner.process(image).await()
+                        .firstNotNullOfOrNull { it.rawValue?.trim()?.takeIf(String::isNotBlank) }
+                    if (!text.isNullOrBlank()) return@withContext text
+                }
+            } finally {
+                recycleCandidateBitmaps(bitmap, candidates)
             }
             null
         } catch (_: Exception) {
@@ -79,10 +88,23 @@ object QrImageDecoder {
     }
 
     private fun decodeBitmapWithZxingVariants(bitmap: Bitmap): String? {
-        for (candidate in candidateBitmaps(bitmap)) {
-            decodeBitmapWithZxing(candidate)?.let { return it }
+        val candidates = candidateBitmaps(bitmap)
+        try {
+            for (candidate in candidates) {
+                decodeBitmapWithZxing(candidate)?.let { return it }
+            }
+            return null
+        } finally {
+            recycleCandidateBitmaps(bitmap, candidates)
         }
-        return null
+    }
+
+    private fun recycleCandidateBitmaps(source: Bitmap, candidates: List<Bitmap>) {
+        candidates.forEach { candidate ->
+            if (candidate !== source && !candidate.isRecycled) {
+                candidate.recycle()
+            }
+        }
     }
 
     private fun decodeBitmapWithZxing(bitmap: Bitmap): String? {

@@ -10,5 +10,6 @@
     <string name="scan_torch_on">打开补光灯</string>
     <string name="scan_torch_off">关闭补光灯</string>
     <string name="scan_pick_gallery">相册导入</string>
+    <string name="scan_pick_video">导入视频</string>
     <string name="scan_cancel">取消</string>
 </resources>

@@ -14,8 +14,6 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.sparrowwallet.hummingbird.ResultType
-import com.sparrowwallet.hummingbird.URDecoder
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.DecodeHintType
 import com.journeyapps.barcodescanner.BarcodeCallback
@@ -37,8 +35,7 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
     private lateinit var torchButton: Button
     private lateinit var titleView: TextView
     private lateinit var statusView: TextView
-    private val assembler = MultiFragmentAssembler()
-    private val urDecoder = URDecoder()
+    private val requestResolver = RequestQrPayloadResolver()
     private var hasReturned = false
     private var lastText = ""
     private var lastReadAt = 0L
@@ -60,6 +57,37 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
                 returnPayload(decoded)
             } else {
                 handleRequestScanText(decoded)
+            }
+        }
+    }
+
+    private val videoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            updateStatus("正在解析视频二维码，请稍候")
+            val scanResult = QrVideoDecoder.scanVideo(
+                context = this@ContinuousQrScanActivity,
+                uri = uri,
+                onProgress = { progress ->
+                    updateStatus("正在解析视频 ${progress.currentFrame}/${progress.totalFrames}")
+                },
+            ) { decodedText ->
+                if (scanMode == MODE_RESPONSE) {
+                    returnPayload(decodedText)
+                    false
+                } else {
+                    handleRequestScanText(decodedText)
+                    !hasReturned
+                }
+            }
+            if (!hasReturned) {
+                updateStatus("视频未识别到二维码，请重试")
+                val message = if (scanResult.scannedFrames > 0) {
+                    "视频未识别到可用二维码"
+                } else {
+                    "视频解析失败，请重试"
+                }
+                Toast.makeText(this@ContinuousQrScanActivity, message, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -100,6 +128,9 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
         updateTorchButton()
         findViewById<Button>(R.id.btn_pick_qr_from_gallery).setOnClickListener {
             galleryLauncher.launch("image/*")
+        }
+        findViewById<Button>(R.id.btn_pick_qr_from_video).setOnClickListener {
+            videoLauncher.launch("video/*")
         }
         findViewById<Button>(R.id.btn_cancel_scan).setOnClickListener {
             setResult(Activity.RESULT_CANCELED)
@@ -175,54 +206,9 @@ class ContinuousQrScanActivity : BiometricGateActivity() {
     }
 
     private fun handleRequestScanText(text: String) {
-        WalletConnectUriParser.extract(text)?.let { wcUri ->
-            returnPayload(wcUri)
-            return
-        }
-        if (text.startsWith("ur:", ignoreCase = true)) {
-            handleUrRequestPart(text)
-            return
-        }
-        runCatching { TpQrCodec.parseInput(text) }
-            .onSuccess { parsed ->
-                when (parsed) {
-                    is ParseResult.SignRequest -> returnPayload(text)
-                    is ParseResult.Fragment -> {
-                        when (val assembly = assembler.accept(parsed.fragment)) {
-                            is AssemblyResult.Progress -> {
-                                updateStatus("已接收分片 ${assembly.received}/${assembly.total}，请继续扫描")
-                            }
-                            is AssemblyResult.Complete -> returnPayload(assembly.payload)
-                            is AssemblyResult.Error -> {
-                                updateStatus("${assembly.reason}，请继续扫描")
-                            }
-                        }
-                    }
-                }
-            }
-            .onFailure { error ->
-                val reason = error.message ?: "二维码解析失败"
-                updateStatus("$reason，请继续扫描")
-            }
-    }
-
-    private fun handleUrRequestPart(text: String) {
-        val accepted = runCatching { urDecoder.receivePart(text) }.getOrDefault(false)
-        if (!accepted) {
-            updateStatus("Web3 请求分片无效，请继续扫描")
-            return
-        }
-
-        when (val result = urDecoder.result) {
-            null -> {
-                val percent = (urDecoder.estimatedPercentComplete * 100).toInt().coerceIn(0, 99)
-                updateStatus("已接收 Web3 请求分片 ${percent}%，请继续扫描")
-            }
-            else -> when (result.type) {
-                ResultType.SUCCESS -> returnPayload(result.ur.toString())
-                ResultType.FAILURE -> updateStatus(result.error.ifBlank { "Web3 请求解析失败，请重试" })
-                else -> updateStatus("Web3 请求解析状态未知，请重试")
-            }
+        when (val resolution = requestResolver.accept(text)) {
+            is RequestQrResolution.Complete -> returnPayload(resolution.payload)
+            is RequestQrResolution.Progress -> updateStatus(resolution.status)
         }
     }
 

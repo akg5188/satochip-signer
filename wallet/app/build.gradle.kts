@@ -27,14 +27,17 @@ val keystoreProperties = Properties().apply {
     }
 }
 
-val hasReleaseKeystore = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+val releaseStorePath = keystoreProperties.getProperty("storeFile").orEmpty().trim()
+val releaseStoreFile = releaseStorePath.takeIf { it.isNotBlank() }?.let(::file)
+val hasReleaseKeystoreConfig = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
     .all { !keystoreProperties.getProperty(it).isNullOrBlank() }
+val hasReleaseKeystore = hasReleaseKeystoreConfig && (releaseStoreFile?.isFile == true)
 val lightweightReleaseRequested = providers.gradleProperty("wallet.lightRelease").orNull == "1"
 val releaseTaskRequested = gradle.startParameter.taskNames.any { taskName ->
     taskName.contains("Release", ignoreCase = true)
 }
 val releaseSignerSha256 = if (hasReleaseKeystore) {
-    val storePath = keystoreProperties.getProperty("storeFile")
+    val storePath = releaseStorePath
     val storeType = keystoreProperties.getProperty("storeType")
         ?.takeIf { it.isNotBlank() }
         ?: when (storePath.substringAfterLast('.', "").lowercase()) {
@@ -43,7 +46,7 @@ val releaseSignerSha256 = if (hasReleaseKeystore) {
             else -> KeyStore.getDefaultType()
         }
     val keyStore = KeyStore.getInstance(storeType)
-    file(storePath).inputStream().use { input ->
+    releaseStoreFile!!.inputStream().use { input ->
         keyStore.load(input, keystoreProperties.getProperty("storePassword").toCharArray())
     }
     val certificate = keyStore.getCertificate(keystoreProperties.getProperty("keyAlias"))
@@ -57,7 +60,11 @@ val releaseSignerSha256 = if (hasReleaseKeystore) {
 
 if (releaseTaskRequested && !hasReleaseKeystore) {
     throw org.gradle.api.GradleException(
-        "Release build requires a configured keystore.properties; debug signing is blocked for wallet release artifacts."
+        if (hasReleaseKeystoreConfig) {
+            "Release build requires an existing keystore file; missing: $releaseStorePath"
+        } else {
+            "Release build requires a configured keystore.properties; debug signing is blocked for wallet release artifacts."
+        }
     )
 }
 
@@ -91,8 +98,8 @@ android {
         applicationId = "io.arbitrum.wallet"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 7
+        versionName = "0.1.6"
         resValue("string", "expected_signer_sha256", "")
 
         ndk {
