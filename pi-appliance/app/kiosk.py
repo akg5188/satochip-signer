@@ -73,11 +73,11 @@ class BootLockStore:
     def load_hash(self, fallback_hash: str) -> Tuple[str, str]:
         key = self._derive_key()
         if key is None:
-            return fallback_hash, "AES密钥不可用，使用内置口令"
+            return fallback_hash, "AES密钥不可用，使用内置开机密码"
 
         mount_path, mounted_here = self._resolve_boot_mount(read_only=True)
         if mount_path is None:
-            return fallback_hash, "未检测到启动分区，使用内置口令"
+            return fallback_hash, "未检测到启动分区，使用内置开机密码"
 
         try:
             cfg = mount_path / BOOT_LOCK_FILENAME
@@ -87,42 +87,42 @@ class BootLockStore:
             plain = self._decrypt_blob(key, blob)
             if plain is None:
                 locked = hashlib.sha256((self._read_cpu_serial() + "::boot-lock").encode("utf-8")).hexdigest()
-                return locked, "口令配置解密失败，已进入保护锁定"
+                return locked, "开机密码配置解密失败，已进入保护锁定"
             loaded = self._parse_hash_from_text(plain)
             if loaded:
                 return loaded, ""
             locked = hashlib.sha256((self._read_cpu_serial() + "::boot-lock").encode("utf-8")).hexdigest()
-            return locked, "口令配置内容无效，已进入保护锁定"
+            return locked, "开机密码配置内容无效，已进入保护锁定"
         except Exception as error:
-            return fallback_hash, f"读取口令配置失败: {error}"
+            return fallback_hash, f"读取开机密码配置失败: {error}"
         finally:
             if mounted_here:
                 self._safe_unmount(mount_path)
 
     def save_hash(self, new_hash: str) -> Tuple[bool, str]:
         if not normalize_hash(new_hash):
-            return False, "新口令哈希格式错误"
+            return False, "新开机密码哈希格式错误"
 
         key = self._derive_key()
         if key is None:
-            return False, "AES密钥不可用，无法保存口令"
+            return False, "AES密钥不可用，无法保存开机密码"
 
         mount_path, mounted_here = self._resolve_boot_mount(read_only=False)
         if mount_path is None:
-            return False, "未检测到可写启动分区，无法保存口令"
+            return False, "未检测到可写启动分区，无法保存开机密码"
 
         try:
             payload = f"TP_BOOT_UNLOCK_SHA256={new_hash}\n".encode("utf-8")
             blob = self._encrypt_blob(key, payload)
             if blob is None:
-                return False, "AES加密不可用，无法保存口令"
+                return False, "AES加密不可用，无法保存开机密码"
             cfg = mount_path / BOOT_LOCK_FILENAME
             tmp = mount_path / f"{BOOT_LOCK_FILENAME}.tmp"
             tmp.write_bytes(blob)
             os.replace(tmp, cfg)
-            return True, "开机口令已保存"
+            return True, "开机密码已保存"
         except Exception as error:
-            return False, f"保存口令失败: {error}"
+            return False, f"保存开机密码失败: {error}"
         finally:
             if mounted_here:
                 self._safe_unmount(mount_path)
@@ -269,7 +269,7 @@ class App:
         signal.signal(signal.SIGINT, self._on_signal)
         if self.boot_unlock_hash:
             self.state = "boot_lock"
-            self.status = "输入开机口令解锁"
+            self.status = "输入开机密码解锁"
             if self.load_note:
                 self.error = self.load_note
         else:
@@ -483,10 +483,10 @@ class App:
         self.error = ""
         if self.boot_unlock_hash:
             self.change_step = "verify"
-            self.status = "输入当前开机口令"
+            self.status = "输入当前开机密码"
         else:
             self.change_step = "new"
-            self.status = "设置新的开机口令"
+            self.status = "设置新的开机密码"
         self.state = "change_lock"
 
     def _activate_keypad_cell(self) -> None:
@@ -514,27 +514,27 @@ class App:
     def _submit_change_lock(self) -> None:
         if self.change_step == "verify":
             if len(self.change_input) < 4:
-                self.error = "当前口令至少 4 位"
+                self.error = "当前密码至少 4 位"
                 return
             digest = hashlib.sha256(self.change_input.encode("utf-8")).hexdigest()
             if not hmac.compare_digest(digest, self.boot_unlock_hash):
                 self.change_input = ""
-                self.error = "当前口令错误"
+                self.error = "当前密码错误"
                 return
             self.change_input = ""
             self.change_step = "new"
-            self.status = "输入新的开机口令"
+            self.status = "输入新的开机密码"
             self.error = ""
             return
 
         if self.change_step == "new":
             if len(self.change_input) < 4:
-                self.error = "新口令至少 4 位"
+                self.error = "新密码至少 4 位"
                 return
             self.change_new_plain = self.change_input
             self.change_input = ""
             self.change_step = "confirm"
-            self.status = "再次输入新口令确认"
+            self.status = "再次输入新密码确认"
             self.error = ""
             return
 
@@ -543,7 +543,7 @@ class App:
                 self.change_input = ""
                 self.change_new_plain = ""
                 self.change_step = "new"
-                self.status = "两次不一致，请重输新口令"
+                self.status = "两次不一致，请重输新密码"
                 self.error = "两次输入不一致"
                 return
             new_hash = hashlib.sha256(self.change_input.encode("utf-8")).hexdigest()
@@ -557,7 +557,7 @@ class App:
             self.change_step = ""
             self.error = ""
             self.status = message
-            self.scan_status = "口令已更新，继续扫码"
+            self.scan_status = "开机密码已更新，继续扫码"
             self._start_scan()
 
     def _activate_boot_unlock_cell(self) -> None:
@@ -576,7 +576,7 @@ class App:
             self._start_scan()
             return
         if len(self.boot_unlock_code) < 4:
-            self.error = "口令至少 4 位"
+            self.error = "密码至少 4 位"
             return
 
         digest = hashlib.sha256(self.boot_unlock_code.encode("utf-8")).hexdigest()
@@ -589,7 +589,7 @@ class App:
             return
 
         self.boot_unlock_code = ""
-        self.error = "开机口令错误"
+        self.error = "开机密码错误"
 
     def _try_sign_with_card(self) -> None:
         payload = self.pending_payload.strip()
@@ -734,7 +734,7 @@ class App:
             return
 
         if self.state == "change_lock":
-            img = self._base_canvas("修改开机口令")
+            img = self._base_canvas("修改开机密码")
             self._draw_change_lock_screen(img)
             self.display.show_image(img)
             return
@@ -779,8 +779,8 @@ class App:
     def _draw_boot_lock_screen(self, img: Image.Image) -> None:
         draw = ImageDraw.Draw(img)
         masked = "*" * len(self.boot_unlock_code)
-        draw.text((8, 28), f"口令: {masked}", fill=(0, 0, 0), font=self.font)
-        draw.text((8, 44), "输入开机口令后进入系统", fill=(60, 60, 60), font=self.font)
+        draw.text((8, 28), f"密码: {masked}", fill=(0, 0, 0), font=self.font)
+        draw.text((8, 44), "输入开机密码后进入系统", fill=(60, 60, 60), font=self.font)
         self._draw_numeric_keypad(draw)
         draw.text((8, 222), "KEY3 或 OK 提交", fill=(80, 80, 80), font=self.font)
         if self.error:
@@ -788,7 +788,7 @@ class App:
 
     def _draw_settings_screen(self, img: Image.Image) -> None:
         draw = ImageDraw.Draw(img)
-        options = ["修改开机口令", "返回扫码"]
+        options = ["修改开机密码", "返回扫码"]
         draw.text((8, 30), "KEY1 从扫码页进入设置", fill=(60, 60, 60), font=self.font)
         for idx, label in enumerate(options):
             y0 = 66 + idx * 44
@@ -804,14 +804,14 @@ class App:
     def _draw_change_lock_screen(self, img: Image.Image) -> None:
         draw = ImageDraw.Draw(img)
         masked = "*" * len(self.change_input)
-        draw.text((8, 28), f"口令: {masked}", fill=(0, 0, 0), font=self.font)
-        tip = "输入口令"
+        draw.text((8, 28), f"密码: {masked}", fill=(0, 0, 0), font=self.font)
+        tip = "输入密码"
         if self.change_step == "verify":
-            tip = "输入当前口令"
+            tip = "输入当前密码"
         elif self.change_step == "new":
-            tip = "输入新口令"
+            tip = "输入新密码"
         elif self.change_step == "confirm":
-            tip = "再次输入新口令"
+            tip = "再次输入新密码"
         draw.text((8, 44), tip, fill=(60, 60, 60), font=self.font)
         self._draw_numeric_keypad(draw)
         draw.text((8, 222), "KEY3 或 OK 提交", fill=(80, 80, 80), font=self.font)

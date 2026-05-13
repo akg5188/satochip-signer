@@ -27,7 +27,7 @@ rm -rf ${TARGET_DIR}/usr/lib/python3.12/site-packages/embit/liquid
 rm -rf ${TARGET_DIR}/usr/lib/python3.12/site-packages/pyzbar/tests
 rm -rf ${TARGET_DIR}/usr/lib/python3.12/site-packages/qrcode/tests
 
-# TP-only runtime does not use the broader SeedSigner data/tool bundles.
+# Offline signer runtime does not use the broader SeedSigner data/tool bundles.
 rm -rf ${TARGET_DIR}/opt/electronics
 rm -rf ${TARGET_DIR}/opt/gpg_keys
 rm -rf ${TARGET_DIR}/app-assets
@@ -39,7 +39,7 @@ rm -f ${TARGET_DIR}/opt/requirements-desktop.txt
 rm -f ${TARGET_DIR}/opt/setup.cfg
 rm -f ${TARGET_DIR}/opt/setup.py
 
-# Keep only the Chinese locale font set required by the current TP-only UI.
+# Keep only the Chinese locale font set required by the current offline signer UI.
 rm -f ${TARGET_DIR}/opt/src/seedsigner/resources/fonts/NotoSansJP-Regular.ttf
 rm -f ${TARGET_DIR}/opt/src/seedsigner/resources/fonts/NotoSansKR-Regular.ttf
 rm -f ${TARGET_DIR}/opt/src/seedsigner/resources/fonts/PlemolJPConsole-Regular-S.ttf
