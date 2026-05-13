@@ -108,6 +108,19 @@ export TP_BUILD_DIR="$ASCII_BUILD_DIR"
 export TP_IMAGE_DIR="$ASCII_IMAGE_DIR"
 BUILD_PREFIX=(env "BR2_JLEVEL=$BR2_JLEVEL")
 BUILD_PREFIX+=("TP_SKIP_HOST_FIX_RPATH=$TP_SKIP_HOST_FIX_RPATH")
+BUILD_PATH=""
+IFS=':' read -r -a PATH_PARTS <<< "${PATH:-}"
+for path_part in "${PATH_PARTS[@]}"; do
+  if [[ "$path_part" == "$HOME/.local/bin" ]]; then
+    continue
+  fi
+  if [[ -z "$BUILD_PATH" ]]; then
+    BUILD_PATH="$path_part"
+  else
+    BUILD_PATH="$BUILD_PATH:$path_part"
+  fi
+done
+BUILD_PREFIX+=("PATH=$BUILD_PATH")
 if command -v taskset >/dev/null 2>&1; then
   BUILD_PREFIX=(taskset -c "$TP_BUILD_CPUSET" "${BUILD_PREFIX[@]}")
 fi

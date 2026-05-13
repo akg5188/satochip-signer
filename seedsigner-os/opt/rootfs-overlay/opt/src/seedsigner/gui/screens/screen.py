@@ -109,6 +109,14 @@ _UI_TEXT_EXACT_MAP = {
     "Insert Destination Card": "插入目标卡",
     "Clone Failed": "克隆失败",
     "Clone Another Card?": "继续克隆另一张卡？",
+    "BIP-39 Passphrase": "BIP-39 密码短语",
+    "Passphrase": "密码短语",
+    "Verify Passphrase": "验证密码短语",
+    "Scan Passphrase": "扫描密码短语",
+    "Invalid passphrase": "密码短语无效",
+    "Edit passphrase": "修改密码短语",
+    "Discard passphrase": "丢弃密码短语",
+    "Discard passphrase?": "丢弃密码短语？",
 }
 
 _UI_TEXT_SUBSTRING_REPLACEMENTS = [

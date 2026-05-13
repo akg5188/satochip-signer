@@ -57,6 +57,13 @@ logger = logging.getLogger(__name__)
 SEEDKEEPER_STEEL_SECRET_PREFIX = "TP-STEEL:"
 
 
+def _is_offline_signer_mode() -> bool:
+    return (
+        os.environ.get("OFFLINE_SIGNER_MODE") == "1"
+        or os.environ.get("TP_ONLY_MODE") == "1"
+    )
+
+
 def _canonicalize_bip39_words(words: list[str], context: str = "助记词") -> list[str]:
     canonical_words = []
     for position, word in enumerate(list(words or []), 1):
@@ -1380,11 +1387,6 @@ class SeedMnemonicEntryView(View):
             if isinstance(pending_seed, AezeedSeed) and pending_seed.seed_bytes is None:
                 return Destination(SeedAezeedPassphraseModeView)
 
-            if os.environ.get("TP_ONLY_MODE") == "1" and not self.controller.resume_main_flow:
-                seed_num = self.controller.storage.finalize_pending_seed()
-                from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
-                return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
-
             return Destination(SeedFinalizeView)
 
 
@@ -1469,11 +1471,6 @@ class SeedMnemonicIndexEntryView(View):
             if os.environ.get("TP_ONLY_MODE") == "1":
                 return Destination(SeedMnemonicRawReviewView, view_args={"entry_mode": "index"})
             return Destination(SeedMnemonicInvalidView, view_args={"entry_mode": "index"})
-
-        if os.environ.get("TP_ONLY_MODE") == "1" and not self.controller.resume_main_flow:
-            seed_num = self.controller.storage.finalize_pending_seed()
-            from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
-            return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
 
         return Destination(SeedFinalizeView)
 
@@ -1602,9 +1599,9 @@ class SeedMnemonicRawReviewView(View):
 class SeedFinalizeView(View):
     FINALIZE = ButtonOption("完成")
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
-    LOAD_SEEDKEEPER = ButtonOption("加载口令")
-    TYPE_PASSPHRASE = ButtonOption("输入口令")
-    SCAN_PASSPHRASE = ButtonOption("扫描口令")
+    LOAD_SEEDKEEPER = ButtonOption("加载密码短语")
+    TYPE_PASSPHRASE = ButtonOption("输入密码短语")
+    SCAN_PASSPHRASE = ButtonOption("扫描密码短语")
 
     def __init__(self):
         super().__init__()
@@ -1641,18 +1638,16 @@ class SeedFinalizeView(View):
 
 
     def run(self):
-        if os.environ.get("TP_ONLY_MODE") == "1" and not self.controller.resume_main_flow:
-            seed_num = self.controller.storage.finalize_pending_seed()
-            from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
-            return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
-
         button_data = [self.FINALIZE]
         if self.seed.bip39_word_indices_supported:
             button_data.append(self.VIEW_INDICES)
         #self.TYPE_PASSPHRASE.button_label = self.seed.passphrase_label
         if isinstance(self.seed, (XprvSeed, AezeedSeed)):
             pass
-        elif self.settings.get_value(SettingsConstants.SETTING__PASSPHRASE) != SettingsConstants.OPTION__DISABLED:
+        elif (
+            _is_offline_signer_mode()
+            or self.settings.get_value(SettingsConstants.SETTING__PASSPHRASE) != SettingsConstants.OPTION__DISABLED
+        ):
             button_data.append(self.TYPE_PASSPHRASE)
             button_data.append(self.SCAN_PASSPHRASE)
             if self.settings.get_value(SettingsConstants.SETTING__SMARTCARD_SUPPORT) == SettingsConstants.OPTION__ENABLED:
@@ -1666,6 +1661,9 @@ class SeedFinalizeView(View):
 
         if button_data[selected_menu_num] == self.FINALIZE:
             seed_num = self.controller.storage.finalize_pending_seed()
+            if _is_offline_signer_mode() and not getattr(self.controller, "resume_main_flow", False):
+                from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+                return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
             return Destination(SeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
 
         elif button_data[selected_menu_num] == self.VIEW_INDICES:
@@ -1693,8 +1691,8 @@ class SeedFinalizeView(View):
 
 class SeedAezeedPassphraseModeView(View):
     LOAD_SEEDKEEPER = ButtonOption("从 SeedKeeper 加载")
-    TYPE_PASSPHRASE = ButtonOption("输入口令")
-    SCAN_PASSPHRASE = ButtonOption("扫描口令")
+    TYPE_PASSPHRASE = ButtonOption("输入密码短语")
+    SCAN_PASSPHRASE = ButtonOption("扫描密码短语")
 
     def __init__(self):
         super().__init__()
@@ -1710,11 +1708,11 @@ class SeedAezeedPassphraseModeView(View):
 
         selected_menu_num = self.run_screen(
             LargeIconStatusScreen,
-            title="Aezeed 口令",
+            title="Aezeed 密码短语",
             status_icon_name=SeedSignerIconConstants.FINGERPRINT,
             status_icon_size=GUIConstants.ICON_LARGE_BUTTON_SIZE,
             status_color=GUIConstants.INFO_COLOR,
-            text="该助记词需要口令。",
+            text="该助记词需要密码短语。",
             is_button_text_centered=False,
             button_data=button_data,
             show_back_button=True,
@@ -2074,6 +2072,9 @@ class SeedReviewPassphraseView(View):
 
         elif button_data[selected_menu_num] == self.DONE:
             seed_num = self.controller.storage.finalize_pending_seed()
+            if _is_offline_signer_mode() and not getattr(self.controller, "resume_main_flow", False):
+                from seedsigner.views.tp_views import ToolsTpLoadedSeedOptionsView
+                return Destination(ToolsTpLoadedSeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
             return Destination(SeedOptionsView, view_args={"seed_num": seed_num}, clear_history=True)
             
         elif button_data[selected_menu_num] == self.EDIT:
@@ -3161,7 +3162,7 @@ class SeedWordsWarningView(View):
         if self.seed_num is not None:
             seed = self.controller.get_seed(self.seed_num)
             if isinstance(seed, AezeedSeed) and len(seed.passphrase) > 0:
-                warning_text = "此助记词使用了口令。\n恢复时需要助记词和口令。"
+                warning_text = "此助记词使用了密码短语。\n恢复时需要助记词和密码短语。"
             else:
                 warning_text = "请务必离线妥善保存助记词，不要让任何联网设备看到。"
         else:

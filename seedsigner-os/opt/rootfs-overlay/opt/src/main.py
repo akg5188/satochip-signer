@@ -52,16 +52,18 @@ def main(sys_argv=None):
 
     logger.info(f"Starting SeedSigner with: {args.__dict__}")
 
-    # Keep the device in the trimmed TP-only runtime to avoid the broader
+    # Keep the device in the trimmed offline-signer runtime to avoid the broader
     # SeedSigner UI path that is unstable on this customized image.
-    tp_only_mode = True
+    offline_signer_mode = True
     initial_destination = None
     if args.iotest:
         from seedsigner.views.settings_views import IOTestView
 
         initial_destination = Destination(IOTestView)
-        tp_only_mode = False
+        offline_signer_mode = False
     else:
+        os.environ["OFFLINE_SIGNER_MODE"] = "1"
+        # Compatibility: many customized views still use the historical TP_ONLY_MODE key.
         os.environ["TP_ONLY_MODE"] = "1"
         from seedsigner.views.tp_views import ToolsTpUiLockView
 
@@ -69,7 +71,7 @@ def main(sys_argv=None):
 
     Controller.get_instance().start(
         initial_destination=initial_destination,
-        skip_startup_interstitials=(args.iotest or tp_only_mode),
+        skip_startup_interstitials=(args.iotest or offline_signer_mode),
     )
 
 

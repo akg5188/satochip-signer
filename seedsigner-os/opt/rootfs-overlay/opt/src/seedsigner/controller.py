@@ -109,7 +109,7 @@ class BackgroundImportThread(BaseThread):
         Controller.get_instance()._storage2 = EncryptedQRStorage()
 
         if os.environ.get("TP_ONLY_MODE") == "1":
-            # TP-only mode never navigates through the broader SeedSigner UI.
+            # Offline-signer mode never navigates through the broader SeedSigner UI.
             # Keep startup imports minimal so we can trim more unused assets.
             time_import('seedsigner.views.tp_views')
             return

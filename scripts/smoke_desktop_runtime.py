@@ -263,6 +263,7 @@ def _test_main_startup_routes():
     fake_controller = _FakeController()
     original_get_instance = app_main.Controller.get_instance
     original_tp_only_mode = os.environ.get("TP_ONLY_MODE")
+    original_offline_signer_mode = os.environ.get("OFFLINE_SIGNER_MODE")
     try:
         app_main.Controller.get_instance = classmethod(lambda cls: fake_controller)
 
@@ -270,6 +271,7 @@ def _test_main_startup_routes():
         default_call = fake_controller.calls[-1]
         assert default_call["initial_destination"].View_cls.__name__ == "ToolsTpUiLockView"
         assert default_call["skip_startup_interstitials"] is True
+        assert os.environ.get("OFFLINE_SIGNER_MODE") == "1"
         assert os.environ.get("TP_ONLY_MODE") == "1"
 
         app_main.main(["--iotest"])
@@ -282,6 +284,10 @@ def _test_main_startup_routes():
             os.environ.pop("TP_ONLY_MODE", None)
         else:
             os.environ["TP_ONLY_MODE"] = original_tp_only_mode
+        if original_offline_signer_mode is None:
+            os.environ.pop("OFFLINE_SIGNER_MODE", None)
+        else:
+            os.environ["OFFLINE_SIGNER_MODE"] = original_offline_signer_mode
 
 
 def _decode_qr_image(image: Image.Image) -> str:

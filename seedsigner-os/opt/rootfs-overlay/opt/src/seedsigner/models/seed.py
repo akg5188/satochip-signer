@@ -343,7 +343,7 @@ class Seed:
 
 class TransientWordSeed(Seed):
     """
-    A lightweight in-memory word container for TP-only steel workflows.
+    A lightweight in-memory word container for offline-signer steel workflows.
 
     It preserves the entered 12 BIP39 words without requiring checksum-valid seed
     material, so users can continue chaining custom arithmetic transforms.

@@ -142,6 +142,14 @@ def _smartcard_tools_destination() -> Destination:
     return Destination(ToolsTpSmartcardToolsView, clear_history=True)
 
 
+def _runtime_tmp_dir() -> str | None:
+    tmpdir = os.environ.get("TMPDIR")
+    if not tmpdir:
+        return None
+    Path(tmpdir).mkdir(parents=True, exist_ok=True)
+    return tmpdir
+
+
 def _tp_ui_lock_path() -> Path:
     settings_path = Path(Settings.SETTINGS_FILENAME).expanduser()
     if not settings_path.is_absolute():
@@ -317,7 +325,7 @@ def _localize_error_detail(detail: str) -> str:
 def _prompt_for_tp_pin(parent_view):
     """Prompt for PIN using the standard SeedSigner flow.
 
-    TP-only mode tweaks several screens for the simplified launcher. For PIN entry we
+    Offline-signer mode tweaks several screens for the simplified launcher. For PIN entry we
     intentionally fall back to the normal path so that it uses the most battle-tested
     input flow and title handling.
     """
@@ -4169,6 +4177,7 @@ def _extract_xpub_from_output(stdout: str, xtype: str) -> str:
 def _set_runtime_mode(tp_only: bool) -> None:
     from seedsigner.controller import Controller
 
+    os.environ["OFFLINE_SIGNER_MODE"] = "1" if tp_only else "0"
     os.environ["TP_ONLY_MODE"] = "1" if tp_only else "0"
 
     controller = Controller.get_instance()
@@ -5984,6 +5993,9 @@ class ToolsTpLoadedSeedOptionsView(View):
     VIEW_WORDS = ButtonOption("查看助记词")
     VIEW_INDICES = ButtonOption("查看 BIP39 序号")
     VIEW_ENTROPY = ButtonOption("查看原始熵")
+    SET_PASSPHRASE = ButtonOption("设置密码短语")
+    CHANGE_PASSPHRASE = ButtonOption("修改密码短语")
+    CLEAR_PASSPHRASE = ButtonOption("清除密码短语")
     DERIVE_ADDRESS = ButtonOption("按路径算地址")
     BIP85_CHILD_SEED = ButtonOption("BIP85 子助记词")
     IMPORT_TO_SMARTCARD = ButtonOption("写入到智能卡")
@@ -6013,6 +6025,12 @@ class ToolsTpLoadedSeedOptionsView(View):
             button_data.insert(insert_at, self.VIEW_ENTROPY)
         if not isinstance(self.seed, TransientWordSeed):
             button_data.insert(1, self.DERIVE_ADDRESS)
+        if type(self.seed) is Seed:
+            if self.seed.has_passphrase:
+                button_data.insert(2, self.CHANGE_PASSPHRASE)
+                button_data.insert(3, self.CLEAR_PASSPHRASE)
+            else:
+                button_data.insert(2, self.SET_PASSPHRASE)
         if (
             self.seed.bip85_supported
             and self.settings.get_value(SettingsConstants.SETTING__BIP85_CHILD_SEEDS) == SettingsConstants.OPTION__ENABLED
@@ -6054,6 +6072,10 @@ class ToolsTpLoadedSeedOptionsView(View):
             )
         if selected == self.DERIVE_ADDRESS:
             return Destination(ToolsTpDeriveAddressPathView, view_args=dict(seed_num=self.seed_num))
+        if selected in (self.SET_PASSPHRASE, self.CHANGE_PASSPHRASE):
+            return Destination(ToolsTpSeedPassphraseView, view_args=dict(seed_num=self.seed_num))
+        if selected == self.CLEAR_PASSPHRASE:
+            return Destination(ToolsTpSeedPassphraseView, view_args=dict(seed_num=self.seed_num, clear_passphrase=True))
         if selected == self.BIP85_CHILD_SEED:
             from seedsigner.views.seed_views import SeedBIP85ApplicationModeView
             return Destination(SeedBIP85ApplicationModeView, view_args=dict(seed_num=self.seed_num))
@@ -6109,6 +6131,125 @@ class ToolsTpLoadedSeedOptionsView(View):
             return Destination(SeedDiscardView, view_args=dict(seed_num=self.seed_num))
 
         return _tp_home_destination()
+
+
+class ToolsTpSeedPassphraseView(View):
+    DONE = ButtonOption("完成")
+    EDIT = ButtonOption("重新输入")
+    CONFIRM_CLEAR = ButtonOption("确认清除", button_label_color="red")
+    KEEP = ButtonOption("保留密码短语")
+
+    def __init__(self, seed_num: int, clear_passphrase: bool = False):
+        super().__init__()
+        self.seed_num = seed_num
+        self.seed = self.controller.get_seed(seed_num)
+        self.clear_passphrase = bool(clear_passphrase)
+
+    def _return_destination(self) -> Destination:
+        return Destination(ToolsTpLoadedSeedOptionsView, view_args=dict(seed_num=self.seed_num), clear_history=True)
+
+    def _fingerprint(self) -> str:
+        return self.seed.get_fingerprint(self.settings.get_value(SettingsConstants.SETTING__NETWORK))
+
+    def _show_result(self, title: str, text: str) -> None:
+        self.run_screen(
+            LargeIconStatusScreen,
+            title=title,
+            status_headline=None,
+            text=text,
+            show_back_button=False,
+            button_data=[ButtonOption("完成")],
+        )
+
+    def _clear_passphrase(self) -> Destination:
+        if not self.seed.has_passphrase:
+            self._show_result("没有密码短语", "当前助记词未设置 BIP39 密码短语。")
+            return self._return_destination()
+
+        selected_menu_num = self.run_screen(
+            WarningScreen,
+            title="清除密码短语？",
+            status_headline=None,
+            status_icon_size=GUIConstants.ICON_PRIMARY_SCREEN_SIZE - 8,
+            text="清除后会恢复为无 BIP39 密码短语的钱包。\n恢复时只需要助记词。",
+            show_back_button=True,
+            button_data=[self.KEEP, self.CONFIRM_CLEAR],
+        )
+        if selected_menu_num == RET_CODE__BACK_BUTTON or [self.KEEP, self.CONFIRM_CLEAR][selected_menu_num] == self.KEEP:
+            return self._return_destination()
+
+        old_fingerprint = self._fingerprint()
+        self.seed.set_passphrase("")
+        new_fingerprint = self._fingerprint()
+        self._show_result(
+            "密码短语已清除",
+            f"原指纹: {old_fingerprint}\n新指纹: {new_fingerprint}",
+        )
+        return self._return_destination()
+
+    def run(self):
+        if type(self.seed) is not Seed:
+            self.run_screen(
+                WarningScreen,
+                title="不支持",
+                status_headline=None,
+                text="当前这类助记词不支持在这里设置 BIP39 密码短语。",
+                show_back_button=False,
+                button_data=[ButtonOption("返回")],
+            )
+            return self._return_destination()
+
+        if self.clear_passphrase:
+            return self._clear_passphrase()
+
+        old_passphrase = self.seed.passphrase
+        old_fingerprint = self._fingerprint()
+        ret_dict = self.run_screen(
+            seed_screens.SeedAddPassphraseScreen,
+            passphrase=self.seed.passphrase_display,
+            title="BIP39 密码短语",
+        )
+        if ret_dict.get("is_back_button"):
+            return self._return_destination()
+
+        new_passphrase = ret_dict["passphrase"]
+        if new_passphrase == "":
+            if old_passphrase:
+                return Destination(ToolsTpSeedPassphraseView, view_args=dict(seed_num=self.seed_num, clear_passphrase=True))
+            self._show_result("未设置密码短语", "当前助记词仍为无 BIP39 密码短语。")
+            return self._return_destination()
+
+        try:
+            self.seed.set_passphrase(new_passphrase)
+        except InvalidSeedException as exc:
+            self.seed.set_passphrase(old_passphrase)
+            self.run_screen(
+                WarningScreen,
+                title="密码短语无效",
+                status_headline=None,
+                text=str(exc),
+                show_back_button=False,
+                button_data=[ButtonOption("重试")],
+            )
+            return Destination(ToolsTpSeedPassphraseView, view_args=dict(seed_num=self.seed_num), clear_history=True)
+
+        new_fingerprint = self._fingerprint()
+        selected_menu_num = self.run_screen(
+            seed_screens.SeedReviewPassphraseScreen,
+            fingerprint_without=old_fingerprint,
+            fingerprint_with=new_fingerprint,
+            passphrase=self.seed.passphrase_display,
+            button_data=[self.DONE, self.EDIT],
+        )
+        if selected_menu_num == RET_CODE__BACK_BUTTON or [self.DONE, self.EDIT][selected_menu_num] == self.EDIT:
+            self.seed.set_passphrase(old_passphrase)
+            return Destination(ToolsTpSeedPassphraseView, view_args=dict(seed_num=self.seed_num), clear_history=True)
+
+        self._show_result(
+            "密码短语已更新",
+            f"原指纹: {old_fingerprint}\n新指纹: {new_fingerprint}\n\n恢复时需要助记词和密码短语。",
+        )
+        return self._return_destination()
 
 
 class ToolsTpDeriveAddressPathView(View):
@@ -8546,7 +8687,7 @@ class ToolsTpSignerPayloadReviewView(View):
         try:
             title_base, pages = _build_tp_request_review_pages(self.payload)
         except Exception as exc:
-            logger.warning("TP-only review parse failed; falling back to direct sign: %s", exc)
+            logger.warning("Offline-signer review parse failed; falling back to direct sign: %s", exc)
             selected = self.run_screen(
                 WarningScreen,
                 title="无法完整核对",
@@ -8620,7 +8761,7 @@ class ToolsTpSignerPsbtReviewPrepView(View):
         try:
             psbt = PSBT.from_base64(self.psbt_base64)
         except Exception as exc:
-            logger.warning("TP-only PSBT decode failed before review: %s", exc)
+            logger.warning("Offline-signer PSBT decode failed before review: %s", exc)
             self._warning("PSBT 解析失败", str(exc) or "当前二维码里的 PSBT 无法读取。")
             return _tp_home_destination()
 
@@ -8647,7 +8788,7 @@ class ToolsTpSignerPsbtReviewPrepView(View):
                     policy = PSBTParser._get_policy(first_input, script_pubkey, psbt.xpubs)
                     is_multisig_psbt = isinstance(policy, dict) and "m" in policy
         except Exception as exc:
-            logger.debug("Unable to determine PSBT policy in TP-only review flow", exc_info=exc)
+            logger.debug("Unable to determine PSBT policy in offline-signer review flow", exc_info=exc)
 
         if is_multisig_psbt:
             try:
@@ -8709,7 +8850,7 @@ class ToolsTpSignerPsbtReviewPrepView(View):
                 )
                 parser.parse()
             except Exception as exc:
-                logger.exception("Failed to build PSBT parser in TP-only review flow", exc_info=exc)
+                logger.exception("Failed to build PSBT parser in offline-signer review flow", exc_info=exc)
                 loading.stop()
                 loading_stopped = True
                 self._warning("无法核对交易", str(exc) or "当前 PSBT 不能生成完整核对页面。")
@@ -8822,7 +8963,7 @@ class ToolsTpSignerPsbtRunView(View):
                 if outcome is None:
                     return _debug_error_destination("32", "当前 Web3 请求暂不支持直接智能卡签名。")
             except Exception as exc:
-                logger.warning("TP-only Web3 smartcard signer failed: %s", exc)
+                logger.warning("Offline-signer Web3 smartcard signer failed: %s", exc)
                 return _debug_error_destination("63", str(exc))
             finally:
                 loading.stop()
@@ -8840,7 +8981,7 @@ class ToolsTpSignerPsbtRunView(View):
         loading = LoadingScreenThread(text="")
         loading.start()
         try:
-            with tempfile.TemporaryDirectory(prefix="tp-btc-psbt-") as tmpdir:
+            with tempfile.TemporaryDirectory(prefix="offline-btc-psbt-", dir=_runtime_tmp_dir()) as tmpdir:
                 tmpdir_path = Path(tmpdir)
                 psbt_input_path = tmpdir_path / "unsigned.psbt.txt"
                 signed_psbt_path = tmpdir_path / "signed.psbt.txt"
@@ -8874,7 +9015,7 @@ class ToolsTpSignerPsbtRunView(View):
                 )
                 if proc.returncode != 0:
                     detail = _extract_error(proc.stdout, proc.stderr, "sign-psbt failed")
-                    logger.warning("TP-only BTC PSBT signer failed: %s", detail)
+                    logger.warning("Offline-signer BTC PSBT signer failed: %s", detail)
                     code = _map_signer_error_code(detail)
                     if code == "32":
                         return _debug_error_destination(code, detail)
@@ -8895,7 +9036,7 @@ class ToolsTpSignerPsbtRunView(View):
         except subprocess.TimeoutExpired:
             return _masked_error_destination("34")
         except Exception as exc:
-            logger.warning("TP-only BTC PSBT flow failed: %s", exc)
+            logger.warning("Offline-signer BTC PSBT flow failed: %s", exc)
             return _masked_error_destination("35")
         finally:
             loading.stop()
@@ -8955,7 +9096,7 @@ class ToolsTpSignerRunView(View):
                 if outcome is None:
                     return _debug_error_destination("32", "当前 Web3 请求暂不支持直接智能卡签名。")
             except Exception as exc:
-                logger.warning("TP-only Web3 smartcard signer failed: %s", exc)
+                logger.warning("Offline-signer Web3 smartcard signer failed: %s", exc)
                 return _debug_error_destination("63", str(exc))
             finally:
                 loading.stop()
@@ -8973,7 +9114,7 @@ class ToolsTpSignerRunView(View):
         loading = LoadingScreenThread(text="")
         loading.start()
         try:
-            with tempfile.TemporaryDirectory(prefix="satochip-signer-") as tmpdir:
+            with tempfile.TemporaryDirectory(prefix="offline-signer-", dir=_runtime_tmp_dir()) as tmpdir:
                 tmpdir_path = Path(tmpdir)
                 request_path = tmpdir_path / "request.txt"
                 response_path = tmpdir_path / "response.txt"
@@ -9014,7 +9155,7 @@ class ToolsTpSignerRunView(View):
                                 skip_current_view=True,
                             )
                     detail = _extract_error(proc.stdout, proc.stderr, "sign failed")
-                    logger.warning("TP-only signer failed: %s", detail)
+                    logger.warning("Offline-signer signer failed: %s", detail)
                     code = _map_signer_error_code(detail)
                     if code == "51":
                         return _debug_error_destination(code, detail)
@@ -9169,7 +9310,7 @@ class ToolsTpSignerPsbtQrView(View):
         try:
             qr_encoder = self._get_qr_encoder()
         except Exception as exc:
-            logger.warning("TP-only signed PSBT QR render failed: %s", exc)
+            logger.warning("Offline-signer signed PSBT QR render failed: %s", exc)
             if not self.tx_hex:
                 return _masked_error_destination("33")
             if not self.psbt_base64:

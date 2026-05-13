@@ -314,7 +314,9 @@ EOF
   if [ -z "${meson_staging_dir}" ]; then
     meson_staging_dir="${build_dir}/staging"
   fi
-  meson_alias_base="/tmp/seedsigner-meson-${config_name}"
+  meson_tmp_root="${TMPDIR:-/tmp}"
+  mkdir -p "${meson_tmp_root}"
+  meson_alias_base="${meson_tmp_root%/}/seedsigner-meson-${config_name}"
   meson_host_alias="${meson_alias_base}-host"
   meson_staging_alias="${meson_alias_base}-staging"
   meson_pkgconf_wrapper="${meson_alias_base}-pkgconf"

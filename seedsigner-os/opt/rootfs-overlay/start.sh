@@ -2,12 +2,16 @@
 
 export LANGUAGE=zh_Hans_CN
 export LANG=C.UTF-8
+export OFFLINE_SIGNER_MODE=1
 export TP_ONLY_MODE=1
+export TMPDIR=/run/seedsigner
 
 cd /opt/src/
 
+mkdir -p "$TMPDIR"
+
 # Keep logs in RAM so failures can be inspected without persisting data to the SD card.
-/usr/bin/python3 main.py >> /tmp/seedsigner.log 2>&1 &
+/usr/bin/python3 main.py >> "$TMPDIR/seedsigner.log" 2>&1 &
 
 # Set the date to release so that GPG can work
 TIME_DEFAULT_FILE="/opt/src/.build_commit_time"

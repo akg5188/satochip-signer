@@ -429,17 +429,19 @@ class SeedFinalizeScreen(ButtonListScreen):
     def __post_init__(self):
         self.show_back_button = False
         self.title = "确认助记词"
+        if self.button_data and len(self.button_data) > 3:
+            self.num_display_buttons = 3
         super().__post_init__()
 
         self.fingerprint_icontl = IconTextLine(
             icon_name=SeedSignerIconConstants.FINGERPRINT,
             icon_color=GUIConstants.INFO_COLOR,
-            icon_size=GUIConstants.ICON_FONT_SIZE + 12,
+            icon_size=GUIConstants.ICON_FONT_SIZE + 4,
             label_text="指纹",
             value_text=self.fingerprint,
-            font_size=GUIConstants.get_body_font_size() + 2,
+            font_size=GUIConstants.get_body_font_size(),
             is_text_centered=True,
-            screen_y=self.top_nav.height + int((self.buttons[0].screen_y - self.top_nav.height) / 2) - 30
+            screen_y=self.top_nav.height + int((self.buttons[0].screen_y - self.top_nav.height) / 2) - 24,
         )
         self.components.append(self.fingerprint_icontl)
 
@@ -1201,29 +1203,35 @@ class SeedReviewPassphraseScreen(ButtonListScreen):
 
     def __post_init__(self):
         # Customize defaults
-        self.title = _("Verify Passphrase")
+        self.title = _("验证密码短语")
         self.is_bottom_list = True
         self.num_display_buttons = 2
 
         super().__post_init__()
 
+        fingerprint_y = max(
+            self.top_nav.height + 58,
+            self.buttons[0].screen_y - GUIConstants.COMPONENT_PADDING - 36,
+        )
         self.components.append(IconTextLine(
             icon_name=SeedSignerIconConstants.FINGERPRINT,
             icon_color=GUIConstants.INFO_COLOR,
+            icon_size=GUIConstants.ICON_FONT_SIZE,
             # TRANSLATOR_NOTE: Describes the effect of applying a BIP-39 passphrase; it changes the seed's fingerprint
-            label_text=_("changes fingerprint"),
+            label_text=_("指纹变化"),
             value_text=f"{self.fingerprint_without} >> {self.fingerprint_with}",
+            font_size=GUIConstants.get_body_font_size() - 2,
             is_text_centered=True,
-            screen_y = self.buttons[0].screen_y - GUIConstants.COMPONENT_PADDING - int(GUIConstants.get_body_font_size()*2.5)
+            screen_y=fingerprint_y,
         ))
 
         if " " in self.passphrase:
             self.passphrase = self.passphrase.replace(" ", "\u2589")
-        available_height = self.components[-1].screen_y - self.top_nav.height + GUIConstants.COMPONENT_PADDING
-        max_font_size = GUIConstants.get_top_nav_title_font_size() + 8
-        min_font_size = GUIConstants.get_top_nav_title_font_size() - 4
+        available_height = self.components[-1].screen_y - self.top_nav.height - GUIConstants.COMPONENT_PADDING
+        max_font_size = GUIConstants.get_top_nav_title_font_size()
+        min_font_size = GUIConstants.BODY_FONT_TIGHT_MIN_SIZE + 4
         font_size = max_font_size
-        max_lines = 3
+        max_lines = 2
         max_chars_per_line = -1
         found_solution = False
         for font_size in range(max_font_size, min_font_size-1, -2):

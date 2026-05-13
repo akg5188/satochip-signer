@@ -206,7 +206,7 @@ GitHub Release 现在也分开看：
 
 ## 当前主界面长什么样
 
-树莓派开机后的首页不是旧文档里的 `TP only mode` 了。
+树莓派开机后的首页已经是离线签名器首页，不再使用早期的单钱包定制首页。
 
 当前源码里的首页标题就是：
 
@@ -384,7 +384,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 - 如果你手里已经是双 applet 共卡，日常查看/导入/签名还可以继续用，但不要在固件里做恢复出厂。
 - 当前官方 `SeedSigner` 固件和本仓库树莓派固件都不能直接给卡刷 applet。
 - `backups/satochip-utils/` 当前讲的是 `Satochip` 卡初始化，不是白卡来回切换 `SeedKeeper / SatochipApplet`。
-- 树莓派首页已经不是 `TP only mode`，也没有“官方模式”入口了。
+- 树莓派首页已经是离线签名器模式，也没有“官方模式”入口了。
 - 仓库和 GitHub Releases 里不再保留一堆旧测试 firmware 包；当前只保留当前推荐包和 clean 基线，避免拿错。
 - 当前推荐 clean 包的精确源码不要拿 `main` 猜，必须看 [固件与源码对应关系](docs/固件与源码对应关系.zh-CN.md)。
 

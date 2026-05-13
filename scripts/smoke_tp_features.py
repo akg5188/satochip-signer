@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import json
+import os
 import sys
 import tempfile
 import time
@@ -248,6 +249,7 @@ def main() -> int:
             SeedKeeperSelectView,
             SeedMnemonicIndexEntryView,
             SeedMnemonicRawReviewView,
+            SeedFinalizeView,
             SeedExportXpubWarningView,
             SeedWordIndexView,
             SeedWordsView,
@@ -259,6 +261,7 @@ def main() -> int:
             WEB3_WALLET_PROFILE_BITGET,
             WEB3_WALLET_PROFILE_OKX,
             ToolsTpLoadedSeedOptionsView,
+            ToolsTpSeedPassphraseView,
             ToolsTpSatochipToolsView,
             ToolsTpSignerQrView,
             TpRequestQrDecoder,
@@ -2367,6 +2370,43 @@ def main() -> int:
         finally:
             seed_views_mod.seed_screens.SeedWordsBackupTestPromptScreen = original_prompt_screen
 
+        original_offline_signer_mode = os.environ.get("OFFLINE_SIGNER_MODE")
+        original_tp_only_mode = os.environ.get("TP_ONLY_MODE")
+        try:
+            os.environ["OFFLINE_SIGNER_MODE"] = "1"
+            os.environ["TP_ONLY_MODE"] = "1"
+            finalize_controller = _FakeController()
+            finalize_controller.storage.set_pending_seed(Seed(words))
+            finalize_controller.resume_main_flow = False
+            finalize_view = SeedFinalizeView.__new__(SeedFinalizeView)
+            finalize_view.controller = finalize_controller
+            finalize_view.settings = _FakeSettings()
+            finalize_view.renderer = _FakeRenderer()
+            finalize_view.canvas_width = 240
+            finalize_view.canvas_height = 240
+            finalize_view.seed = finalize_controller.storage.get_pending_seed()
+            finalize_view.fingerprint = finalize_view.seed.get_fingerprint()
+            finalize_capture = {}
+
+            def _finalize_run_screen(*args, **kwargs):
+                finalize_capture["labels"] = [button.button_label for button in kwargs["button_data"]]
+                return finalize_capture["labels"].index("输入密码短语")
+
+            finalize_view.run_screen = _finalize_run_screen
+            dest = finalize_view.run()
+            assert "输入密码短语" in finalize_capture["labels"]
+            assert "扫描密码短语" in finalize_capture["labels"]
+            assert dest.View_cls.__name__ == "SeedAddPassphraseView"
+        finally:
+            if original_offline_signer_mode is None:
+                os.environ.pop("OFFLINE_SIGNER_MODE", None)
+            else:
+                os.environ["OFFLINE_SIGNER_MODE"] = original_offline_signer_mode
+            if original_tp_only_mode is None:
+                os.environ.pop("TP_ONLY_MODE", None)
+            else:
+                os.environ["TP_ONLY_MODE"] = original_tp_only_mode
+
         transient_seed = TransientWordSeed(words)
         loaded_seed_view = ToolsTpLoadedSeedOptionsView.__new__(ToolsTpLoadedSeedOptionsView)
         loaded_seed_view.controller = _FakeController()
@@ -2393,6 +2433,93 @@ def main() -> int:
         assert dest.view_args["words_override"] == words
         assert dest.view_args["bip39_indices_override"] == words_to_indices(words)
         assert "查看助记词" in loaded_seed_buttons["labels"]
+        assert "设置密码短语" not in loaded_seed_buttons["labels"]
+
+        bip39_loaded_seed = Seed(words)
+        bip39_loaded_seed_view = ToolsTpLoadedSeedOptionsView.__new__(ToolsTpLoadedSeedOptionsView)
+        bip39_loaded_seed_view.controller = _FakeController()
+        bip39_loaded_seed_view.settings = _FakeSettings()
+        bip39_loaded_seed_view.renderer = _FakeRenderer()
+        bip39_loaded_seed_view.canvas_width = 240
+        bip39_loaded_seed_view.canvas_height = 240
+        bip39_loaded_seed_view.controller.storage.seeds = [bip39_loaded_seed]
+        bip39_loaded_seed_view.seed_num = 0
+        bip39_loaded_seed_view.seed = bip39_loaded_seed
+        bip39_loaded_seed_buttons = {}
+
+        def _bip39_loaded_seed_run_screen(*args, **kwargs):
+            bip39_loaded_seed_buttons["labels"] = [button.button_label for button in kwargs["button_data"]]
+            return bip39_loaded_seed_buttons["labels"].index("设置密码短语")
+
+        bip39_loaded_seed_view.run_screen = _bip39_loaded_seed_run_screen
+        dest = bip39_loaded_seed_view.run()
+        assert "设置密码短语" in bip39_loaded_seed_buttons["labels"]
+        assert dest.View_cls.__name__ == "ToolsTpSeedPassphraseView"
+
+        passphrase_view = ToolsTpSeedPassphraseView.__new__(ToolsTpSeedPassphraseView)
+        passphrase_view.controller = _FakeController()
+        passphrase_view.settings = _FakeSettings()
+        passphrase_view.renderer = _FakeRenderer()
+        passphrase_view.canvas_width = 240
+        passphrase_view.canvas_height = 240
+        passphrase_seed = Seed(words)
+        passphrase_view.controller.storage.seeds = [passphrase_seed]
+        passphrase_view.seed_num = 0
+        passphrase_view.seed = passphrase_seed
+        passphrase_view.clear_passphrase = False
+        passphrase_capture = {"screens": []}
+
+        def _passphrase_run_screen(screen_cls, **kwargs):
+            passphrase_capture["screens"].append(getattr(screen_cls, "__name__", ""))
+            if getattr(screen_cls, "__name__", "") == "SeedAddPassphraseScreen":
+                return {"passphrase": "secret"}
+            if getattr(screen_cls, "__name__", "") == "SeedReviewPassphraseScreen":
+                return 0
+            return 0
+
+        passphrase_view.run_screen = _passphrase_run_screen
+        old_fingerprint = passphrase_seed.get_fingerprint()
+        dest = passphrase_view.run()
+        assert passphrase_seed.passphrase == "secret"
+        assert passphrase_seed.get_fingerprint() != old_fingerprint
+        assert "SeedReviewPassphraseScreen" in passphrase_capture["screens"]
+        assert dest.View_cls.__name__ == "ToolsTpLoadedSeedOptionsView"
+
+        passphrase_loaded_seed_view = ToolsTpLoadedSeedOptionsView.__new__(ToolsTpLoadedSeedOptionsView)
+        passphrase_loaded_seed_view.controller = _FakeController()
+        passphrase_loaded_seed_view.settings = _FakeSettings()
+        passphrase_loaded_seed_view.renderer = _FakeRenderer()
+        passphrase_loaded_seed_view.canvas_width = 240
+        passphrase_loaded_seed_view.canvas_height = 240
+        passphrase_loaded_seed_view.controller.storage.seeds = [passphrase_seed]
+        passphrase_loaded_seed_view.seed_num = 0
+        passphrase_loaded_seed_view.seed = passphrase_seed
+        passphrase_loaded_seed_buttons = {}
+
+        def _passphrase_loaded_seed_run_screen(*args, **kwargs):
+            passphrase_loaded_seed_buttons["labels"] = [button.button_label for button in kwargs["button_data"]]
+            return passphrase_loaded_seed_buttons["labels"].index("清除密码短语")
+
+        passphrase_loaded_seed_view.run_screen = _passphrase_loaded_seed_run_screen
+        dest = passphrase_loaded_seed_view.run()
+        assert "修改密码短语" in passphrase_loaded_seed_buttons["labels"]
+        assert "清除密码短语" in passphrase_loaded_seed_buttons["labels"]
+        assert dest.View_cls.__name__ == "ToolsTpSeedPassphraseView"
+        assert dest.view_args["clear_passphrase"] is True
+
+        clear_view = ToolsTpSeedPassphraseView.__new__(ToolsTpSeedPassphraseView)
+        clear_view.controller = passphrase_loaded_seed_view.controller
+        clear_view.settings = _FakeSettings()
+        clear_view.renderer = _FakeRenderer()
+        clear_view.canvas_width = 240
+        clear_view.canvas_height = 240
+        clear_view.seed_num = 0
+        clear_view.seed = passphrase_seed
+        clear_view.clear_passphrase = True
+        clear_view.run_screen = lambda *args, **kwargs: 1 if kwargs.get("button_data") else 0
+        dest = clear_view.run()
+        assert passphrase_seed.passphrase == ""
+        assert dest.View_cls.__name__ == "ToolsTpLoadedSeedOptionsView"
 
         card_entropy_seed = Seed(
             expected_card_mnemonic,

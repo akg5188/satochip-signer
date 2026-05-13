@@ -154,7 +154,11 @@ _UI_TEXT_EXACT_MAP = {
     "Descriptor Label": "描述符标签",
     "Seed Label": "助记词标签",
     "Password Name": "密码名称",
-    "Passphrase": "口令",
+    "BIP-39 Passphrase": "BIP-39 密码短语",
+    "Passphrase": "密码短语",
+    "Verify Passphrase": "验证密码短语",
+    "Scan Passphrase": "扫描密码短语",
+    "Invalid passphrase": "密码短语无效",
     "Secret Name": "项目名称",
     "Text to Encode": "要编码的文本",
     "Input Encryption Key": "输入加密密钥",
@@ -165,8 +169,9 @@ _UI_TEXT_EXACT_MAP = {
     "Admin PIN": "管理员 PIN",
     "User PIN": "用户 PIN",
     "View Card Info": "查看卡片信息",
-    "Edit passphrase": "修改口令",
-    "Discard passphrase": "丢弃口令",
+    "Edit passphrase": "修改密码短语",
+    "Discard passphrase": "丢弃密码短语",
+    "Discard passphrase?": "丢弃密码短语？",
     "Done": "完成",
     "Scan & Append Another": "扫描并继续追加",
     "Generate QR code": "生成二维码",
@@ -230,10 +235,10 @@ _UI_TEXT_SUBSTRING_REPLACEMENTS = [
     ("Enabled", "已启用"),
     ("Disabled", "已禁用"),
     ("Blocked", "已锁定"),
-    ("Your current passphrase entry will be erased", "当前口令输入将被清除。"),
+    ("Your current passphrase entry will be erased", "当前密码短语输入将被清除。"),
     ("Your current key entry will be erased", "当前密钥输入将被清除。"),
     ("Your current mnemonic ID entry will be erased", "当前助记词 ID 输入将被清除。"),
-    ("Backups do not include your passphrase.", "备份内容不包含你的口令。"),
+    ("Backups do not include your passphrase.", "备份内容不包含你的密码短语。"),
     ("Optionally scan your transcribed SeedQR to confirm that it reads back correctly.", "你也可以扫描誊写后的 SeedQR，确认回读结果是否正确。"),
     ("Admin PIN is needed for changing keys and editing card settings.", "修改密钥和卡片设置需要管理员 PIN。"),
     ("User PIN is needed for signing and using on-card keys.", "签名和使用卡内密钥需要用户 PIN。"),
@@ -1912,8 +1917,8 @@ class Button(BaseComponent):
             button_kwargs["text"] = self.text
             button_kwargs["font_color"] = self.font_color
             button_kwargs["background_color"] = self.background_color
-            button_kwargs["allow_text_overflow"] = True
-            button_kwargs["auto_line_break"] = False
+            button_kwargs["allow_text_overflow"] = False
+            button_kwargs["auto_line_break"] = True
             del button_kwargs["horizontal_scroll_begin_hold_secs"]
             del button_kwargs["horizontal_scroll_end_hold_secs"]
 
