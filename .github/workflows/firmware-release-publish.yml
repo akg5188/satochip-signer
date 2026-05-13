@@ -1,0 +1,186 @@
+name: Firmware Release Publish
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/firmware-release-publish.yml"
+      - "dist/system-update-latest.img.xz"
+      - "dist/system-update-latest.img.xz.sha256"
+      - "dist/system-update-latest.build-info.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: firmware-release-publish-current-head-clean
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify tracked firmware artifact
+        run: |
+          set -euo pipefail
+
+          artifact="dist/system-update-latest.img.xz"
+          sha_file="dist/system-update-latest.img.xz.sha256"
+          info_file="dist/system-update-latest.build-info.txt"
+
+          test -f "$artifact"
+          test -f "$sha_file"
+          test -f "$info_file"
+
+          sha256sum -c "$sha_file"
+
+          artifact_sha="$(sha256sum "$artifact" | awk '{print $1}')"
+          info_artifact_sha="$(awk -F= '/^compressed_image_sha256=/{print $2}' "$info_file")"
+          test "$artifact_sha" = "$info_artifact_sha"
+
+          raw_sha="$(xz -dc "$artifact" | sha256sum | awk '{print $1}')"
+          info_raw_sha="$(awk -F= '/^raw_image_sha256=/{print $2}' "$info_file")"
+          test "$raw_sha" = "$info_raw_sha"
+
+          test "$(awk -F= '/^repo_dirty=/{print $2}' "$info_file")" = "0"
+          test "$(awk -F= '/^build_clean_mode=/{print $2}' "$info_file")" = "clean"
+
+      - name: Publish current-head-clean release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: current-head-clean
+          ARTIFACT: dist/system-update-latest.img.xz
+          SHA_FILE: dist/system-update-latest.img.xz.sha256
+          BUILD_INFO: dist/system-update-latest.build-info.txt
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import mimetypes
+          import os
+          import pathlib
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ["GITHUB_TOKEN"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["RELEASE_TAG"]
+          api = f"https://api.github.com/repos/{repo}"
+
+          assets = [
+              pathlib.Path(os.environ["ARTIFACT"]),
+              pathlib.Path(os.environ["SHA_FILE"]),
+              pathlib.Path(os.environ["BUILD_INFO"]),
+          ]
+
+          info = {}
+          for line in pathlib.Path(os.environ["BUILD_INFO"]).read_text(encoding="utf-8").splitlines():
+              if "=" in line:
+                  key, value = line.split("=", 1)
+                  info[key] = value
+
+          body = "\n".join(
+              [
+                  "Current clean Raspberry Pi offline signer firmware.",
+                  "",
+                  f"- Firmware source commit: `{info.get('repo_head', '')}`",
+                  f"- Compressed SHA256: `{info.get('compressed_image_sha256', '')}`",
+                  f"- Raw image SHA256: `{info.get('raw_image_sha256', '')}`",
+                  f"- Build clean mode: `{info.get('build_clean_mode', '')}`",
+                  f"- Repo dirty: `{info.get('repo_dirty', '')}`",
+                  "",
+                  "Assets are regenerated from the tracked `dist/system-update-latest.*` files.",
+              ]
+          )
+
+          def request(method, url, *, data=None, headers=None, expected=(200,)):
+              headers = {
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {token}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  **(headers or {}),
+              }
+              payload = None
+              if data is not None:
+                  payload = json.dumps(data).encode("utf-8")
+                  headers["Content-Type"] = "application/json"
+              req = urllib.request.Request(url, data=payload, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req) as response:
+                      raw = response.read()
+                      if response.status not in expected:
+                          raise RuntimeError(f"{method} {url} returned {response.status}: {raw[:200]!r}")
+                      return json.loads(raw.decode("utf-8")) if raw else {}
+              except urllib.error.HTTPError as error:
+                  raw = error.read().decode("utf-8", errors="replace")
+                  if error.code not in expected:
+                      raise RuntimeError(f"{method} {url} returned {error.code}: {raw}") from error
+                  return json.loads(raw) if raw else {}
+
+          release_url = f"{api}/releases/tags/{urllib.parse.quote(tag)}"
+          try:
+              release = request("GET", release_url)
+          except RuntimeError as error:
+              if "returned 404:" not in str(error):
+                  raise
+              release = request(
+                  "POST",
+                  f"{api}/releases",
+                  data={
+                      "tag_name": tag,
+                      "name": "Current clean firmware",
+                      "body": body,
+                      "draft": False,
+                      "prerelease": False,
+                  },
+                  expected=(201,),
+              )
+          else:
+              release = request(
+                  "PATCH",
+                  release["url"],
+                  data={
+                      "name": "Current clean firmware",
+                      "body": body,
+                      "draft": False,
+                      "prerelease": False,
+                  },
+              )
+
+          for asset in list(release.get("assets", [])):
+              if asset.get("name") in {path.name for path in assets}:
+                  request("DELETE", asset["url"], expected=(204,))
+
+          upload_url = release["upload_url"].split("{", 1)[0]
+          for path in assets:
+              data = path.read_bytes()
+              content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+              url = f"{upload_url}?{urllib.parse.urlencode({'name': path.name})}"
+              req = urllib.request.Request(
+                  url,
+                  data=data,
+                  method="POST",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "Content-Type": content_type,
+                      "Content-Length": str(len(data)),
+                  },
+              )
+              with urllib.request.urlopen(req) as response:
+                  if response.status != 201:
+                      raise RuntimeError(f"upload {path.name} returned {response.status}")
+                  uploaded = json.loads(response.read().decode("utf-8"))
+              print(f"uploaded {uploaded['name']} ({uploaded['size']} bytes)")
+          PY
