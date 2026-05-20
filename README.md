@@ -1,7 +1,16 @@
-# satochip-signer 仓库说明
+# satochip-signer
 
-> AI-assisted experimental offline-signer project. Intended for learning,
-> discussion, and test-only validation. Do not store real funds here.
+AI-assisted experimental offline-signer project for learning, discussion,
+and test-only validation.
+Do not use this repository to store or sign real funds.
+
+## At A Glance
+
+- Current maintainer: `akg5188`
+- Project notice: [NOTICE.md](NOTICE.md)
+- Third-party attribution: [THIRD_PARTY.md](THIRD_PARTY.md)
+- Contributors: [CONTRIBUTORS.md](CONTRIBUTORS.md)
+- User guides and release notes live in [`docs/`](docs/)
 
 ## 项目声明
 
