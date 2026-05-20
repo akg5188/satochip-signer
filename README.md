@@ -12,6 +12,27 @@ Do not use this repository to store or sign real funds.
 - Contributors: [CONTRIBUTORS.md](CONTRIBUTORS.md)
 - User guides and release notes live in [`docs/`](docs/)
 
+## Contributors And Acknowledgements
+
+This repository has one git author in its current history:
+
+- `akg5188`
+
+It also draws heavily from these upstream projects and authors:
+
+- `SeedSigner`
+- `3rdIteration/SeedSigner`
+- `Krux`
+- `Blockstream Jade`
+- `Specter-DIY`
+- `Toporin`
+- `Toporin/Satochip-Utils`
+- `Toporin/SatochipApplet`
+- `Toporin/Satochip-SeedKeeper`
+
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) and [THIRD_PARTY.md](THIRD_PARTY.md)
+for the full provenance record.
+
 ## 项目声明
 
 先看：
