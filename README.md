@@ -1,5 +1,16 @@
 # satochip-signer 仓库说明
 
+> AI-assisted experimental offline-signer project. Intended for learning,
+> discussion, and test-only validation. Do not store real funds here.
+
+## 项目声明
+
+先看：
+
+- [项目声明](NOTICE.md)
+- [第三方归属](THIRD_PARTY.md)
+- [贡献者](CONTRIBUTORS.md)
+
 ## 当前正式入口
 
 以后如果只是想直接用，不要先翻源码，按这个顺序做就行：
