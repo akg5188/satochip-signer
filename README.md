@@ -20,6 +20,26 @@ Do not use this repository to store or sign real funds.
 - [第三方归属](THIRD_PARTY.md)
 - [贡献者](CONTRIBUTORS.md)
 
+## 致谢与来源
+
+这个仓库是 AI 辅助整理出来的实验性项目，很多思路、代码结构、
+工作流和文档都借鉴或改造了上游项目。这里专门写清楚，不让来源
+混掉：
+
+- `SeedSigner`
+- `3rdIteration/SeedSigner`
+- `Krux`
+- `Blockstream Jade`
+- `Specter-DIY`
+- `Toporin`
+- `Toporin/Satochip-Utils`
+- `Toporin/SatochipApplet`
+- `Toporin/Satochip-SeedKeeper`
+
+Git 提交作者目前只有 `akg5188`，但这不代表仓库内容只来自一
+个人。完整说明请看 [CONTRIBUTORS.md](CONTRIBUTORS.md) 和
+[THIRD_PARTY.md](THIRD_PARTY.md)。
+
 ## 当前正式入口
 
 以后如果只是想直接用，不要先翻源码，按这个顺序做就行：
