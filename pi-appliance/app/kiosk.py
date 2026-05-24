@@ -50,6 +50,12 @@ BOOT_UNLOCK_SHA256 = os.environ.get("TP_BOOT_UNLOCK_SHA256", "").strip().lower()
 
 SCREEN_W = 240
 SCREEN_H = 240
+SCAN_CAMERA_SIZE = (
+    int(os.environ.get("TP_SCAN_WIDTH", "1280")),
+    int(os.environ.get("TP_SCAN_HEIGHT", "960")),
+)
+SCAN_CAPTURE_INTERVAL_SECONDS = float(os.environ.get("TP_SCAN_INTERVAL_SECONDS", "0.16"))
+SCAN_PREVIEW_RENDER_INTERVAL_SECONDS = float(os.environ.get("TP_SCAN_PREVIEW_INTERVAL_SECONDS", "0.80"))
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 BOOT_LOCK_FILENAME = "tp-lock.dat"
 BOOT_LOCK_MAGIC = b"TPSL1"
@@ -263,6 +269,10 @@ class App:
         self.scan_status = "对准 TP 二维码"
         self.response_qr: Optional[Image.Image] = None
         self.preview_image: Optional[Image.Image] = None
+        self.preview_revision = 0
+        self.rendered_preview_revision = -1
+        self.last_scan_render = 0.0
+        self.last_scan_render_signature: Optional[Tuple[int, str, str]] = None
         self._pending_scan_start = False
 
         signal.signal(signal.SIGTERM, self._on_signal)
@@ -404,7 +414,7 @@ class App:
                 return
 
         now = time.monotonic()
-        if now - self.last_frame < 0.16:
+        if now - self.last_frame < SCAN_CAPTURE_INTERVAL_SECONDS:
             return
         self.last_frame = now
 
@@ -422,6 +432,7 @@ class App:
             return
 
         self.preview_image = preview
+        self.preview_revision += 1
         for value in values:
             text = value.strip()
             if not text:
@@ -661,6 +672,10 @@ class App:
         self.error = ""
         self.pin = ""
         self.preview_image = None
+        self.preview_revision = 0
+        self.rendered_preview_revision = -1
+        self.last_scan_render = 0.0
+        self.last_scan_render_signature = None
         self.assembler.reset()
         self.fragment_seen.clear()
 
@@ -671,7 +686,7 @@ class App:
             return
 
         if self.camera is None:
-            self.camera = CameraScanner(preview_size=(640, 480), rotate=0)
+            self.camera = CameraScanner(preview_size=SCAN_CAMERA_SIZE, rotate=0)
             try:
                 self.camera.start()
             except Exception as error:
@@ -711,6 +726,13 @@ class App:
 
     def _render(self) -> None:
         if self.state == "scan":
+            signature = (self.preview_revision, self.scan_status, self.error)
+            now = time.monotonic()
+            if (
+                signature == self.last_scan_render_signature
+                and now - self.last_scan_render < SCAN_PREVIEW_RENDER_INTERVAL_SECONDS
+            ):
+                return
             if self.preview_image is None:
                 img = self._base_canvas("扫码")
                 self._draw_text_block(img, self.scan_status, y=40)
@@ -718,7 +740,15 @@ class App:
                     self._draw_error(img, self.error)
                 self.display.show_image(img)
             else:
+                if (
+                    self.rendered_preview_revision == self.preview_revision
+                    or now - self.last_scan_render < SCAN_PREVIEW_RENDER_INTERVAL_SECONDS
+                ):
+                    return
                 self._render_scan_preview(self.preview_image)
+                self.rendered_preview_revision = self.preview_revision
+            self.last_scan_render = now
+            self.last_scan_render_signature = signature
             return
 
         if self.state == "boot_lock":

@@ -1,4 +1,5 @@
 import math
+import logging
 import os
 import time
 from threading import Lock
@@ -23,6 +24,24 @@ from seedsigner.gui.components import GUIConstants, Fonts, resize_image_to_fit
 from seedsigner.models.decode_qr import DecodeQR
 from seedsigner.models.threads import BaseThread, ThreadsafeCounter
 
+
+logger = logging.getLogger(__name__)
+
+SCAN_PREVIEW_FRAME_STRIDE = 4
+SCAN_PREVIEW_AFTER_PROGRESS_STRIDE = 24
+SCAN_DENSE_ESCALATE_MISSES = 10
+SCAN_CAMERA_PROFILES = (
+    {"resolution": (480, 480), "framerate": 6, "use_board_settings": True},
+    {"resolution": (720, 720), "framerate": 4, "use_board_settings": False},
+    {"resolution": (1280, 720), "framerate": 3, "use_board_settings": False},
+    {"resolution": (1280, 960), "framerate": 2, "use_board_settings": False},
+)
+SCAN_DENSE_CAMERA_PROFILES = (
+    {"resolution": (960, 720), "framerate": 4, "use_board_settings": False},
+    {"resolution": (1280, 960), "framerate": 2, "use_board_settings": False},
+)
+
+
 @dataclass
 class ScanScreen(BaseTopNavScreen):
     """
@@ -31,20 +50,15 @@ class ScanScreen(BaseTopNavScreen):
     * Decoder analyzing frames for QR codes.
     * Live preview display writing frames to the screen.
 
-    All of this would ideally be rewritten as in C/C++/Rust with python bindings for
-    vastly improved performance.
+    The current scan path keeps the camera on a modest frame rate, decodes each new
+    frame only once, and prefers grayscale capture on Pi-class hardware so the decode
+    loop does not burn cycles on repeated copies of the same image.
 
-    Until then, we have to balance the resources the Pi Zero has to work with. Thus, we
-    set a modest fps target for the camera: 5fps. At this pace, the decoder and the live
-    display can more or less keep up with the flow of frames without much wasted effort
-    in any of the threads.
+    Live preview is intentionally throttled. Rendering and overlay drawing are useful
+    for aiming, but they compete with QR decoding on the Python runtime.
 
-    Note: performance tuning was targeted for the Pi Zero.
-
-    The resolution (480x480) has not been tweaked in order to guarantee that our
-    decoding abilities remain as-is. It's possible that more optimizations could be made
-    here (e.g. higher res w/no performance impact? Lower res w/same decoding but faster
-    performance? etc).
+    The 480x480 scan resolution is still the compatibility baseline; if we need more
+    room later, the camera profile should be tuned before the decode path is rewritten.
 
     Note: This is quite a lot of important tasks for a Screen to be managing; much of
     this should probably be refactored into the Controller.
@@ -53,6 +67,8 @@ class ScanScreen(BaseTopNavScreen):
     instructions_text: str = None
     resolution: tuple[int,int] = (480, 480)
     framerate: int = 6  # TODO: alternate optimization for Pi Zero 2W?
+    scan_profiles: tuple[dict, ...] = None
+    dense_scan_mode: bool = False
     render_rect: tuple[int,int,int,int] = None
     show_top_nav: bool = False
     show_status_overlay: bool = True
@@ -88,14 +104,16 @@ class ScanScreen(BaseTopNavScreen):
             self.render_rect = (0, render_top, self.canvas_width, self.canvas_height)
 
         self.camera = Camera.get_instance()
+        if self.scan_profiles is None:
+            self.scan_profiles = SCAN_DENSE_CAMERA_PROFILES if self.dense_scan_mode else SCAN_CAMERA_PROFILES
+        self.current_scan_profile_index = 0
+        self.failed_scan_profiles = set()
+        self.consecutive_scan_misses = 0
+
         loading_screen = LoadingScreenThread(text="" if tp_only_mode else _("Starting camera..."))
         loading_screen.start()
         try:
-            self.camera.start_video_stream_mode(
-                resolution=self.resolution,
-                framerate=self.framerate,
-                format="bgr",
-            )
+            self._start_camera_profile(0)
         finally:
             loading_screen.stop()
 
@@ -118,6 +136,75 @@ class ScanScreen(BaseTopNavScreen):
                 keys=HardwareButtonsConstants.ALL_KEYS,
             )
         )
+
+    def _profile_at(self, profile_index: int) -> dict:
+        if not self.scan_profiles:
+            return {
+                "resolution": self.resolution,
+                "framerate": self.framerate,
+                "use_board_settings": True,
+            }
+        profile_index = max(0, min(profile_index, len(self.scan_profiles) - 1))
+        profile = dict(self.scan_profiles[profile_index])
+        profile.setdefault("resolution", self.resolution)
+        profile.setdefault("framerate", self.framerate)
+        profile.setdefault("use_board_settings", False)
+        return profile
+
+    def _start_camera_profile(self, profile_index: int):
+        profile = self._profile_at(profile_index)
+        self.camera.start_video_stream_mode(
+            resolution=tuple(profile["resolution"]),
+            framerate=int(profile["framerate"]),
+            format="bgr",
+            use_board_settings=bool(profile.get("use_board_settings", False)),
+            prefer_greyscale=True,
+            scan_mode=True,
+        )
+        self.current_scan_profile_index = profile_index
+        if hasattr(self.decoder, "set_dense_scan_mode"):
+            self.decoder.set_dense_scan_mode(self.dense_scan_mode or profile_index > 0)
+
+    def _switch_to_next_scan_profile(self) -> bool:
+        if not self.scan_profiles:
+            return False
+
+        previous_profile_index = self.current_scan_profile_index
+        next_profile_index = previous_profile_index + 1
+        if next_profile_index >= len(self.scan_profiles):
+            return False
+
+        self.camera.stop_video_stream_mode()
+        for profile_index in range(next_profile_index, len(self.scan_profiles)):
+            if profile_index in self.failed_scan_profiles:
+                continue
+            try:
+                self._start_camera_profile(profile_index)
+                self.consecutive_scan_misses = 0
+                logger.info("Switched QR scanner to dense profile %s", self._profile_at(profile_index))
+                return True
+            except Exception:
+                self.failed_scan_profiles.add(profile_index)
+                logger.exception("Dense QR scanner profile failed: %s", self._profile_at(profile_index))
+
+        try:
+            self._start_camera_profile(previous_profile_index)
+        except Exception:
+            logger.exception("Failed to restore QR scanner profile: %s", self._profile_at(previous_profile_index))
+        return False
+
+    def _maybe_escalate_scan_profile(self, status: DecodeQRStatus) -> bool:
+        if status != DecodeQRStatus.FALSE:
+            self.consecutive_scan_misses = 0
+            return False
+        if self.decoder.get_percent_complete() > 0:
+            self.consecutive_scan_misses = 0
+            return False
+
+        self.consecutive_scan_misses += 1
+        if self.consecutive_scan_misses < SCAN_DENSE_ESCALATE_MISSES:
+            return False
+        return self._switch_to_next_scan_profile()
 
 
     class LivePreviewThread(BaseThread):
@@ -144,6 +231,10 @@ class ScanScreen(BaseTopNavScreen):
                 and self.render_rect == (0, 0, self.renderer.canvas_width, self.renderer.canvas_height)
             )
             self.decoder_fps = "0.0"
+            self.last_frame_counter = -1
+            self.last_progress_percentage = -1
+            self.preview_frame_stride = SCAN_PREVIEW_FRAME_STRIDE
+            self.preview_after_progress_stride = SCAN_PREVIEW_AFTER_PROGRESS_STRIDE
 
             super().__init__()
 
@@ -162,14 +253,35 @@ class ScanScreen(BaseTopNavScreen):
             debug = False
             show_framerate = False  # enable for debugging / testing
             while self.keep_running:
-                frame = self.camera.read_video_stream(as_image=True, preview=True)
+                frame_counter = self.camera.get_video_stream_frame_counter()
+                if frame_counter is None:
+                    time.sleep(0.01)
+                    continue
+                if frame_counter == self.last_frame_counter:
+                    time.sleep(0.005)
+                    continue
+                self.last_frame_counter = frame_counter
+
+                progress_percentage = self.decoder.get_percent_complete()
+                progress_changed = progress_percentage != self.last_progress_percentage
+                preview_stride = self.preview_frame_stride
+                if progress_percentage > 0:
+                    preview_stride = self.preview_after_progress_stride
+                if preview_stride > 1 and frame_counter % preview_stride != 0 and not progress_changed:
+                    continue
+                self.last_progress_percentage = progress_percentage
+
+                try:
+                    frame = self.camera.read_video_stream(as_image=True, preview=True)
+                except Exception:
+                    time.sleep(0.01)
+                    continue
                 if frame is not None:
                     num_frames += 1
                     cur_time = time.time()
                     cur_fps = num_frames / (cur_time - start_time)
                     
                     scan_text = None
-                    progress_percentage = self.decoder.get_percent_complete()
                     if progress_percentage == 0:
                         # We've just started scanning, no results yet
                         if show_framerate:
@@ -192,6 +304,7 @@ class ScanScreen(BaseTopNavScreen):
                             display_frame = Image.new("RGB", (self.renderer.canvas_width, self.renderer.canvas_height), "black")
                             display_frame.paste(frame, (self.render_rect[0], self.render_rect[1]))
 
+                        show_progress_bar = progress_percentage > 0 and not scan_text
                         if self.show_status_overlay and scan_text:
                             # Note: shadowed text (adding a 'stroke' outline) can
                             # significantly slow down the rendering.
@@ -218,7 +331,7 @@ class ScanScreen(BaseTopNavScreen):
                                      font=instructions_font,
                                      anchor="ms")
 
-                        elif self.show_status_overlay:
+                        elif self.show_status_overlay or show_progress_bar:
                             # Render the progress bar
                             rectangle = Image.new('RGBA', (self.renderer.canvas_width - 2*GUIConstants.EDGE_PADDING, GUIConstants.BUTTON_HEIGHT), (0, 0, 0, 0))
                             draw = ImageDraw.Draw(rectangle)
@@ -359,6 +472,7 @@ class ScanScreen(BaseTopNavScreen):
         num_frames = 0
         start_time = time.time()
         input_thread = None
+        last_frame_counter = -1
         for thread in self.threads:
             if isinstance(thread, ScanScreen.HardwareInputThread):
                 input_thread = thread
@@ -388,6 +502,15 @@ class ScanScreen(BaseTopNavScreen):
                 elif self.top_nav and user_input == HardwareButtonsConstants.KEY_UP:
                     update_top_nav_selection(True)
 
+            frame_counter = self.camera.get_video_stream_frame_counter()
+            if frame_counter is None:
+                time.sleep(0.01)
+                continue
+            if frame_counter == last_frame_counter:
+                time.sleep(0.005)
+                continue
+            last_frame_counter = frame_counter
+
             frame = self.camera.read_video_stream()
             if frame is not None:
                 status = self.decoder.add_image(frame)
@@ -399,6 +522,10 @@ class ScanScreen(BaseTopNavScreen):
                 if status in (DecodeQRStatus.COMPLETE, DecodeQRStatus.INVALID):
                     self.camera.stop_video_stream_mode()
                     break
+
+                if self._maybe_escalate_scan_profile(status):
+                    last_frame_counter = -1
+                    continue
 
                 self.frames_decoded_counter.increment()
                 # Notify the live preview thread how our most recent decode went

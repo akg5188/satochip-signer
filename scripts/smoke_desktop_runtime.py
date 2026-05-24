@@ -6,7 +6,7 @@ import sys
 import types
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -291,6 +291,14 @@ def _test_main_startup_routes():
 
 
 def _decode_qr_image(image: Image.Image) -> str:
+    from seedsigner.models.decode_qr import DecodeQR, DecodeQRStatus
+
+    extracted = DecodeQR.extract_qr_data(image, is_binary=False)
+    if isinstance(extracted, bytes):
+        return extracted.decode("utf-8")
+    if extracted:
+        return str(extracted)
+
     import cv2
     import numpy as np
 
@@ -335,7 +343,7 @@ def _build_sample_psbt(input_count: int, output_count: int) -> "PSBT":
 
 
 def _assert_psbt_round_trip(encoder, expected_base64: str, *, qr_size: int = 320, max_frames: int | None = None):
-    from seedsigner.models.decode_qr import DecodeQR
+    from seedsigner.models.decode_qr import DecodeQR, DecodeQRStatus
 
     decoder = DecodeQR()
     frame_budget = max_frames if max_frames is not None else encoder.seq_len()
@@ -352,7 +360,10 @@ def _assert_psbt_round_trip(encoder, expected_base64: str, *, qr_size: int = 320
 
 
 def _test_qr_round_trip():
+    import qrcode
+
     from seedsigner.helpers.bbqr import decode_bbqr_data, parse_bbqr_header
+    from seedsigner.models.decode_qr import DecodeQR, DecodeQRStatus
     from seedsigner.models.encode_qr import (
         Base64PsbtQrEncoder,
         BbqrTextQrEncoder,
@@ -367,6 +378,55 @@ def _test_qr_round_trip():
     generic_encoder = GenericStringEncoder(tx_hex)
     generic_image = generic_encoder.part_to_image(generic_encoder.next_part(), 320, 320)
     assert _decode_qr_image(generic_image) == tx_hex
+
+    dense_payload = "UR:ETH-SIGN-REQUEST/" + ("ABCDEFGHIJKLMNOPQRSTUVWX0123456789" * 18)
+    dense_qr = qrcode.QRCode(
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        border=3,
+        box_size=2,
+    )
+    dense_qr.add_data(dense_payload)
+    dense_qr.make(fit=True)
+    dense_square = dense_qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    dense_square = dense_square.resize((160, 160), Image.Resampling.NEAREST)
+    assert DecodeQR.extract_qr_data(dense_square, is_binary=False, aggressive=False) == dense_payload
+    phone_frame = Image.new("RGB", (480, 480), "white")
+    phone_frame.paste(
+        dense_square.resize((132, 132), Image.Resampling.NEAREST),
+        ((phone_frame.width - 132) // 2, (phone_frame.height - 132) // 2),
+    )
+    assert DecodeQR.extract_qr_data(phone_frame, is_binary=False) == dense_payload
+    low_contrast_frame = ImageOps.colorize(
+        phone_frame.convert("L"),
+        black="#3c3c3c",
+        white="#dadada",
+    )
+    assert DecodeQR.extract_qr_data(low_contrast_frame, is_binary=False) == dense_payload
+    camera_like_source = dense_square.resize((320, 320), Image.Resampling.NEAREST)
+    camera_like_frame = Image.new("RGB", (480, 480), "white")
+    camera_like_frame.paste(
+        camera_like_source.resize((112, 112), Image.Resampling.BILINEAR),
+        ((camera_like_frame.width - 112) // 2, (camera_like_frame.height - 112) // 2),
+    )
+    assert DecodeQR.extract_qr_data(camera_like_frame, is_binary=False, aggressive=False) == dense_payload
+
+    try:
+        from qrcode.image.styledpil import StyledPilImage
+        from qrcode.image.styles.moduledrawers import CircleModuleDrawer
+    except Exception:
+        StyledPilImage = None
+        CircleModuleDrawer = None
+    if StyledPilImage is not None and CircleModuleDrawer is not None:
+        dense_circle = dense_qr.make_image(
+            image_factory=StyledPilImage,
+            module_drawer=CircleModuleDrawer(),
+            fill_color="black",
+            back_color="white",
+        ).convert("RGB")
+        dense_circle = dense_circle.resize((160, 160), Image.Resampling.NEAREST)
+        staged_decoder = DecodeQR()
+        assert staged_decoder.add_image(dense_circle) == DecodeQRStatus.COMPLETE
+        assert DecodeQR.extract_qr_data(dense_circle, is_binary=False) == dense_payload
 
     static_psbt = _build_sample_psbt(input_count=2, output_count=1)
     _assert_psbt_round_trip(

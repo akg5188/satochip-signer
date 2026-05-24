@@ -42,6 +42,8 @@ V4L2_PREFERRED_FORMATS = ("NV12", "UYVY", "XR24", "GREY")
 LUCKFOX_DEVICE_FALLBACKS = ("/dev/video12", "/dev/video11", "/dev/video13", "/dev/video14", "/dev/video15")
 MIN_LUCKFOX_CAPTURE_AREA = 320 * 240
 PICAMERA2_PREVIEW_RESOLUTION = (240, 240)
+PICAMERA2_SCAN_LOCK_DELAY_SECONDS = 0.30
+PICAMERA_SCAN_LOCK_DELAY_SECONDS = 0.25
 
 
 class VideoStream:
@@ -56,6 +58,7 @@ class VideoStream:
         camera_config=None,
         prefer_v4l2=False,
         prefer_greyscale=False,
+        scan_mode=False,
         **kwargs,
     ):
         self.should_stop = False
@@ -63,6 +66,7 @@ class VideoStream:
         self.frame = None
         self.display_frame = None
         self.preview_frame = None
+        self.frame_counter = 0
         self.device_index = int(device_index)
         self.resolution = resolution
         self.framerate = framerate
@@ -82,6 +86,7 @@ class VideoStream:
         self._camera_config = camera_config or {}
         self._prefer_v4l2 = bool(prefer_v4l2)
         self._prefer_greyscale = bool(prefer_greyscale)
+        self._scan_mode = bool(scan_mode or self._camera_config.get("scan_mode"))
         self._picamera2_has_lores = False
         self._picamera2_main_is_yuv420 = False
         self._picamera_output_is_yuv = False
@@ -114,6 +119,8 @@ class VideoStream:
                     raise
             self.camera.configure(config)
             self.camera.start()
+            if self._scan_mode:
+                self._apply_picamera2_scan_controls()
             self.use_picamera2 = True
             return
 
@@ -148,6 +155,76 @@ class VideoStream:
             )
 
         self.camera = self._open_cv_capture()
+
+    def _store_frame(self, frame, display_frame=None, preview_frame=None):
+        self.frame = frame
+        self.display_frame = frame if display_frame is None else display_frame
+        self.preview_frame = preview_frame
+        self.frame_counter += 1
+
+    def _apply_picamera2_scan_controls(self):
+        if not self._scan_mode or self.camera is None:
+            return
+        time.sleep(PICAMERA2_SCAN_LOCK_DELAY_SECONDS)
+        controls = {"AeEnable": False, "AwbEnable": False}
+        try:
+            metadata = self.camera.capture_metadata()
+        except Exception:
+            metadata = {}
+        if isinstance(metadata, dict):
+            exposure_time = metadata.get("ExposureTime")
+            analogue_gain = metadata.get("AnalogueGain")
+            colour_gains = metadata.get("ColourGains")
+            if exposure_time is not None:
+                controls["ExposureTime"] = exposure_time
+            if analogue_gain is not None:
+                controls["AnalogueGain"] = analogue_gain
+            if colour_gains is not None:
+                controls["ColourGains"] = colour_gains
+        for controls_item in (
+            controls,
+            {"AeEnable": False},
+            {"AwbEnable": False},
+        ):
+            try:
+                self.camera.set_controls(controls_item)
+            except Exception:
+                pass
+
+    def _apply_picamera_scan_controls(self):
+        if not self._scan_mode or self.camera is None:
+            return
+        time.sleep(PICAMERA_SCAN_LOCK_DELAY_SECONDS)
+        try:
+            exposure_speed = self.camera.exposure_speed
+        except Exception:
+            exposure_speed = None
+        try:
+            awb_gains = self.camera.awb_gains
+        except Exception:
+            awb_gains = None
+        try:
+            if exposure_speed is not None and exposure_speed > 0:
+                self.camera.shutter_speed = exposure_speed
+            self.camera.exposure_mode = "off"
+        except Exception:
+            pass
+        try:
+            self.camera.awb_mode = "off"
+        except Exception:
+            pass
+        if awb_gains is not None:
+            try:
+                self.camera.awb_gains = awb_gains
+            except Exception:
+                pass
+
+    def _apply_scan_controls(self):
+        if self._scan_mode:
+            if self.use_picamera2:
+                self._apply_picamera2_scan_controls()
+            elif self.use_picamera:
+                self._apply_picamera_scan_controls()
 
     def _is_v4l2_available(self) -> bool:
         try:
@@ -624,7 +701,7 @@ class VideoStream:
             for _ in range(20):
                 frame = self._read_v4l2_frame(timeout_s=0.5)
                 if frame is not None:
-                    self.frame = frame
+                    self._store_frame(frame, display_frame=frame, preview_frame=frame)
                     break
             if self.frame is None:
                 self._terminate_v4l2_process()
@@ -643,6 +720,8 @@ class VideoStream:
                 self.camera.release()
                 self.camera = None
                 raise Exception("Unable to read frames from camera device")
+        if self.use_picamera:
+            self._apply_picamera_scan_controls()
 
         t = Thread(target=self.update, args=())
         t.daemon = True
@@ -668,18 +747,22 @@ class VideoStream:
                             arrays = captured[0]
                         if isinstance(arrays, (list, tuple)) and len(arrays) >= 2:
                             grey_frame = self._picamera2_main_to_greyscale(arrays[0])
-                            self.display_frame = grey_frame if self._prefer_greyscale else arrays[0]
-                            self.frame = grey_frame
-                            self.preview_frame = self._picamera2_lores_to_image(arrays[1])
+                            self._store_frame(
+                                grey_frame,
+                                display_frame=grey_frame if self._prefer_greyscale else arrays[0],
+                                preview_frame=self._picamera2_lores_to_image(arrays[1]),
+                            )
                             continue
                     except Exception:
                         self._picamera2_has_lores = False
                         logger.exception("Picamera2 lores capture failed; falling back to main stream only")
                 captured = self.camera.capture_array()
                 grey_frame = self._picamera2_main_to_greyscale(captured)
-                self.display_frame = grey_frame if self._prefer_greyscale else captured
-                self.frame = grey_frame
-                self.preview_frame = None
+                self._store_frame(
+                    grey_frame,
+                    display_frame=grey_frame if self._prefer_greyscale else captured,
+                    preview_frame=None,
+                )
             self.camera.stop()
             self.camera.close()
             self.should_stop = False
@@ -690,12 +773,9 @@ class VideoStream:
             for f in self.stream:
                 if self._picamera_output_is_yuv:
                     luminance = self._extract_y_plane(f.array, *self.resolution)
-                    self.frame = luminance
-                    self.display_frame = luminance
+                    self._store_frame(luminance, display_frame=luminance, preview_frame=None)
                 else:
-                    self.frame = f.array
-                    self.display_frame = f.array
-                self.preview_frame = None
+                    self._store_frame(f.array, display_frame=f.array, preview_frame=None)
                 self.raw_capture.truncate(0)
                 if self.should_stop:
                     self.stream.close()
@@ -710,7 +790,7 @@ class VideoStream:
             while not self.should_stop:
                 frame = self._read_v4l2_frame(timeout_s=0.5)
                 if frame is not None:
-                    self.frame = frame
+                    self._store_frame(frame, display_frame=frame, preview_frame=frame)
                 else:
                     time.sleep(0.01)
             self._terminate_v4l2_process()
@@ -720,7 +800,11 @@ class VideoStream:
         while not self.should_stop:
             ret, frame = self.camera.read()
             if ret:
-                self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                self._store_frame(
+                    cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                    display_frame=None,
+                    preview_frame=None,
+                )
             else:
                 time.sleep(0.01)
 

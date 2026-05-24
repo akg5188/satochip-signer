@@ -116,6 +116,7 @@ class Camera(Singleton):
         format="bgr",
         use_board_settings=True,
         prefer_greyscale=False,
+        scan_mode=False,
     ):
         """Begin streaming frames from the active backend."""
         from seedsigner.hardware.pivideostream import VideoStream
@@ -141,6 +142,8 @@ class Camera(Singleton):
             stream_camera_config.pop("framerate", None)
         if prefer_v4l2:
             stream_camera_config["resolution"] = tuple(stream_resolution)
+        if scan_mode:
+            stream_camera_config["scan_mode"] = True
 
         self._video_stream = VideoStream(
             resolution=stream_resolution,
@@ -150,6 +153,7 @@ class Camera(Singleton):
             camera_config=stream_camera_config,
             prefer_v4l2=prefer_v4l2,
             prefer_greyscale=prefer_greyscale,
+            scan_mode=scan_mode,
         )
         self._video_stream.start()
 
@@ -201,6 +205,12 @@ class Camera(Singleton):
                 image = ImageOps.autocontrast(image, cutoff=2)
             return image.rotate(90 + self._camera_rotation)
         return None
+
+    def get_video_stream_frame_counter(self) -> int | None:
+        """Return the current frame sequence number for stream mode."""
+        if self._video_stream is None:
+            return None
+        return getattr(self._video_stream, "frame_counter", None)
 
     def stop_video_stream_mode(self):
         """Stop stream mode and release stream resources."""

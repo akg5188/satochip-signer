@@ -3,15 +3,37 @@ import json
 import logging
 import re
 from datetime import datetime
+from pathlib import Path
 
 from binascii import a2b_base64, b2a_base64
 from enum import IntEnum
+from PIL import Image, ImageFilter, ImageOps
 from embit import psbt, bip39, ec, bip32
-from pyzbar import pyzbar
-from pyzbar.pyzbar import ZBarSymbol
 from urtypes.crypto import PSBT as UR_PSBT
 from urtypes.crypto import Account, Output
 from urtypes.bytes import Bytes
+
+try:
+    from pyzbar import pyzbar
+    from pyzbar.pyzbar import ZBarSymbol
+except Exception:  # pragma: no cover - optional dependency in desktop smoke envs
+    pyzbar = None
+    ZBarSymbol = None
+
+try:
+    import cv2  # type: ignore
+except Exception:  # pragma: no cover - optional dependency in some smoke envs
+    cv2 = None
+
+try:
+    import numpy as np  # type: ignore
+except Exception:  # pragma: no cover - optional dependency in some smoke envs
+    np = None
+
+try:
+    import zxingcpp  # type: ignore
+except Exception:  # pragma: no cover - optional dependency in some firmware builds
+    zxingcpp = None
 
 from seedsigner.helpers.bbqr import decode_bbqr_data, parse_bbqr_header
 from seedsigner.helpers.ur2.ur_decoder import URDecoder
@@ -21,6 +43,29 @@ from seedsigner.models.aezeed import has_valid_checksum as aezeed_has_valid_chec
 from seedsigner.models.settings import SettingsConstants
 
 logger = logging.getLogger(__name__)
+
+FAST_QR_FALLBACK_INTERVAL = 4
+MULTIPART_QR_FALLBACK_INTERVAL = 3
+DENSE_QR_FALLBACK_INTERVAL = 2
+FAST_QR_INITIAL_AGGRESSIVE_TRIES = 1
+FAST_CENTER_CROP_RATIOS = (0.58, 0.46, 0.40, 0.24)
+CENTER_CROP_RATIOS = (0.86, 0.72, 0.58, 0.46, 0.40, 0.36, 0.30, 0.26, 0.24, 0.20)
+OPENCV_QR_MAX_CANDIDATES = 16
+OPENCV_QR_MAX_SIZE = 960
+OPENCV_QR_ROI_MAX_REGIONS = 3
+OPENCV_QR_ROI_MIN_SIZE = 384
+OPENCV_QR_ROI_MAX_SIZE = 960
+OPENCV_QR_ROI_BORDER = 24
+QR_ROI_HINT_MARGIN_RATIO = 0.22
+QR_ROI_HINT_MAX_MISSES = 5
+WECHAT_QR_FALLBACK_INTERVAL = 4
+WECHAT_QR_MODEL_DIR = Path(__file__).resolve().parent.parent / "resources" / "wechat_qrcode"
+WECHAT_QR_MODEL_FILES = (
+    "detect.prototxt",
+    "detect.caffemodel",
+    "sr.prototxt",
+    "sr.caffemodel",
+)
 
 
 
@@ -52,13 +97,47 @@ class DecodeQR:
         self.is_encryptionkey = is_encryptionkey
         self.is_text = is_text
         self.is_nonUTF8 = False
+        self._scan_attempt_count = 0
+        self._dense_scan_mode = False
+        self._qr_roi_hint = None
+        self._qr_roi_misses = 0
+
+
+    def set_dense_scan_mode(self, enabled: bool):
+        self._dense_scan_mode = bool(enabled)
 
 
     def add_image(self, image):
-        data = DecodeQR.extract_qr_data(image, is_binary=True)
-        if data == None:
+        self._scan_attempt_count += 1
+        data, roi_hint = DecodeQR.extract_qr_data_with_hint(
+            image,
+            is_binary=True,
+            aggressive=False,
+            include_fast_candidates=self._qr_roi_hint is None,
+            dense_scan_mode=self._dense_scan_mode,
+            roi_hint=self._qr_roi_hint,
+        )
+        if data is None and self._should_run_aggressive_fallback():
+            data, roi_hint = DecodeQR.extract_qr_data_with_hint(
+                image,
+                is_binary=True,
+                aggressive=True,
+                include_fast_candidates=False,
+                include_wechat=self._should_run_wechat_fallback(),
+                dense_scan_mode=self._dense_scan_mode,
+                roi_hint=self._qr_roi_hint,
+            )
+        if roi_hint is not None:
+            self._qr_roi_hint = roi_hint
+        if data is None:
+            if self._qr_roi_hint is not None:
+                self._qr_roi_misses += 1
+                if self._qr_roi_misses >= QR_ROI_HINT_MAX_MISSES:
+                    self._qr_roi_hint = None
+                    self._qr_roi_misses = 0
             return DecodeQRStatus.FALSE
 
+        self._qr_roi_misses = 0
         return self.add_data(data)
 
 
@@ -187,6 +266,28 @@ class DecodeQR:
             if rt == DecodeQRStatus.COMPLETE:
                 self.complete = True
             return rt
+
+
+    def _should_run_aggressive_fallback(self) -> bool:
+        if self._scan_attempt_count <= FAST_QR_INITIAL_AGGRESSIVE_TRIES:
+            return True
+
+        if self._dense_scan_mode:
+            interval = DENSE_QR_FALLBACK_INTERVAL
+        elif self.qr_type in [QRType.PSBT__UR2, QRType.OUTPUT__UR, QRType.ACCOUNT__UR, QRType.BYTES__UR]:
+            interval = MULTIPART_QR_FALLBACK_INTERVAL
+        elif self.qr_type in [QRType.PSBT__SPECTER, QRType.PSBT__BBQR]:
+            interval = FAST_QR_FALLBACK_INTERVAL
+        else:
+            interval = FAST_QR_FALLBACK_INTERVAL
+
+        return self._scan_attempt_count % interval == 0
+
+
+    def _should_run_wechat_fallback(self) -> bool:
+        if self._scan_attempt_count <= FAST_QR_INITIAL_AGGRESSIVE_TRIES:
+            return True
+        return self._scan_attempt_count % WECHAT_QR_FALLBACK_INTERVAL == 0
 
 
     # TODO: Refactor all of these specific `get_` to just something generic like
@@ -431,15 +532,699 @@ class DecodeQR:
 
 
     @staticmethod
-    def extract_qr_data(image, is_binary:bool = False) -> str | None:
+    def _image_to_pil(image):
         if image is None:
             return None
+        if isinstance(image, Image.Image):
+            return image
+        if np is None:
+            return None
+        try:
+            array = np.asarray(image, dtype="uint8")
+        except Exception:
+            return None
 
-        barcodes = pyzbar.decode(image, symbols=[ZBarSymbol.QRCODE], binary=is_binary)
+        try:
+            if getattr(array, "ndim", 0) == 2:
+                return Image.fromarray(array, "L")
+            if getattr(array, "ndim", 0) == 3:
+                if array.shape[2] == 4:
+                    return Image.fromarray(array[:, :, :4], "RGBA").convert("RGB")
+                return Image.fromarray(array[:, :, :3], "RGB")
+        except Exception:
+            return None
+        return None
 
-        for barcode in barcodes:
-            # Only pull and return the first barcode
-            return barcode.data
+
+    @staticmethod
+    def _otsu_threshold(gray_image):
+        try:
+            histogram = gray_image.histogram()
+        except Exception:
+            return None
+
+        total = sum(histogram)
+        if total <= 0:
+            return None
+
+        sum_all = sum(level * count for level, count in enumerate(histogram))
+        sum_background = 0
+        weight_background = 0
+        max_variance = -1
+        threshold = 160
+
+        for level, count in enumerate(histogram):
+            weight_background += count
+            if weight_background == 0:
+                continue
+            weight_foreground = total - weight_background
+            if weight_foreground == 0:
+                break
+
+            sum_background += level * count
+            mean_background = sum_background / weight_background
+            mean_foreground = (sum_all - sum_background) / weight_foreground
+            variance = weight_background * weight_foreground * (mean_background - mean_foreground) ** 2
+            if variance > max_variance:
+                max_variance = variance
+                threshold = level
+
+        return max(96, min(208, threshold))
+
+
+    @staticmethod
+    def _threshold_candidate(gray_image, threshold):
+        return gray_image.point(lambda value: 255 if value > threshold else 0, mode="L")
+
+
+    @staticmethod
+    def _iter_qr_point_sets(points):
+        if points is None or np is None:
+            return tuple()
+        try:
+            point_array = np.asarray(points, dtype="float32")
+            if point_array.size < 8:
+                return tuple()
+            return tuple(point_array.reshape((-1, 4, 2)))
+        except Exception:
+            return tuple()
+
+
+    @staticmethod
+    def _order_qr_points(points):
+        if np is None:
+            return None
+        try:
+            pts = np.asarray(points, dtype="float32").reshape((4, 2))
+            rect = np.zeros((4, 2), dtype="float32")
+            sums = pts.sum(axis=1)
+            rect[0] = pts[np.argmin(sums)]
+            rect[2] = pts[np.argmax(sums)]
+            diffs = np.diff(pts, axis=1).reshape((4,))
+            rect[1] = pts[np.argmin(diffs)]
+            rect[3] = pts[np.argmax(diffs)]
+            if not np.isfinite(rect).all():
+                return None
+            return rect
+        except Exception:
+            return None
+
+
+    @staticmethod
+    def _rectified_qr_region_candidates(gray_image, points):
+        if cv2 is None or np is None:
+            return tuple()
+
+        rect = DecodeQR._order_qr_points(points)
+        if rect is None:
+            return tuple()
+
+        try:
+            width_a = np.linalg.norm(rect[2] - rect[3])
+            width_b = np.linalg.norm(rect[1] - rect[0])
+            height_a = np.linalg.norm(rect[1] - rect[2])
+            height_b = np.linalg.norm(rect[0] - rect[3])
+            qr_edge = max(width_a, width_b, height_a, height_b)
+            if qr_edge < 32:
+                return tuple()
+
+            target_size = int(max(
+                OPENCV_QR_ROI_MIN_SIZE,
+                min(OPENCV_QR_ROI_MAX_SIZE, qr_edge * 2),
+            ))
+            destination = np.array(
+                [
+                    [0, 0],
+                    [target_size - 1, 0],
+                    [target_size - 1, target_size - 1],
+                    [0, target_size - 1],
+                ],
+                dtype="float32",
+            )
+            matrix = cv2.getPerspectiveTransform(rect, destination)
+            source = np.asarray(gray_image, dtype="uint8")
+            warped = cv2.warpPerspective(
+                source,
+                matrix,
+                (target_size, target_size),
+                flags=cv2.INTER_CUBIC,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=255,
+            )
+            rectified = Image.fromarray(warped, "L")
+        except Exception:
+            return tuple()
+
+        candidates = [rectified]
+        try:
+            candidates.append(ImageOps.expand(rectified, border=OPENCV_QR_ROI_BORDER, fill=255))
+        except Exception:
+            pass
+        try:
+            candidates.append(ImageOps.autocontrast(rectified, cutoff=2))
+        except Exception:
+            pass
+        try:
+            candidates.append(rectified.filter(ImageFilter.SHARPEN))
+        except Exception:
+            pass
+        try:
+            threshold = DecodeQR._otsu_threshold(rectified)
+            if threshold is not None:
+                thresholded = DecodeQR._threshold_candidate(rectified, threshold)
+                candidates.append(thresholded)
+                candidates.append(ImageOps.expand(thresholded, border=OPENCV_QR_ROI_BORDER, fill=255))
+        except Exception:
+            pass
+        return tuple(candidates)
+
+
+    @staticmethod
+    def _roi_hint_from_points(points, width: int, height: int):
+        rect = DecodeQR._order_qr_points(points)
+        if rect is None:
+            return None
+        try:
+            left = max(0, float(np.min(rect[:, 0])))
+            top = max(0, float(np.min(rect[:, 1])))
+            right = min(float(width), float(np.max(rect[:, 0])))
+            bottom = min(float(height), float(np.max(rect[:, 1])))
+            if right - left < 32 or bottom - top < 32:
+                return None
+            margin = max(right - left, bottom - top) * QR_ROI_HINT_MARGIN_RATIO
+            return (
+                max(0, int(left - margin)),
+                max(0, int(top - margin)),
+                min(width, int(right + margin)),
+                min(height, int(bottom + margin)),
+            )
+        except Exception:
+            return None
+
+
+    @staticmethod
+    def _add_roi_hint_candidates(candidates, gray_image, roi_hint):
+        if not roi_hint:
+            return
+
+        try:
+            left, top, right, bottom = [int(value) for value in roi_hint]
+        except Exception:
+            return
+
+        left = max(0, min(left, gray_image.width - 1))
+        top = max(0, min(top, gray_image.height - 1))
+        right = max(left + 1, min(right, gray_image.width))
+        bottom = max(top + 1, min(bottom, gray_image.height))
+        if right - left < 48 or bottom - top < 48:
+            return
+
+        try:
+            crop = gray_image.crop((left, top, right, bottom))
+            target_size = max(
+                OPENCV_QR_ROI_MIN_SIZE,
+                min(OPENCV_QR_ROI_MAX_SIZE, max(crop.size) * 2),
+            )
+            roi = ImageOps.pad(
+                crop,
+                (target_size, target_size),
+                method=Image.Resampling.BILINEAR,
+                color=255,
+            )
+            candidates.append(roi)
+            candidates.append(ImageOps.expand(roi, border=OPENCV_QR_ROI_BORDER, fill=255))
+            candidates.append(ImageOps.autocontrast(roi, cutoff=2))
+            candidates.append(roi.filter(ImageFilter.SHARPEN))
+            threshold = DecodeQR._otsu_threshold(roi)
+            if threshold is not None:
+                candidates.append(DecodeQR._threshold_candidate(roi, threshold))
+        except Exception:
+            pass
+
+
+    @staticmethod
+    def _add_opencv_rectified_candidates(candidates, gray_image):
+        if cv2 is None or np is None:
+            return None
+
+        detector = DecodeQR._get_opencv_qr_detector()
+        if detector is None:
+            return None
+
+        try:
+            image_array = np.asarray(gray_image, dtype="uint8")
+        except Exception:
+            return None
+
+        point_sets = []
+        try:
+            detected, points = detector.detect(image_array)
+            if detected:
+                point_sets.extend(DecodeQR._iter_qr_point_sets(points))
+        except Exception:
+            pass
+
+        if hasattr(detector, "detectMulti"):
+            try:
+                detected, points = detector.detectMulti(image_array)
+                if detected:
+                    point_sets.extend(DecodeQR._iter_qr_point_sets(points))
+            except Exception:
+                pass
+
+        seen = set()
+        regions_added = 0
+        roi_hint = None
+        for point_set in point_sets:
+            rect = DecodeQR._order_qr_points(point_set)
+            if rect is None:
+                continue
+            key = tuple(int(round(value / 4.0)) for value in rect.reshape((8,)))
+            if key in seen:
+                continue
+            seen.add(key)
+            region_candidates = DecodeQR._rectified_qr_region_candidates(gray_image, rect)
+            if not region_candidates:
+                continue
+            candidates.extend(region_candidates)
+            if roi_hint is None:
+                roi_hint = DecodeQR._roi_hint_from_points(rect, gray_image.width, gray_image.height)
+            regions_added += 1
+            if regions_added >= OPENCV_QR_ROI_MAX_REGIONS:
+                break
+        return roi_hint
+
+
+    @staticmethod
+    def _add_center_crop_candidates(candidates, gray_image, ratios, heavy: bool = False):
+        min_dim = min(gray_image.width, gray_image.height)
+        for crop_ratio in ratios:
+            crop_size = int(min_dim * crop_ratio)
+            if crop_size < 96 or crop_size >= min_dim - 8:
+                continue
+            left = max(0, (gray_image.width - crop_size) // 2)
+            top = max(0, (gray_image.height - crop_size) // 2)
+            try:
+                center_crop = gray_image.crop((left, top, left + crop_size, top + crop_size))
+                target_size = (min_dim, min_dim)
+                centered = center_crop.resize(target_size, Image.Resampling.NEAREST)
+                candidates.append(centered)
+                candidates.append(ImageOps.autocontrast(centered, cutoff=2))
+                candidates.append(centered.filter(ImageFilter.SHARPEN))
+                if crop_ratio <= 0.30:
+                    smoothed = center_crop.resize(target_size, Image.Resampling.BILINEAR)
+                    candidates.append(smoothed)
+                    candidates.append(smoothed.filter(ImageFilter.SHARPEN))
+                    padded = ImageOps.expand(centered, border=16, fill=255)
+                    candidates.append(padded)
+                    candidates.append(padded.filter(ImageFilter.SHARPEN))
+                if heavy:
+                    candidates.append(centered.filter(ImageFilter.MinFilter(3)))
+                    if crop_ratio <= 0.22:
+                        candidates.append(center_crop.resize(
+                            (target_size[0] * 2, target_size[1] * 2),
+                            Image.Resampling.BILINEAR,
+                        ))
+                    centered_threshold = DecodeQR._otsu_threshold(centered)
+                    if centered_threshold is not None:
+                        candidates.append(DecodeQR._threshold_candidate(centered, centered_threshold))
+            except Exception:
+                pass
+
+
+    @staticmethod
+    def _qr_candidate_images(
+        image,
+        aggressive: bool = True,
+        include_fast_candidates: bool = True,
+        roi_hint=None,
+        dense_scan_mode: bool = False,
+    ):
+        pil_image = DecodeQR._image_to_pil(image)
+        if pil_image is None:
+            return tuple(), None
+
+        candidates = [pil_image]
+        gray_image = pil_image if pil_image.mode == "L" else pil_image.convert("L")
+        if gray_image is not pil_image:
+            candidates.append(gray_image)
+
+        DecodeQR._add_roi_hint_candidates(candidates, gray_image, roi_hint)
+        try:
+            if roi_hint is None or not dense_scan_mode:
+                candidates.append(ImageOps.autocontrast(gray_image, cutoff=2))
+        except Exception:
+            pass
+        new_roi_hint = None
+
+        if include_fast_candidates and roi_hint is None:
+            DecodeQR._add_center_crop_candidates(
+                candidates,
+                gray_image,
+                FAST_CENTER_CROP_RATIOS,
+                heavy=False,
+            )
+
+        if aggressive:
+            new_roi_hint = DecodeQR._add_opencv_rectified_candidates(candidates, gray_image)
+
+            if not (dense_scan_mode and roi_hint is not None):
+                quiet_border = max(8, min(32, min(gray_image.width, gray_image.height) // 16))
+                try:
+                    candidates.append(ImageOps.expand(gray_image, border=quiet_border, fill=255))
+                except Exception:
+                    pass
+
+                try:
+                    candidates.append(DecodeQR._threshold_candidate(gray_image, 160))
+                except Exception:
+                    pass
+
+                try:
+                    otsu_threshold = DecodeQR._otsu_threshold(gray_image)
+                    if otsu_threshold is not None:
+                        candidates.append(DecodeQR._threshold_candidate(gray_image, otsu_threshold))
+                except Exception:
+                    pass
+
+                try:
+                    candidates.append(gray_image.filter(ImageFilter.SHARPEN))
+                except Exception:
+                    pass
+
+                try:
+                    dilated = gray_image.filter(ImageFilter.MinFilter(3))
+                    candidates.append(dilated)
+                    candidates.append(ImageOps.autocontrast(dilated, cutoff=2))
+                except Exception:
+                    pass
+
+                if roi_hint is None:
+                    DecodeQR._add_center_crop_candidates(
+                        candidates,
+                        gray_image,
+                        CENTER_CROP_RATIOS,
+                        heavy=True,
+                    )
+
+                    min_dim = min(gray_image.width, gray_image.height)
+                    if min_dim <= 720:
+                        scales = (2,) if min_dim > 360 else (2, 3)
+                        for scale in scales:
+                            enlarged = gray_image.resize(
+                                (max(1, gray_image.width * scale), max(1, gray_image.height * scale)),
+                                Image.Resampling.NEAREST,
+                            )
+                            candidates.append(enlarged)
+                            try:
+                                candidates.append(ImageOps.autocontrast(enlarged, cutoff=2))
+                            except Exception:
+                                pass
+
+        return tuple(candidates), new_roi_hint
+
+
+    @staticmethod
+    def _decode_qr_with_pyzbar(candidates, is_binary: bool):
+        if pyzbar is None or ZBarSymbol is None:
+            return None
+
+        for candidate in candidates:
+            try:
+                barcodes = pyzbar.decode(candidate, symbols=[ZBarSymbol.QRCODE], binary=is_binary)
+            except Exception:
+                continue
+            for barcode in barcodes:
+                return barcode.data
+        return None
+
+
+    @staticmethod
+    def _decode_qr_with_zxingcpp(candidates, is_binary: bool):
+        if zxingcpp is None:
+            return None
+
+        try:
+            qr_format = zxingcpp.BarcodeFormat.QRCode
+        except Exception:
+            qr_format = None
+
+        try:
+            local_average = zxingcpp.Binarizer.LocalAverage
+        except Exception:
+            local_average = None
+
+        try:
+            fixed_threshold = zxingcpp.Binarizer.FixedThreshold
+        except Exception:
+            fixed_threshold = None
+
+        for candidate in candidates:
+            option_sets = (
+                {
+                    "formats": qr_format,
+                    "try_rotate": False,
+                    "try_downscale": False,
+                    "binarizer": local_average,
+                    "is_pure": False,
+                },
+                {
+                    "formats": qr_format,
+                    "try_rotate": False,
+                    "try_downscale": False,
+                    "binarizer": fixed_threshold,
+                    "is_pure": True,
+                },
+                {"formats": qr_format},
+            )
+            barcodes = []
+            for options in option_sets:
+                try:
+                    kwargs = {key: value for key, value in options.items() if value is not None}
+                    if qr_format is None:
+                        kwargs.pop("formats", None)
+                    barcodes = zxingcpp.read_barcodes(candidate, **kwargs)
+                except TypeError:
+                    try:
+                        if qr_format is None:
+                            barcodes = zxingcpp.read_barcodes(candidate)
+                        else:
+                            barcodes = zxingcpp.read_barcodes(candidate, formats=qr_format)
+                    except Exception:
+                        barcodes = []
+                except Exception:
+                    barcodes = []
+                if barcodes:
+                    break
+            for barcode in barcodes:
+                if is_binary:
+                    raw = getattr(barcode, "bytes", None)
+                    if raw is not None:
+                        return bytes(raw)
+                    text = getattr(barcode, "text", "")
+                    if text:
+                        return text.encode("utf-8")
+                    continue
+
+                text = getattr(barcode, "text", "")
+                if text:
+                    return text
+                raw = getattr(barcode, "bytes", None)
+                if raw:
+                    try:
+                        return bytes(raw).decode("utf-8")
+                    except Exception:
+                        return bytes(raw).decode("utf-8", errors="ignore")
+        return None
+
+
+    @staticmethod
+    def _get_wechat_qr_detector():
+        if cv2 is None:
+            return None
+
+        detector = getattr(DecodeQR, "_wechat_qr_detector", None)
+        if detector is not None:
+            return detector
+
+        wechat_module = getattr(cv2, "wechat_qrcode", None)
+        detector_factory = getattr(wechat_module, "WeChatQRCode", None) if wechat_module else None
+        if detector_factory is None:
+            detector_factory = getattr(cv2, "wechat_qrcode_WeChatQRCode", None)
+        if detector_factory is None:
+            return None
+
+        model_paths = [WECHAT_QR_MODEL_DIR / filename for filename in WECHAT_QR_MODEL_FILES]
+        model_args = [str(path) for path in model_paths if path.exists()]
+        try:
+            detector = detector_factory(*model_args) if len(model_args) == len(model_paths) else detector_factory()
+        except Exception:
+            try:
+                detector = detector_factory()
+            except Exception:
+                return None
+
+        DecodeQR._wechat_qr_detector = detector
+        return detector
+
+
+    @staticmethod
+    def _decode_qr_with_wechat(candidates, is_binary: bool):
+        if cv2 is None or np is None:
+            return None
+
+        detector = DecodeQR._get_wechat_qr_detector()
+        if detector is None:
+            return None
+
+        for candidate in candidates:
+            try:
+                if max(candidate.size) > OPENCV_QR_MAX_SIZE:
+                    continue
+                image_array = np.asarray(candidate.convert("RGB"), dtype="uint8")
+                decoded = detector.detectAndDecode(image_array)
+            except Exception:
+                continue
+
+            texts = None
+            if isinstance(decoded, tuple):
+                texts = decoded[0]
+            else:
+                texts = decoded
+            if isinstance(texts, str):
+                texts = (texts,)
+
+            try:
+                iterator = iter(texts)
+            except Exception:
+                continue
+
+            for data in iterator:
+                if data:
+                    return data.encode("utf-8") if is_binary else data
+        return None
+
+
+    @staticmethod
+    def _decode_qr_with_opencv(candidates, is_binary: bool):
+        if cv2 is None or np is None:
+            return None
+
+        detector = DecodeQR._get_opencv_qr_detector()
+        if detector is None:
+            return None
+
+        for candidate in candidates:
+            try:
+                gray_candidate = candidate if candidate.mode == "L" else candidate.convert("L")
+                candidate_array = np.asarray(gray_candidate, dtype="uint8")
+                if hasattr(detector, "detectAndDecodeMulti"):
+                    detected, decoded_info, _points, _straight = detector.detectAndDecodeMulti(candidate_array)
+                    if detected:
+                        for data in decoded_info:
+                            if data:
+                                return data.encode("utf-8") if is_binary else data
+                data, _points, _straight = detector.detectAndDecode(candidate_array)
+                if not data and hasattr(detector, "detectAndDecodeCurved"):
+                    data, _points, _straight = detector.detectAndDecodeCurved(candidate_array)
+                if data:
+                    return data.encode("utf-8") if is_binary else data
+            except Exception:
+                continue
+        return None
+
+
+    @staticmethod
+    def _get_opencv_qr_detector():
+        if cv2 is None:
+            return None
+
+        detector = getattr(DecodeQR, "_opencv_qr_detector", None)
+        if detector is None:
+            try:
+                detector = cv2.QRCodeDetector()
+            except Exception:
+                return None
+            for setter_name, value in (("setEpsX", 0.2), ("setEpsY", 0.2)):
+                try:
+                    setter = getattr(detector, setter_name, None)
+                    if setter is not None:
+                        setter(value)
+                except Exception:
+                    pass
+            DecodeQR._opencv_qr_detector = detector
+        return detector
+
+
+    @staticmethod
+    def extract_qr_data(
+        image,
+        is_binary: bool = False,
+        aggressive: bool = True,
+        include_fast_candidates: bool = True,
+        include_wechat: bool = True,
+        roi_hint=None,
+        dense_scan_mode: bool = False,
+    ) -> bytes | str | None:
+        data, _roi_hint = DecodeQR.extract_qr_data_with_hint(
+            image,
+            is_binary=is_binary,
+            aggressive=aggressive,
+            include_fast_candidates=include_fast_candidates,
+            include_wechat=include_wechat,
+            roi_hint=roi_hint,
+            dense_scan_mode=dense_scan_mode,
+        )
+        return data
+
+
+    @staticmethod
+    def extract_qr_data_with_hint(
+        image,
+        is_binary: bool = False,
+        aggressive: bool = True,
+        include_fast_candidates: bool = True,
+        include_wechat: bool = True,
+        roi_hint=None,
+        dense_scan_mode: bool = False,
+    ):
+        if image is None:
+            return None, None
+
+        candidates, new_roi_hint = DecodeQR._qr_candidate_images(
+            image,
+            aggressive=aggressive,
+            include_fast_candidates=include_fast_candidates,
+            roi_hint=roi_hint,
+            dense_scan_mode=dense_scan_mode,
+        )
+        if not candidates:
+            return None, new_roi_hint
+
+        decoder_order = [
+            DecodeQR._decode_qr_with_zxingcpp,
+            DecodeQR._decode_qr_with_pyzbar,
+        ]
+        if aggressive:
+            if include_wechat:
+                decoder_order.append(DecodeQR._decode_qr_with_wechat)
+            decoder_order.append(DecodeQR._decode_qr_with_opencv)
+
+        for decoder in decoder_order:
+            decoder_candidates = candidates
+            if decoder in (DecodeQR._decode_qr_with_wechat, DecodeQR._decode_qr_with_opencv):
+                decoder_candidates = tuple(
+                    candidate
+                    for candidate in candidates[:OPENCV_QR_MAX_CANDIDATES]
+                    if max(candidate.size) <= OPENCV_QR_MAX_SIZE
+                )
+                if not decoder_candidates:
+                    continue
+            data = decoder(decoder_candidates, is_binary=is_binary)
+            if data is not None:
+                return data, new_roi_hint
+
+        return None, new_roi_hint
 
 
     @staticmethod

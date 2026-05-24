@@ -28,7 +28,7 @@ apt-get install -y \
   openjdk-17-jre-headless \
   pcscd pcsc-tools libpcsclite1 \
   python3 python3-pil python3-numpy python3-gpiozero python3-spidev \
-  python3-picamera2 python3-pyzbar libzbar0
+  python3-picamera2 python3-pyzbar python3-opencv libzbar0
 
 systemctl enable --now pcscd
 

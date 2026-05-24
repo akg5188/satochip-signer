@@ -44,6 +44,8 @@ UR:ETH-SIGNATURE/...
 
 这不会改掉协议内容。UR 是大小写不敏感的，钱包解码后拿到的还是同一份 payload。
 
+当前结果码显示层还固定了更大的白边和白底，目的是让手机钱包在扫回 `eth-signature` 时少吃边缘噪声，尤其是 `imToken` 这类最后一步比较挑回传格式的场景。
+
 连接码不要再一刀切:
 
 - `MetaMask / Rabby / TokenPocket` 保持单张静态码

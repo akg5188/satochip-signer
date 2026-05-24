@@ -463,6 +463,9 @@ def main() -> int:
         assert tp_views_mod.ToolsTpConnectWalletMenuView.WEB3.button_label == "Web3钱包"
         assert tp_views_mod.ToolsTpConnectWalletMenuView.BTC.button_label == "比特币钱包"
         assert tp_views_mod.ToolsTpWeb3WalletProfileSelectView.TOKENPOCKET.button_label == "TokenPocket"
+        assert tp_views_mod.ToolsTpWeb3WalletProfileSelectView.IMTOKEN.button_label == "imToken"
+        assert tp_views_mod._web3_wallet_profile("imToken") == tp_views_mod.WEB3_WALLET_PROFILE_IMTOKEN
+        assert tp_views_mod._web3_wallet_meta("imToken") == ("IMTOKEN", "imToken")
         assert tp_views_mod.WEB3_KEYSTONE_DEVICE_VERSION == "1.0.4"
         assert tp_views_mod.ToolsTpBtcConnectTypeView.ZPUB.button_label == "BlueWallet zpub"
         assert tp_views_mod.ToolsTpBtcConnectTypeView.XPUB.button_label == "BlueWallet xpub"
@@ -664,26 +667,31 @@ def main() -> int:
         seed_web3_metamask_pages = _build_web3_connect_qr_pages(seed_web3_account, tp_views_mod.WEB3_WALLET_PROFILE_METAMASK)
         seed_web3_rabby_pages = _build_web3_connect_qr_pages(seed_web3_account, tp_views_mod.WEB3_WALLET_PROFILE_RABBY)
         seed_web3_tp_pages = _build_web3_connect_qr_pages(seed_web3_account, tp_views_mod.WEB3_WALLET_PROFILE_TOKENPOCKET)
+        seed_web3_imtoken_pages = _build_web3_connect_qr_pages(seed_web3_account, tp_views_mod.WEB3_WALLET_PROFILE_IMTOKEN)
         assert seed_web3_okx_pages
         assert seed_web3_bitget_pages
         assert seed_web3_metamask_pages
         assert seed_web3_rabby_pages
         assert seed_web3_tp_pages
+        assert seed_web3_imtoken_pages
         assert seed_web3_okx_pages[0].lower().startswith("ur:crypto-multi-accounts")
         assert seed_web3_bitget_pages[0].lower().startswith("ur:crypto-multi-accounts")
         assert seed_web3_metamask_pages[0].lower().startswith("ur:crypto-hdkey")
         assert seed_web3_rabby_pages[0].lower().startswith("ur:crypto-hdkey")
         assert seed_web3_tp_pages[0].lower().startswith("ur:crypto-hdkey")
+        assert seed_web3_imtoken_pages[0].lower().startswith("ur:crypto-hdkey")
         assert len(seed_web3_okx_pages) > 1
         assert len(seed_web3_bitget_pages) == 1
         assert len(seed_web3_metamask_pages) == 1
         assert len(seed_web3_rabby_pages) == 1
         assert len(seed_web3_tp_pages) == 1
+        assert len(seed_web3_imtoken_pages) == 1
         assert all(page == page.upper() for page in seed_web3_okx_pages)
         assert seed_web3_bitget_pages[0] == seed_web3_bitget_pages[0].upper()
         assert seed_web3_metamask_pages[0] == seed_web3_metamask_pages[0].upper()
         assert seed_web3_rabby_pages[0] == seed_web3_rabby_pages[0].upper()
         assert seed_web3_tp_pages[0] == seed_web3_tp_pages[0].upper()
+        assert seed_web3_imtoken_pages[0] == seed_web3_imtoken_pages[0].upper()
         assert all(qr_helper._normalize_qr_render_data(page) == page for page in seed_web3_okx_pages)
         assert qr_helper._normalize_qr_render_data(seed_web3_bitget_pages[0]) == seed_web3_bitget_pages[0]
         assert seed_web3_account["keystoneKeys"]["standard"]["coinType"] == tp_views_mod.WEB3_ETH_COIN_TYPE
@@ -1468,6 +1476,35 @@ def main() -> int:
             native_root = tp_views_mod._decode_cbor_root_map(native_decoder.result_message().cbor)
             assert native_root[3] == "OKX Wallet"
             assert len(native_root[2]) == 65
+            imtoken_request_id_bytes = b"97437vfuqqh6d2o87jeaqrjf78h1wai8ud1p"
+            imtoken_response = tp_views_mod._build_eth_signature_ur(
+                None,
+                bytes(range(65)),
+                origin="imToken",
+                request_id_cbor={"tag": 37, "value": imtoken_request_id_bytes},
+            )
+            imtoken_decoder = URDecoder()
+            assert imtoken_decoder.receive_part(imtoken_response)
+            assert imtoken_decoder.is_complete()
+            imtoken_root = tp_views_mod._decode_cbor_root_map(imtoken_decoder.result_message().cbor)
+            assert imtoken_root[1] == {"tag": 37, "value": imtoken_request_id_bytes}
+            assert imtoken_root[3] == "imToken"
+            imtoken_string_request_id = "97437vfuqqh6d2o87jeaqrjf78h1wai8ud1p"
+            imtoken_string_response = tp_views_mod._build_eth_signature_ur(
+                imtoken_string_request_id,
+                bytes(range(65)),
+                origin="imToken",
+            )
+            imtoken_string_decoder = URDecoder()
+            assert imtoken_string_decoder.receive_part(imtoken_string_response)
+            assert imtoken_string_decoder.is_complete()
+            imtoken_string_root = tp_views_mod._decode_cbor_root_map(
+                imtoken_string_decoder.result_message().cbor
+            )
+            assert imtoken_string_root[1] == {
+                "tag": 37,
+                "value": imtoken_string_request_id.encode("ascii"),
+            }
             native_qr_view = tp_views_mod.ToolsTpSignerQrView(response_text=native_outcome.response_payload)
             native_qr_encoder = native_qr_view._get_qr_encoder()
             native_snapshot = tp_views_mod._ensure_eth_signature_debug_snapshot(
@@ -2376,7 +2413,7 @@ def main() -> int:
             os.environ["OFFLINE_SIGNER_MODE"] = "1"
             os.environ["TP_ONLY_MODE"] = "1"
             finalize_controller = _FakeController()
-            finalize_controller.storage.set_pending_seed(Seed(words))
+            finalize_controller.storage.set_pending_seed(Seed(expected_canonical_words))
             finalize_controller.resume_main_flow = False
             finalize_view = SeedFinalizeView.__new__(SeedFinalizeView)
             finalize_view.controller = finalize_controller
@@ -2435,7 +2472,7 @@ def main() -> int:
         assert "查看助记词" in loaded_seed_buttons["labels"]
         assert "设置密码短语" not in loaded_seed_buttons["labels"]
 
-        bip39_loaded_seed = Seed(words)
+        bip39_loaded_seed = Seed(expected_canonical_words)
         bip39_loaded_seed_view = ToolsTpLoadedSeedOptionsView.__new__(ToolsTpLoadedSeedOptionsView)
         bip39_loaded_seed_view.controller = _FakeController()
         bip39_loaded_seed_view.settings = _FakeSettings()
@@ -2462,7 +2499,7 @@ def main() -> int:
         passphrase_view.renderer = _FakeRenderer()
         passphrase_view.canvas_width = 240
         passphrase_view.canvas_height = 240
-        passphrase_seed = Seed(words)
+        passphrase_seed = Seed(expected_canonical_words)
         passphrase_view.controller.storage.seeds = [passphrase_seed]
         passphrase_view.seed_num = 0
         passphrase_view.seed = passphrase_seed

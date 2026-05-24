@@ -44,7 +44,15 @@ from seedsigner.helpers.ur2.ur import UR
 from seedsigner.helpers.ur2.ur_decoder import URDecoder
 from seedsigner.helpers.ur2.ur_encoder import UREncoder
 from seedsigner.hardware.microsd import MicroSD
-from seedsigner.models.decode_qr import DecodeQR, DecodeQRStatus
+from seedsigner.models.decode_qr import (
+    DENSE_QR_FALLBACK_INTERVAL,
+    DecodeQR,
+    DecodeQRStatus,
+    FAST_QR_FALLBACK_INTERVAL,
+    FAST_QR_INITIAL_AGGRESSIVE_TRIES,
+    QR_ROI_HINT_MAX_MISSES,
+    WECHAT_QR_FALLBACK_INTERVAL,
+)
 from seedsigner.models.encode_qr import BaseSimpleAnimatedQREncoder, GenericStaticQrEncoder
 from seedsigner.models.mnemonic_steel import (
     DEFAULT_SHIFT_OPERATOR,
@@ -77,12 +85,14 @@ WEB3_WALLET_PROFILE_BITGET = "bitget"
 WEB3_WALLET_PROFILE_METAMASK = "metamask"
 WEB3_WALLET_PROFILE_RABBY = "rabby"
 WEB3_WALLET_PROFILE_TOKENPOCKET = "tokenpocket"
+WEB3_WALLET_PROFILE_IMTOKEN = "imtoken"
 WEB3_WALLET_PROFILE_LABELS = {
     WEB3_WALLET_PROFILE_OKX: "OKX Wallet",
     WEB3_WALLET_PROFILE_BITGET: "Bitget Wallet",
     WEB3_WALLET_PROFILE_METAMASK: "MetaMask",
     WEB3_WALLET_PROFILE_RABBY: "Rabby Wallet",
     WEB3_WALLET_PROFILE_TOKENPOCKET: "TokenPocket",
+    WEB3_WALLET_PROFILE_IMTOKEN: "imToken",
 }
 WEB3_OKX_DEVICE_TYPE = "Keystone 3 Pro"
 WEB3_KEYSTONE_DEVICE_TYPE = "Keystone 3 Pro"
@@ -1015,11 +1025,15 @@ def _canonicalize_request_id_cbor(value: object) -> object | None:
         if tag == 37:
             if isinstance(inner, bytes) and len(inner) == 16:
                 return {"tag": 37, "value": bytes(inner)}
+            if isinstance(value["value"], (bytes, bytearray)):
+                raw = bytes(value["value"])
+                return {"tag": 37, "value": raw} if raw else None
             if isinstance(inner, str):
                 try:
                     return {"tag": 37, "value": uuid.UUID(inner).bytes}
                 except Exception:
-                    return inner
+                    raw = inner.encode("utf-8")
+                    return {"tag": 37, "value": raw} if raw else None
             return inner
         if tag is None:
             return inner
@@ -1060,7 +1074,17 @@ def _request_id_from_cbor(value: object) -> tuple[str | None, object | None]:
         return None, None
 
     if isinstance(canonical, dict) and canonical.get("tag") == 37 and isinstance(canonical.get("value"), bytes):
-        return str(uuid.UUID(bytes=bytes(canonical["value"]))), canonical
+        raw = bytes(canonical["value"])
+        if len(raw) == 16:
+            try:
+                return str(uuid.UUID(bytes=raw)), canonical
+            except Exception:
+                pass
+        try:
+            decoded = raw.decode("utf-8").strip()
+        except Exception:
+            decoded = ""
+        return (decoded or raw.hex()), canonical
 
     if isinstance(canonical, bytes):
         raw = bytes(canonical)
@@ -1111,14 +1135,34 @@ def _encode_request_id_cbor_value(cbor: CBOREncoder, value: object) -> None:
     cbor.encodeText(str(value))
 
 
-def _request_id_response_cbor(request_id: str | None, request_id_cbor: object | None = None) -> object | None:
+def _is_imtoken_origin(origin: str | None) -> bool:
+    compact = str(origin or "").strip().lower().replace("-", "").replace("_", "").replace(" ", "")
+    return "imtoken" in compact
+
+
+def _request_id_response_cbor(
+    request_id: str | None,
+    request_id_cbor: object | None = None,
+    origin: str | None = None,
+) -> object | None:
     canonical = _canonicalize_request_id_cbor(request_id_cbor)
     if canonical is not None:
+        if _is_imtoken_origin(origin) and not (
+            isinstance(canonical, dict) and canonical.get("tag") == 37
+        ):
+            if isinstance(canonical, (bytes, bytearray)):
+                raw = bytes(canonical)
+            else:
+                raw = str(canonical).strip().encode("utf-8")
+            return {"tag": 37, "value": raw} if raw else None
         return canonical
 
     request_text = str(request_id or "").strip()
     if not request_text:
         return None
+    if _is_imtoken_origin(origin):
+        raw = request_text.encode("utf-8")
+        return {"tag": 37, "value": raw} if raw else None
     try:
         return {"tag": 37, "value": uuid.UUID(request_text).bytes}
     except Exception:
@@ -1193,10 +1237,13 @@ def _parse_web3_eth_sign_request_cbor(cbor_bytes: bytes) -> Web3EthSignRequest:
 
 def _web3_wallet_meta(origin: str | None) -> tuple[str, str]:
     normalized = str(origin or "").strip().lower()
+    compact = normalized.replace("-", "").replace("_", "").replace(" ", "")
     if "bitget" in normalized or "bitkeep" in normalized:
         return "BITGET", "Bitget Wallet"
     if "okx" in normalized or "okex" in normalized:
         return "OKX", "OKX Wallet"
+    if "imtoken" in compact:
+        return "IMTOKEN", "imToken"
     return "KEYSTONE", "Keystone"
 
 
@@ -2163,6 +2210,13 @@ class TpRequestQrDecoder:
         self._web3_relay_assembler = RelayAssembler()
         self._web3_ur_decoder = URDecoder()
         self._psbt_decoder = DecodeQR()
+        self._scan_attempt_count = 0
+        self._dense_scan_mode = False
+        self._qr_roi_hint = None
+        self._qr_roi_misses = 0
+
+    def set_dense_scan_mode(self, enabled: bool):
+        self._dense_scan_mode = bool(enabled)
 
     @property
     def is_complete(self) -> bool:
@@ -2190,17 +2244,60 @@ class TpRequestQrDecoder:
             return 0
         return int((self.collected_segments / self.total_segments) * 100)
 
-    def add_image(self, image):
-        raw = DecodeQR.extract_qr_data(image, is_binary=True)
-        if raw is None:
-            return DecodeQRStatus.FALSE
+    def _should_run_aggressive_fallback(self) -> bool:
+        if self._scan_attempt_count <= FAST_QR_INITIAL_AGGRESSIVE_TRIES:
+            return True
+        if self._dense_scan_mode:
+            return self._scan_attempt_count % DENSE_QR_FALLBACK_INTERVAL == 0
+        return self._scan_attempt_count % FAST_QR_FALLBACK_INTERVAL == 0
 
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            self.is_nonUTF8 = True
-            self.error = "二维码不是 UTF-8 文本"
-            return DecodeQRStatus.INVALID
+    def _should_run_wechat_fallback(self) -> bool:
+        if self._scan_attempt_count <= FAST_QR_INITIAL_AGGRESSIVE_TRIES:
+            return True
+        return self._scan_attempt_count % WECHAT_QR_FALLBACK_INTERVAL == 0
+
+    def add_image(self, image):
+        self._scan_attempt_count += 1
+        raw, roi_hint = DecodeQR.extract_qr_data_with_hint(
+            image,
+            is_binary=True,
+            aggressive=False,
+            include_fast_candidates=self._qr_roi_hint is None,
+            include_wechat=False,
+            roi_hint=self._qr_roi_hint,
+            dense_scan_mode=self._dense_scan_mode,
+        )
+        if raw is None and self._should_run_aggressive_fallback():
+            raw, roi_hint = DecodeQR.extract_qr_data_with_hint(
+                image,
+                is_binary=True,
+                aggressive=True,
+                include_fast_candidates=False,
+                include_wechat=self._should_run_wechat_fallback(),
+                roi_hint=self._qr_roi_hint,
+                dense_scan_mode=self._dense_scan_mode,
+            )
+
+        if roi_hint is not None:
+            self._qr_roi_hint = roi_hint
+        if raw is None:
+            if self._qr_roi_hint is not None:
+                self._qr_roi_misses += 1
+                if self._qr_roi_misses >= QR_ROI_HINT_MAX_MISSES:
+                    self._qr_roi_hint = None
+                    self._qr_roi_misses = 0
+            return DecodeQRStatus.FALSE
+        self._qr_roi_misses = 0
+
+        if isinstance(raw, bytes):
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                self.is_nonUTF8 = True
+                self.error = "二维码不是 UTF-8 文本"
+                return DecodeQRStatus.INVALID
+        else:
+            text = str(raw)
 
         return self.add_data(text)
 
@@ -2925,8 +3022,12 @@ def _build_eth_signature_ur(
     if len(signature_bytes) < 65:
         raise ValueError("签名结果长度不正确")
 
-    request_id_value = _request_id_response_cbor(request_id, request_id_cbor=request_id_cbor)
     origin_text = str(origin or "").strip()
+    request_id_value = _request_id_response_cbor(
+        request_id,
+        request_id_cbor=request_id_cbor,
+        origin=origin_text,
+    )
 
     cbor = CBOREncoder()
     field_count = 1
@@ -4626,7 +4727,7 @@ class ToolsTpEthSignatureQrEncoder(BaseSimpleAnimatedQREncoder):
 def _configure_high_margin_qr_encoder(
     qr_encoder,
     *,
-    border_modules: int = 2,
+    border_modules: int = 5,
     display_size: int | None = None,
     min_background_brightness: int = 240,
     background_color: str = "ffffff",
@@ -4642,10 +4743,10 @@ def _configure_high_margin_qr_encoder(
             from seedsigner.gui.renderer import Renderer
 
             renderer = Renderer.get_instance()
-            display_size = min(int(renderer.canvas_width), int(renderer.canvas_height))
+            display_size = min(int(renderer.canvas_width), int(renderer.canvas_height), 240) - 4
         size = max(64, int(display_size))
     except Exception:
-        size = 240
+        size = 236
     qr_encoder.display_image_size = (size, size)
     try:
         qr_encoder.display_min_background_brightness = max(0, min(255, int(min_background_brightness)))
@@ -4962,6 +5063,8 @@ def _web3_wallet_profile(value: str | None) -> str:
         return WEB3_WALLET_PROFILE_RABBY
     if compact in {WEB3_WALLET_PROFILE_TOKENPOCKET, "tpwallet", "tp"}:
         return WEB3_WALLET_PROFILE_TOKENPOCKET
+    if compact in {WEB3_WALLET_PROFILE_IMTOKEN, "imtokenwallet"}:
+        return WEB3_WALLET_PROFILE_IMTOKEN
     return WEB3_WALLET_PROFILE_OKX
 
 
@@ -5181,6 +5284,7 @@ class ToolsTpWeb3WalletProfileSelectView(View):
     METAMASK = ButtonOption("MetaMask")
     RABBY = ButtonOption("Rabby")
     TOKENPOCKET = ButtonOption("TokenPocket")
+    IMTOKEN = ButtonOption("imToken")
 
     def run(self):
         button_data = [
@@ -5189,6 +5293,7 @@ class ToolsTpWeb3WalletProfileSelectView(View):
             self.METAMASK,
             self.RABBY,
             self.TOKENPOCKET,
+            self.IMTOKEN,
         ]
         selected_menu_num = self.run_screen(
             ButtonListScreen,
@@ -5209,6 +5314,8 @@ class ToolsTpWeb3WalletProfileSelectView(View):
             wallet_profile = WEB3_WALLET_PROFILE_RABBY
         elif selected_wallet == self.TOKENPOCKET:
             wallet_profile = WEB3_WALLET_PROFILE_TOKENPOCKET
+        elif selected_wallet == self.IMTOKEN:
+            wallet_profile = WEB3_WALLET_PROFILE_IMTOKEN
         else:
             wallet_profile = WEB3_WALLET_PROFILE_OKX
         return Destination(
