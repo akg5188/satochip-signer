@@ -279,7 +279,8 @@ if [[ "$SKIP_APT" -eq 0 ]]; then
     apt-get install -y \
       pcscd pcsc-tools libpcsclite1 \
       python3 python3-pil python3-numpy python3-gpiozero python3-spidev \
-      python3-picamera2 python3-pyzbar libzbar0
+      python3-picamera2 python3-pyzbar python3-opencv libzbar0
+    apt-get install -y python3-zxing-cpp || true
   '
 
   if [[ "$SIGNER_RUNTIME" == "java" ]]; then

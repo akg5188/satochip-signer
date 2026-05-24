@@ -58,9 +58,19 @@ try:
     _SEEDSIGNER_SRC = _REPO_ROOT / "seedsigner-os" / "opt" / "rootfs-overlay" / "opt" / "src"
     if _SEEDSIGNER_SRC.exists() and str(_SEEDSIGNER_SRC) not in sys.path:
         sys.path.insert(0, str(_SEEDSIGNER_SRC))
-    from seedsigner.models.decode_qr import DecodeQR, QR_ROI_HINT_MAX_MISSES  # type: ignore
+    from seedsigner.models.decode_qr import (  # type: ignore
+        DENSE_QR_FALLBACK_INTERVAL,
+        FAST_QR_INITIAL_AGGRESSIVE_TRIES,
+        DecodeQR,
+        QR_ROI_HINT_MAX_MISSES,
+        WECHAT_QR_FALLBACK_INTERVAL,
+    )
 except Exception as error:  # pragma: no cover
     DecodeQR = None
+    QR_ROI_HINT_MAX_MISSES = 5
+    FAST_QR_INITIAL_AGGRESSIVE_TRIES = 1
+    DENSE_QR_FALLBACK_INTERVAL = 2
+    WECHAT_QR_FALLBACK_INTERVAL = 4
     _SEEDSIGNER_DECODE_IMPORT_ERROR = error
 else:
     _SEEDSIGNER_DECODE_IMPORT_ERROR = None
@@ -72,6 +82,8 @@ OPENCV_QR_ROI_MAX_REGIONS = 3
 OPENCV_QR_ROI_MIN_SIZE = 384
 OPENCV_QR_ROI_MAX_SIZE = 960
 OPENCV_QR_ROI_BORDER = 24
+DENSE_SCAN_PROFILES: Tuple[Tuple[Tuple[int, int], int], ...] = (((960, 720), 4), ((1280, 960), 2))
+DENSE_SCAN_PROFILE_ESCALATE_MISSES = 10
 WECHAT_QR_MODEL_DIR = Path(__file__).resolve().parent / "wechat_qrcode"
 WECHAT_QR_MODEL_FILES = (
     "detect.prototxt",
@@ -99,9 +111,30 @@ class CameraScanner:
         self._scan_attempt_count = 0
         self._qr_roi_hint = None
         self._qr_roi_misses = 0
+        self._dense_profiles: Tuple[Tuple[Tuple[int, int], int], ...] = self._build_dense_profiles(preview_size)
+        self._profile_index = 0
+        self._profile_miss_count = 0
+        self._current_framerate = self._dense_profiles[0][1]
+
+    @staticmethod
+    def _build_dense_profiles(preview_size: Tuple[int, int]) -> Tuple[Tuple[Tuple[int, int], int], ...]:
+        profiles: List[Tuple[Tuple[int, int], int]] = list(DENSE_SCAN_PROFILES)
+        requested = tuple(preview_size)
+        if requested not in [size for size, _fps in profiles]:
+            profiles.append((requested, 2 if max(requested) >= 1280 else 4))
+        return tuple(profiles)
+
+    def _current_profile(self) -> Tuple[Tuple[int, int], int]:
+        return self._dense_profiles[self._profile_index]
+
+    def _reset_decode_state(self) -> None:
+        self._scan_attempt_count = 0
+        self._qr_roi_hint = None
+        self._qr_roi_misses = 0
+        self._profile_miss_count = 0
 
     def _preview_size_candidates(self) -> Tuple[Tuple[int, int], ...]:
-        candidates: List[Tuple[int, int]] = [self.preview_size]
+        candidates: List[Tuple[int, int]] = [self._current_profile()[0]]
         for size in self.fallback_preview_sizes:
             if size not in candidates:
                 candidates.append(size)
@@ -114,6 +147,11 @@ class CameraScanner:
                 f"pyzbar={_PYZBAR_IMPORT_ERROR}; zxingcpp={_ZXINGCPP_IMPORT_ERROR}; "
                 f"opencv={_OPENCV_IMPORT_ERROR}; seedsigner={_SEEDSIGNER_DECODE_IMPORT_ERROR}"
             )
+        self._start_camera()
+
+    def _start_camera(self) -> None:
+        current_size, current_framerate = self._current_profile()
+        self._current_framerate = current_framerate
 
         if Picamera2 is not None:
             self._camera = Picamera2()
@@ -122,7 +160,8 @@ class CameraScanner:
             for candidate_size in self._preview_size_candidates():
                 try:
                     cfg = self._camera.create_preview_configuration(
-                        main={"size": candidate_size, "format": "RGB888"}
+                        main={"size": candidate_size, "format": "YUV420"},
+                        controls={"FrameRate": float(current_framerate)},
                     )
                     self.preview_size = candidate_size
                     break
@@ -148,7 +187,7 @@ class CameraScanner:
                     last_error = error
             if last_error is not None:
                 raise RuntimeError(f"无法设置相机分辨率: {last_error}")
-            self._legacy_camera.framerate = 24
+            self._legacy_camera.framerate = current_framerate
             self._legacy_raw = PiRGBArray(self._legacy_camera, size=self.preview_size)
             time.sleep(0.25)
             self._apply_legacy_picamera_scan_controls()
@@ -158,6 +197,15 @@ class CameraScanner:
             "picamera2/picamera 都不可用: "
             f"picamera2={_PICAMERA_IMPORT_ERROR}; picamera={_LEGACY_PICAMERA_IMPORT_ERROR}"
         )
+
+    def _restart_camera_for_next_profile(self) -> bool:
+        if self._profile_index + 1 >= len(self._dense_profiles):
+            return False
+        self._profile_index += 1
+        self.stop()
+        self._reset_decode_state()
+        self._start_camera()
+        return True
 
     def _apply_picamera2_scan_controls(self) -> None:
         if self._camera is None:
@@ -743,8 +791,75 @@ class CameraScanner:
                 break
         return values, new_roi_hint
 
-    def _scan_hint_every_n(self) -> int:
-        return 4 if self._scan_attempt_count <= 2 else 6
+    def _extract_y_plane(self, frame_data, width: int, height: int):
+        try:
+            if getattr(frame_data, "ndim", 0) >= 3:
+                return frame_data[:height, :width, 0]
+            return frame_data[:height, :width]
+        except Exception:
+            try:
+                expected = width * height
+                return frame_data.reshape(-1)[:expected].reshape((height, width))
+            except Exception:
+                return frame_data
+
+    def _picamera2_main_to_greyscale(self, frame_data):
+        return self._extract_y_plane(frame_data, *self.preview_size)
+
+    def _should_run_aggressive_fallback(self) -> bool:
+        if self._scan_attempt_count <= FAST_QR_INITIAL_AGGRESSIVE_TRIES:
+            return True
+        return self._scan_attempt_count % DENSE_QR_FALLBACK_INTERVAL == 0
+
+    def _should_run_wechat_fallback(self) -> bool:
+        if self._scan_attempt_count <= FAST_QR_INITIAL_AGGRESSIVE_TRIES:
+            return True
+        return self._scan_attempt_count % WECHAT_QR_FALLBACK_INTERVAL == 0
+
+    def _decode_dense_qr(self, image: Image.Image) -> List[str]:
+        if DecodeQR is None:
+            values, roi_hint = self._decode_image(
+                image,
+                roi_hint=self._qr_roi_hint,
+                include_wechat=self._should_run_wechat_fallback(),
+                dense_scan_mode=True,
+            )
+            if roi_hint is not None:
+                self._qr_roi_hint = roi_hint
+            return values
+        roi_hint = self._qr_roi_hint
+        include_fast_candidates = roi_hint is None
+        include_wechat = self._should_run_wechat_fallback()
+        aggressive_modes = [False]
+        if self._should_run_aggressive_fallback():
+            aggressive_modes.append(True)
+
+        for aggressive in aggressive_modes:
+            try:
+                decoded, next_roi_hint = DecodeQR.extract_qr_data_with_hint(
+                    image,
+                    is_binary=True,
+                    aggressive=aggressive,
+                    include_fast_candidates=include_fast_candidates if not aggressive else False,
+                    include_wechat=include_wechat if aggressive else True,
+                    roi_hint=roi_hint,
+                    dense_scan_mode=True,
+                )
+            except Exception:
+                decoded = None
+                next_roi_hint = None
+            if next_roi_hint is not None:
+                self._qr_roi_hint = next_roi_hint
+                roi_hint = next_roi_hint
+            if decoded is None:
+                continue
+            if isinstance(decoded, bytes):
+                try:
+                    return [decoded.decode("utf-8", errors="strict")]
+                except Exception:
+                    return []
+            return [str(decoded)]
+        return []
 
     def stop(self) -> None:
         if self._camera is not None:
@@ -768,72 +883,45 @@ class CameraScanner:
     def capture(self) -> Tuple[Image.Image, List[str]]:
         self._scan_attempt_count += 1
         frame = None
+        decode_img: Optional[Image.Image] = None
+        preview_img: Optional[Image.Image] = None
         if self._camera is not None:
             frame = self._camera.capture_array("main")
+            if frame is not None:
+                luma = self._picamera2_main_to_greyscale(frame)
+                decode_img = Image.fromarray(luma.astype("uint8"), mode="L")
+                preview_img = decode_img.convert("RGB")
         elif self._legacy_camera is not None and self._legacy_raw is not None:
             self._legacy_raw.truncate(0)
             self._legacy_camera.capture(self._legacy_raw, format="rgb", use_video_port=True)
             frame = self._legacy_raw.array
+            if frame is not None:
+                preview_img = Image.fromarray(frame.astype("uint8"), mode="RGB")
+                decode_img = preview_img.convert("L")
         else:
             raise RuntimeError("camera not started")
 
-        if frame is None:
+        if frame is None or decode_img is None or preview_img is None:
             raise RuntimeError("无法从相机采集画面")
 
-        img = Image.fromarray(frame.astype("uint8"), mode="RGB")
         if self.rotate:
-            if np is not None:
-                frame = np.rot90(frame, k=self.rotate // 90)
-                img = Image.fromarray(frame.astype("uint8"), mode="RGB")
-            else:
-                img = img.rotate(self.rotate, expand=True)
-        qr_values: List[str] = []
+            decode_img = decode_img.rotate(self.rotate, expand=True)
+            preview_img = preview_img.rotate(self.rotate, expand=True)
 
-        include_wechat = self._scan_attempt_count <= 2 or self._scan_attempt_count % self._scan_hint_every_n() == 0
-        qr_values, roi_hint = self._decode_image(
-            img,
-            roi_hint=self._qr_roi_hint,
-            include_wechat=include_wechat,
-            dense_scan_mode=True,
-        )
-        if roi_hint is not None:
-            self._qr_roi_hint = roi_hint
-
-        if not qr_values and DecodeQR is not None:
-            for aggressive in (False, True):
-                try:
-                    decoded, roi_hint = DecodeQR.extract_qr_data_with_hint(
-                        img,
-                        is_binary=True,
-                        aggressive=aggressive,
-                        include_fast_candidates=not aggressive and self._qr_roi_hint is None,
-                        include_wechat=include_wechat,
-                        roi_hint=self._qr_roi_hint,
-                        dense_scan_mode=True,
-                    )
-                except Exception:
-                    decoded = None
-                    roi_hint = None
-                if roi_hint is not None:
-                    self._qr_roi_hint = roi_hint
-                if decoded is None:
-                    continue
-                if isinstance(decoded, bytes):
-                    try:
-                        qr_values.append(decoded.decode("utf-8", errors="strict"))
-                    except Exception:
-                        pass
-                else:
-                    qr_values.append(str(decoded))
-                if qr_values:
-                    break
+        qr_values = self._decode_dense_qr(decode_img)
 
         if qr_values:
             self._qr_roi_misses = 0
-        elif self._qr_roi_hint is not None:
-            self._qr_roi_misses += 1
-            if self._qr_roi_misses >= QR_ROI_HINT_MAX_MISSES:
-                self._qr_roi_hint = None
-                self._qr_roi_misses = 0
+            self._profile_miss_count = 0
+        else:
+            if self._qr_roi_hint is not None:
+                self._qr_roi_misses += 1
+                if self._qr_roi_misses >= QR_ROI_HINT_MAX_MISSES:
+                    self._qr_roi_hint = None
+                    self._qr_roi_misses = 0
+            self._profile_miss_count += 1
+            if self._profile_miss_count >= DENSE_SCAN_PROFILE_ESCALATE_MISSES:
+                if self._restart_camera_for_next_profile():
+                    self._profile_miss_count = 0
 
-        return img, qr_values
+        return preview_img, qr_values

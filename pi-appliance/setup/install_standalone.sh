@@ -29,6 +29,7 @@ apt-get install -y \
   pcscd pcsc-tools libpcsclite1 \
   python3 python3-pil python3-numpy python3-gpiozero python3-spidev \
   python3-picamera2 python3-pyzbar python3-opencv libzbar0
+apt-get install -y python3-zxing-cpp || true
 
 systemctl enable --now pcscd
 

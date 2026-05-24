@@ -54,7 +54,7 @@ SCAN_CAMERA_SIZE = (
     int(os.environ.get("TP_SCAN_WIDTH", "1280")),
     int(os.environ.get("TP_SCAN_HEIGHT", "960")),
 )
-SCAN_CAPTURE_INTERVAL_SECONDS = float(os.environ.get("TP_SCAN_INTERVAL_SECONDS", "0.16"))
+SCAN_CAPTURE_INTERVAL_SECONDS = float(os.environ.get("TP_SCAN_INTERVAL_SECONDS", "0.08"))
 SCAN_PREVIEW_RENDER_INTERVAL_SECONDS = float(os.environ.get("TP_SCAN_PREVIEW_INTERVAL_SECONDS", "0.80"))
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 BOOT_LOCK_FILENAME = "tp-lock.dat"
