@@ -166,7 +166,7 @@ bash scripts/build_current_firmware.sh
 - `seedsigner-os/` 与 `dist/`
   树莓派 `Pi Zero` 离线签名器固件与镜像备份
 - `app/`
-  安卓“智能卡”App，负责 `TokenPocket` 请求扫码、智能卡签名，也能把 TP 动态码转成树莓派更容易扫的静态码
+  安卓“智能卡”App，负责 `TokenPocket` 请求扫码、智能卡签名；当前优先直接扫码，只有在个别极端高密度场景下才把 TP 动态码转成树莓派更容易扫的静态码
 - `wallet/`
   安卓高安全观察钱包，当前主打 `Arbitrum One` 观察地址、`WalletConnect v2` 协调、树莓派离线签名、`BTC xpub/ypub/zpub` 观察账户原型，以及 `OKX Wallet / Bitget Wallet` Web3 二维码桥接
 - `backups/satochip-utils/`
@@ -332,7 +332,7 @@ GitHub Release 现在也分开看：
 
 - `TP` 请求解析
 - `NFC / USB-OTG` 智能卡签名
-- 可选的树莓派静态中转二维码生成
+- 可选的树莓派静态中转二维码生成（仅作为个别极端高密度场景的备用办法）
 - 结果二维码回传
 
 如果 `TokenPocket` 显示的签名请求二维码太密，当前实测可以先用这个办法顶住：
@@ -340,7 +340,7 @@ GitHub Release 现在也分开看：
 1. 先让 `TP` 把签名二维码完整显示出来，并录屏几秒
 2. 打开相册里的这段录屏
 3. 播放录屏时双指稍微放大，让二维码尽量铺满屏幕，但四边不要被裁掉
-4. 保持手机亮度较高，再让树莓派或安卓中转 App 去扫这段放大后的录屏
+4. 保持手机亮度较高，再让树莓派去扫这段放大后的录屏
 
 注意：
 
@@ -439,7 +439,7 @@ bash scripts/rebuild_official_release.sh wallet-release
 
 - `wallet/` 当前不是内置 `Hyperliquid` 浏览器钱包。
 - `wallet/` 现在是高安全观察钱包 + `WalletConnect` 协调器 + `OKX Wallet / Bitget Wallet` Web3 桥接。
-- `app/` 不是独立钱包，它是 `TokenPocket` 配套的智能卡签名/中转 App。
+- `app/` 不是独立钱包，它是 `TokenPocket` 配套的智能卡签名 App；当前优先直接扫码，只有少数极端高密度场景才考虑备用中转。
 - `SeedKeeper` 和 `SatochipApplet` 不是同一个 applet。
 - 技术上同一张 `J3R180` 卡也可以同时装这两个 applet，但当前长期建议已经改成：`一张卡只装一个程序`。
 - 如果你手里已经是双 applet 共卡，日常查看/导入/签名还可以继续用，但不要在固件里做恢复出厂。

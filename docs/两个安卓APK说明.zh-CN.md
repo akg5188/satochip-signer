@@ -46,7 +46,7 @@ bash scripts/build_tp_relay_apk.sh
 - 解析 `TP` 的 `signTransaction / personalSign / signTypedData`
 - 输入 `PIN` 后用 `NFC` 或 `USB-OTG + ACR39U` 配合智能卡直接签名
 - 显示回扫给 `TP` 的结果二维码
-- 也可以把 `TP` 动态码转成树莓派更容易扫的静态码
+- 当前优先直接扫码；只有在个别极端高密度场景下，才把 `TP` 动态码转成树莓派更容易扫的静态码
 
 它不是：
 
