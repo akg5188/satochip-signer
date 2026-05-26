@@ -2242,7 +2242,10 @@ class TpRequestQrDecoder:
             return 100
         if self.total_segments <= 1:
             return 0
-        return int((self.collected_segments / self.total_segments) * 100)
+        progress = int((self.collected_segments / self.total_segments) * 100)
+        if self.collected_segments > 0:
+            return max(1, progress)
+        return progress
 
     def _should_run_aggressive_fallback(self) -> bool:
         if self._scan_attempt_count <= FAST_QR_INITIAL_AGGRESSIVE_TRIES:
@@ -8004,8 +8007,9 @@ class ToolsTpSignerScanView(View):
             decoder=decoder,
             instructions_text="",
             show_top_nav=False,
-            show_status_overlay=False,
+            show_status_overlay=True,
             exit_on_any_button=True,
+            dense_scan_mode=False,
         ).display()
         if ret == RET_CODE__BACK_BUTTON:
             return Destination(BackStackView)
